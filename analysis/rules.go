@@ -10,31 +10,50 @@ import (
 )
 
 // Violation은 규칙 위반 하나다 — 실제 간선이 evidence다.
+// Rule은 어긴 규칙 종류다: "allow"(허용 목록에 없음), "deny"(명시 금지),
+// "signature"(공개 API 타입 누출).
 type Violation struct {
 	From          string         `json:"from"`
 	To            string         `json:"to"`
 	FromComponent string         `json:"fromComponent"`
 	ToComponent   string         `json:"toComponent"`
 	Kind          graph.EdgeKind `json:"kind"`
+	Rule          string         `json:"rule"`
 }
 
-// CheckRules는 패키지 레벨 import 간선을 컴포넌트 규칙과 대조한다.
-// 어떤 컴포넌트에도 매핑되지 않은 패키지는 unmapped로 돌려준다 —
-// 매핑 구멍은 "규칙 무관"이 아니라 "규칙이 모르는 영역"이다.
+// CheckRules는 import 간선을 컴포넌트 규칙과 대조하고, 문서가 심볼 레벨이면
+// signature 규칙도 검사한다. 어떤 컴포넌트에도 매핑되지 않은 패키지는
+// unmapped로 돌려준다 — 매핑 구멍은 "규칙 무관"이 아니라 "규칙이 모르는 영역"이다.
 func CheckRules(d *graph.Document, cfg *config.File) (violations []Violation, unmapped []string) {
 	comp := componentMap(d, cfg)
+	vmap := vertexMap(d)
 	for _, e := range d.Edges {
-		if e.Kind != graph.EdgeImport {
+		var from, to string
+		switch e.Kind {
+		case graph.EdgeImport:
+			from, to = comp[e.From], comp[e.To]
+		case graph.EdgeSignature:
+			// signature 규칙은 설정된 컴포넌트의 exported 심볼에서만 검사한다.
+			if len(cfg.Signature) == 0 {
+				continue
+			}
+			src, ok := vmap[e.From]
+			if !ok || !src.Exported {
+				continue
+			}
+			from, to = comp[src.Package], comp[vmap[e.To].Package]
+		default:
 			continue
 		}
-		from, to := comp[e.From], comp[e.To]
 		if from == "" || to == "" {
 			continue
 		}
-		if !cfg.Allowed(from, to) {
+		rule := ruleBroken(cfg, e.Kind, from, to)
+		if rule != "" {
 			violations = append(violations, Violation{
 				From: e.From, To: e.To,
-				FromComponent: from, ToComponent: to, Kind: e.Kind,
+				FromComponent: from, ToComponent: to,
+				Kind: e.Kind, Rule: rule,
 			})
 		}
 	}
@@ -46,6 +65,32 @@ func CheckRules(d *graph.Document, cfg *config.File) (violations []Violation, un
 		return violations[i].To < violations[j].To
 	})
 	return violations, unmapped
+}
+
+// ruleBroken은 간선이 어긴 규칙 이름을 돌려준다. 위반이 없으면 ""다.
+// deny가 가장 먼저다 — 명시 금지는 허용 목록보다 우선한다.
+// signature 간선은 시그니처 규칙과 허용 목록 둘 다를 통과해야 한다 —
+// 시그니처 참조도 의존이기 때문이다.
+func ruleBroken(cfg *config.File, kind graph.EdgeKind, from, to string) string {
+	if cfg.Denied(from, to) {
+		return "deny"
+	}
+	if kind == graph.EdgeSignature && !cfg.SignatureAllowed(from, to) {
+		return "signature"
+	}
+	if !cfg.Allowed(from, to) {
+		return "allow"
+	}
+	return ""
+}
+
+// vertexMap은 정점 ID로 정점을 찾는 인덱스다.
+func vertexMap(d *graph.Document) map[string]graph.Vertex {
+	out := make(map[string]graph.Vertex, len(d.Vertices))
+	for _, v := range d.Vertices {
+		out[v.ID] = v
+	}
+	return out
 }
 
 // componentMap은 패키지 정점을 컴포넌트로 해석한다.

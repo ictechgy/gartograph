@@ -17,13 +17,20 @@ import (
 //
 //	components: 컴포넌트명 → 모듈 상대 경로 패턴들
 //	deps: 컴포넌트명 → 의존해도 되는 컴포넌트명들
+//	deny: 컴포넌트명 → 절대 의존하면 안 되는 컴포넌트명들
+//	signature: 컴포넌트명 → 공개 API 시그니처가 참조해도 되는 컴포넌트명들
 //
 // deps에 없는 컴포넌트는 아무것도 의존할 수 없다 — 허용 목록이 기본이어야
-// 누락이 "허용"으로 새지 않는다.
+// 누락이 "허용"으로 새지 않는다. deny는 deps보다 먼저 적용된다 —
+// "보통 허용하지만 이 조합은 금지"를 표현하기 위함이다.
+// signature는 deps보다 좁은 규칙이다 — 본문 의존은 허용하되 공개 API의
+// 타입 누출만 막을 때 쓴다. 키가 없으면 시그니처 검사는 하지 않는다.
 type File struct {
 	Version    int                 `yaml:"version"`
 	Components map[string][]string `yaml:"components"`
 	Deps       map[string][]string `yaml:"deps"`
+	Deny       map[string][]string `yaml:"deny"`
+	Signature  map[string][]string `yaml:"signature"`
 }
 
 // 파일 후보 이름 — 두 확장자를 다 받는다.
@@ -83,6 +90,36 @@ func (f *File) Allowed(from, to string) bool {
 	}
 	for _, d := range f.Deps[from] {
 		if d == to {
+			return true
+		}
+	}
+	return false
+}
+
+// Denied는 from→to 의존이 명시적으로 금지됐는지 본다.
+// deny는 허용 목록보다 먼저 적용된다 — deps에 있어도 deny가 이긴다.
+func (f *File) Denied(from, to string) bool {
+	if from == to {
+		return false
+	}
+	for _, d := range f.Deny[from] {
+		if d == to {
+			return true
+		}
+	}
+	return false
+}
+
+// SignatureAllowed는 from 컴포넌트의 공개 API 시그니처가 to 컴포넌트의
+// 타입을 참조할 수 있는지 본다. Signature 키가 없는 컴포넌트는 시그니처
+// 검사 대상이 아니다 — 규칙을 모르는 것과 금지된 것은 다르다.
+func (f *File) SignatureAllowed(from, to string) bool {
+	allowed, declared := f.Signature[from]
+	if !declared || from == to {
+		return true
+	}
+	for _, c := range allowed {
+		if c == to {
 			return true
 		}
 	}

@@ -85,6 +85,62 @@ func TestRelPath(t *testing.T) {
 	}
 }
 
+// TestCheckRulesDeny는 deny가 허용 목록보다 우선하는지 확인한다.
+// deps에 있어도 deny가 이겨야 "보통 허용, 이 조합은 금지"가 성립한다.
+func TestCheckRulesDeny(t *testing.T) {
+	cfg := rulesCfg()
+	cfg.Deps["web"] = []string{"db"}
+	cfg.Deny = map[string][]string{"web": {"db"}}
+	violations, _ := CheckRules(rulesDoc(), cfg)
+	if len(violations) != 1 || violations[0].Rule != "deny" {
+		t.Fatalf("deny must win over allow, got %+v", violations)
+	}
+}
+
+// TestCheckRulesSignature는 공개 API 시그니처의 타입 누출을 잡는지 확인한다.
+// 비공개 심볼의 시그니처는 공개 API가 아니므로 검사하지 않는다.
+func TestCheckRulesSignature(t *testing.T) {
+	d := &graph.Document{
+		Module: "example.com/m",
+		Level:  graph.LevelSymbol,
+		Vertices: []graph.Vertex{
+			{ID: "example.com/m/api", Kind: graph.KindPackage},
+			{ID: "example.com/m/db", Kind: graph.KindPackage},
+			{ID: "example.com/m/api.Open", Kind: graph.KindFunc,
+				Package: "example.com/m/api", Exported: true},
+			{ID: "example.com/m/api.hidden", Kind: graph.KindFunc,
+				Package: "example.com/m/api"},
+			{ID: "example.com/m/db.Conn", Kind: graph.KindType,
+				Package: "example.com/m/db", Exported: true},
+		},
+		Edges: []graph.Edge{
+			{From: "example.com/m/api.Open", To: "example.com/m/db.Conn",
+				Kind: graph.EdgeSignature},
+			{From: "example.com/m/api.hidden", To: "example.com/m/db.Conn",
+				Kind: graph.EdgeSignature},
+		},
+	}
+	cfg := &config.File{
+		Components: map[string][]string{"api": {"api"}, "db": {"db"}},
+		Deps:       map[string][]string{"api": {"db"}},
+		Signature:  map[string][]string{"api": {}},
+	}
+	violations, _ := CheckRules(d, cfg)
+	if len(violations) != 1 {
+		t.Fatalf("expected exactly the exported signature violation, got %+v", violations)
+	}
+	v := violations[0]
+	if v.Rule != "signature" || v.From != "example.com/m/api.Open" {
+		t.Fatalf("unexpected violation: %+v", v)
+	}
+	// signature 목록에 db를 허용하면 위반은 사라진다 — 본문 deps와는 별개 축이다.
+	cfg.Signature["api"] = []string{"db"}
+	violations, _ = CheckRules(d, cfg)
+	if len(violations) != 0 {
+		t.Fatalf("allowed signature dep reported: %+v", violations)
+	}
+}
+
 // TestCheckRulesSelfDep는 같은 컴포넌트 안의 의존이 규칙 밖인지 확인한다.
 func TestCheckRulesSelfDep(t *testing.T) {
 	d := &graph.Document{
