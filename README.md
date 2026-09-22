@@ -24,6 +24,8 @@ meant for coding agents: facts and evidence, never delete verdicts.
 ## Install
 
 ```bash
+brew install ictechgy/tap/gartograph
+# or
 go install github.com/ictechgy/gartograph/cmd/gartograph@latest
 ```
 

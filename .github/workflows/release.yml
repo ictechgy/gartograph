@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (vX.Y.Z)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release binaries
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve version
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          tag="$REQUESTED_TAG"
+          if [ -z "$tag" ]; then tag="${GITHUB_REF_NAME}"; fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: expected vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          # 소스의 버전 상수와 태그가 어긋나면 go install 사용자가 잘못된 값을 본다.
+          declared="$(grep -oE 'Version = "[^"]+"' cli/cli.go | head -1 | cut -d'"' -f2)"
+          if [ "$declared" != "$version" ]; then
+            echo "태그($tag)와 cli.Version($declared)이 다릅니다." >&2
+            exit 1
+          fi
+
+      - name: Build release binaries
+        run: |
+          ldflags="-s -w -X github.com/ictechgy/gartograph/cli.Version=${VERSION}"
+          for target in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64 windows-amd64; do
+            os="${target%-*}"; arch="${target#*-}"
+            bin="gartograph"
+            [ "$os" = "windows" ] && bin="gartograph.exe"
+            dir="dist/gartograph-${VERSION}-${target}"
+            mkdir -p "$dir"
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "$ldflags" -o "$dir/$bin" ./cmd/gartograph
+            cp LICENSE README.md "$dir/"
+            if [ "$os" = "windows" ]; then
+              (cd dist && zip -qr "gartograph-${VERSION}-${target}.zip" "gartograph-${VERSION}-${target}")
+            else
+              tar -C dist -czf "gartograph-${VERSION}-${target}.tar.gz" "gartograph-${VERSION}-${target}"
+            fi
+          done
+
+      # 배포하기 전에 압축을 푼 그 바이너리로 CLI 계약 전체를 검증한다.
+      - name: Verify the packaged binary
+        run: |
+          tar -xzf "gartograph-${VERSION}-darwin-arm64.tar.gz" -C "$RUNNER_TEMP"
+          bin="$RUNNER_TEMP/gartograph-${VERSION}-darwin-arm64/gartograph"
+          test "$("$bin" version)" = "gartograph ${VERSION}"
+          cmp README.md "$RUNNER_TEMP/gartograph-${VERSION}-darwin-arm64/README.md"
+          Scripts/verify-cli-contract.sh "$bin"
+
+      - name: Compute checksums
+        run: |
+          shasum -a 256 gartograph-*.tar.gz gartograph-*.zip > checksums.txt
+          cat checksums.txt
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<NOTES
+          ## Install
+
+          \`\`\`bash
+          brew install ictechgy/tap/gartograph
+          # or
+          go install github.com/ictechgy/gartograph/cmd/gartograph@${TAG}
+          \`\`\`
+
+          ## Assets
+
+          \`gartograph-${VERSION}-<os>-<arch>.tar.gz\` — macOS (arm64/x86_64), Linux (arm64/x86_64); \`.zip\` for Windows. \`checksums.txt\` has SHA-256 for every asset.
+          NOTES
+          gh release create "$TAG" gartograph-*.tar.gz gartograph-*.zip checksums.txt \
+            --title "$TAG" --notes-file notes.md --verify-tag
+
+      # tap 저장소는 다른 저장소라 기본 GITHUB_TOKEN으로는 쓸 수 없다.
+      # HOMEBREW_TAP_TOKEN 시크릿이 있을 때만 formula를 갱신하고, 없으면 조용히 건너뛴다.
+      - name: Update the Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          sha() { grep "gartograph-${VERSION}-$1" checksums.txt | cut -d' ' -f1; }
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not configured; update the tap with these values:"
+            echo "  version   ${VERSION}"
+            for t in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+              echo "  $t  $(sha "$t.tar.gz")"
+            done
+            exit 0
+          fi
+          git clone "https://github.com/ictechgy/homebrew-tap.git" tap
+          cd tap
+          # heredoc 내용은 열 0에서 시작해야 들여쓰기가 formula에 남지 않는다.
+          cat > Formula/gartograph.rb <<FORMULA
+class Gartograph < Formula
+  desc "Queryable dependency graph for Go codebases, built on go/packages"
+  homepage "https://github.com/ictechgy/gartograph"
+  version "${VERSION}"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://github.com/ictechgy/gartograph/releases/download/${TAG}/gartograph-${VERSION}-darwin-arm64.tar.gz"
+      sha256 "$(sha darwin-arm64.tar.gz)"
+    else
+      url "https://github.com/ictechgy/gartograph/releases/download/${TAG}/gartograph-${VERSION}-darwin-amd64.tar.gz"
+      sha256 "$(sha darwin-amd64.tar.gz)"
+    end
+  end
+
+  on_linux do
+    if Hardware::CPU.arm?
+      url "https://github.com/ictechgy/gartograph/releases/download/${TAG}/gartograph-${VERSION}-linux-arm64.tar.gz"
+      sha256 "$(sha linux-arm64.tar.gz)"
+    else
+      url "https://github.com/ictechgy/gartograph/releases/download/${TAG}/gartograph-${VERSION}-linux-amd64.tar.gz"
+      sha256 "$(sha linux-amd64.tar.gz)"
+    end
+  end
+
+  def install
+    bin.install "gartograph"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/gartograph version")
+  end
+end
+FORMULA
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/gartograph.rb
+          git commit -m "gartograph ${VERSION}"
+          auth="$(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 | tr -d '\n')"
+          git -c "http.extraheader=Authorization: Basic ${auth}" push origin main
