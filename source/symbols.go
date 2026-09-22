@@ -276,6 +276,12 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 			h.edge(p.PkgPath, from, graph.EdgeContains)
 			h.root(from)
 		}
+		// Test*/Benchmark*/Example*/Fuzz*는 go test 러너만 호출한다 —
+		// 그래프에 호출자가 없으므로 루트로 잡지 않으면 --tests 수확에서
+		// 테스트 전부가 unreachable로 보고된다.
+		if d.Recv == nil && isTestEntry(p, d) {
+			h.root(from)
+		}
 		h.inspect(p, d, from)
 	case *ast.GenDecl:
 		for _, spec := range d.Specs {
@@ -329,13 +335,15 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 	fun := unwrapCallee(ce.Fun)
 	switch f := fun.(type) {
 	case *ast.Ident:
-		if fn, ok := p.TypesInfo.Uses[f].(*types.Func); ok {
+		// Pkg()가 nil인 객체(universe 스코프의 error.Error 등)는 정점이
+		// 될 수 없다 — 그대로 objectID에 넣으면 nil 역참조로 죽는다.
+		if fn, ok := p.TypesInfo.Uses[f].(*types.Func); ok && fn.Pkg() != nil {
 			h.edge(from, objectID(fn), graph.EdgeCall)
 		}
 	case *ast.SelectorExpr:
 		if sel, ok := p.TypesInfo.Selections[f]; ok {
 			fn, ok := sel.Obj().(*types.Func)
-			if !ok {
+			if !ok || fn.Pkg() == nil {
 				return
 			}
 			id := objectID(fn)
@@ -345,7 +353,7 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 					h.edge(from, impl, graph.EdgeCall)
 				}
 			}
-		} else if fn, ok := p.TypesInfo.Uses[f.Sel].(*types.Func); ok {
+		} else if fn, ok := p.TypesInfo.Uses[f.Sel].(*types.Func); ok && fn.Pkg() != nil {
 			// pkg.F() — 패키지 한정 선택자는 Selections가 아니라 Uses로 해석된다.
 			h.edge(from, objectID(fn), graph.EdgeCall)
 		}
@@ -436,6 +444,21 @@ func (h *harvester) edge(from, to string, kind graph.EdgeKind) {
 	}
 	h.edgeSet[e] = true
 	h.doc.Edges = append(h.doc.Edges, e)
+}
+
+// isTestEntry는 go test 러너가 진입하는 패키지 레벨 함수인지 본다.
+// _test.go 파일 안의 Test/Benchmark/Example/Fuzz 접두 함수가 대상이다.
+func isTestEntry(p *packages.Package, d *ast.FuncDecl) bool {
+	file := p.Fset.Position(d.Pos()).Filename
+	if !strings.HasSuffix(file, "_test.go") {
+		return false
+	}
+	for _, prefix := range []string{"Test", "Benchmark", "Example", "Fuzz"} {
+		if strings.HasPrefix(d.Name.Name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // root는 보존 루트를 중복 없이 기록한다.
