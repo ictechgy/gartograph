@@ -536,21 +536,55 @@ func cmdQuery(args []string, stdout, stderr io.Writer) int {
 
 // cmdImpact는 정점의 역방향 전이 클로저를 본다 — 이걸 바꾸면 무엇이 깨지는가.
 // query가 양방향 1~N홉 이웃을 보는 것과 달리 의존자 방향만, 거리를 싣고 모은다.
+// --since/--files가 있으면 파일 집합 모드다 — 바뀐 파일에 선언된 정점들이
+// 루트가 되고, positional 정점 ID도 함께 줄 수 있다.
 func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("impact", stderr)
 	depth := fs.Int("depth", 0, "max reverse-dependency depth (0 = full transitive closure)")
 	maxN := fs.Int("max", 0, "max dependers to report (0 = unlimited)")
+	since := fs.String("since", "", "git revision to diff for changed files (e.g. HEAD~1, origin/main...HEAD)")
+	var files stringsFlag
+	fs.Var(&files, "files", "changed file path relative to --dir (repeatable)")
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return 2
 	}
-	if len(positional) != 1 {
-		fmt.Fprintln(stderr, "usage: gartograph impact <vertex-id> [--depth N]")
+	if len(positional) > 1 {
+		fmt.Fprintln(stderr,
+			"usage: gartograph impact [<vertex-id>] [--since REV | --files F...] [--depth N]")
 		return 2
+	}
+	fileMode := *since != "" || len(files) > 0
+	if len(positional) == 0 && !fileMode {
+		fmt.Fprintln(stderr,
+			"usage: gartograph impact [<vertex-id>] [--since REV | --files F...] [--depth N]")
+		return 2
+	}
+	// 파일→정점 해석은 심볼 위치가 있어야 정확하다 — 새로 수확할 때는
+	// 가장 세밀한 레벨을 고른다. 저장 문서(--graph)는 있는 레벨 그대로 쓴다.
+	if fileMode && *graphPath == "" {
+		opts.Level = graph.LevelSymbol
 	}
 	doc, err := loadDoc(opts, *graphPath)
 	if err != nil {
 		return fail(stderr, err)
+	}
+	if fileMode {
+		changed := append([]string(nil), files...)
+		if *since != "" {
+			gitFiles, err := changedFilesSince(opts.Dir, *since)
+			if err != nil {
+				return fail(stderr, err)
+			}
+			changed = append(changed, gitFiles...)
+		}
+		res, err := analysis.AffectedByFiles(doc, changed, positional, *depth, *maxN)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		out, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Fprintln(stdout, string(out))
+		return 0
 	}
 	res, err := analysis.FindImpact(doc, positional[0], *depth, *maxN)
 	if err != nil {

@@ -35,13 +35,24 @@ func FindImpact(d *graph.Document, id string, depth, maxEntries int) (*Impact, e
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
+	out, truncated := impactFrom(d, []string{id}, depth, maxEntries)
+	return &Impact{ID: id, Kind: vtx.Kind, Depth: depth, Dependers: out, Truncated: truncated}, nil
+}
+
+// impactFrom은 여러 루트의 합집합을 역방향 BFS로 모은다.
+// Depth는 가장 가까운 루트에서의 거리다 — 파일 집합 영향 분석처럼
+// 루트가 여럿일 때 "몇 홉이나 떨어져 있나"는 최단 거리여야 의미가 있다.
+func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]ImpactEntry, bool) {
 	in := graph.Incoming(d)
-	seen := map[string]bool{id: true}
-	frontier := []string{id}
+	seen := map[string]bool{}
+	for _, r := range roots {
+		seen[r] = true
+	}
+	frontier := append([]string(nil), roots...)
 	var out []ImpactEntry
 	truncated := false
 
-	for step := 1; frontier != nil && (depth <= 0 || step <= depth); step++ {
+	for step := 1; len(frontier) > 0 && (depth <= 0 || step <= depth); step++ {
 		var next []string
 		for _, cur := range frontier {
 			for _, from := range in[cur] {
@@ -72,5 +83,5 @@ func FindImpact(d *graph.Document, id string, depth, maxEntries int) (*Impact, e
 		}
 		return out[i].ID < out[j].ID
 	})
-	return &Impact{ID: id, Kind: vtx.Kind, Depth: depth, Dependers: out, Truncated: truncated}, nil
+	return out, truncated
 }

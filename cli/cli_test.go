@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -222,6 +223,88 @@ func TestImpact(t *testing.T) {
 	}
 	if code, _, _ := run(t, "impact", "--dir", dir); code != 2 {
 		t.Fatalf("impact without id: expected 2, got %d", code)
+	}
+}
+
+// TestImpactFiles는 파일 집합 모드의 루트 해석과 역방향 클로저를 확인한다.
+// lib/lib.go를 바꾸면 그 안의 심볼들과 lib 패키지가 루트가 되고,
+// 그 의존자로 main이 모여야 한다.
+func TestImpactFiles(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "impact", "--dir", dir,
+		"--files", "lib/lib.go", "--files", "README.md")
+	if code != 0 {
+		t.Fatalf("impact --files failed: %d %s", code, errb)
+	}
+	var res struct {
+		Files         []string `json:"files"`
+		Roots         []string `json:"roots"`
+		UnmappedFiles []string `json:"unmappedFiles"`
+		Dependers     []struct {
+			ID string `json:"id"`
+		} `json:"dependers"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	var rootSet = map[string]bool{}
+	for _, r := range res.Roots {
+		rootSet[r] = true
+	}
+	if !rootSet["example.com/fixture/lib"] || !rootSet["example.com/fixture/lib.Unused"] {
+		t.Fatalf("lib/lib.go must map to package and declared symbols: %v", res.Roots)
+	}
+	if len(res.UnmappedFiles) != 1 || res.UnmappedFiles[0] != "README.md" {
+		t.Fatalf("README.md must be unmapped: %v", res.UnmappedFiles)
+	}
+	var sawMain bool
+	for _, d := range res.Dependers {
+		sawMain = sawMain || d.ID == "example.com/fixture.main" ||
+			d.ID == "example.com/fixture"
+	}
+	if !sawMain {
+		t.Fatalf("main must depend on changed lib: %s", out)
+	}
+}
+
+// TestImpactSince는 git diff 기반 모드가 실제 git worktree에서 동작하는지 확인한다.
+func TestImpactSince(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := deadFixture(t)
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("add", "-A")
+	git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+	// lib.go를 바꾼다 — 작업 트리가 HEAD와 달라진다.
+	lib := filepath.Join(dir, "lib", "lib.go")
+	src, _ := os.ReadFile(lib)
+	if err := os.WriteFile(lib, append(src, []byte("func Changed() {}\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb := run(t, "impact", "--dir", dir, "--since", "HEAD")
+	if code != 0 {
+		t.Fatalf("impact --since failed: %d %s", code, errb)
+	}
+	var res struct {
+		Files []string `json:"files"`
+		Roots []string `json:"roots"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(res.Files) != 1 || res.Files[0] != "lib/lib.go" {
+		t.Fatalf("git diff must report lib/lib.go: %s", out)
+	}
+	if len(res.Roots) == 0 {
+		t.Fatalf("changed file must resolve to vertices: %s", out)
 	}
 }
 
