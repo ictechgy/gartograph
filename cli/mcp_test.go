@@ -62,8 +62,8 @@ func TestMcpHandshake(t *testing.T) {
 		t.Fatalf("protocol echo failed: %v", init)
 	}
 	tools := res[1]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 6 {
-		t.Fatalf("expected 6 tools, got %v", tools)
+	if len(tools) != 7 {
+		t.Fatalf("expected 7 tools, got %v", tools)
 	}
 }
 
@@ -127,6 +127,7 @@ deps: {}
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gartograph_dead","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"gartograph_rules","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"gartograph_impact","arguments":{"id":"example.com/fixture.run"}}}`,
+		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"gartograph_path","arguments":{"from":"example.com/fixture.main","to":"example.com/fixture.run"}}}`,
 	)
 	texts := make([]string, len(res))
 	for i, r := range res {
@@ -144,6 +145,9 @@ deps: {}
 	}
 	if !strings.Contains(texts[4], `"dependers"`) {
 		t.Fatalf("impact missing dependers: %s", texts[4])
+	}
+	if !strings.Contains(texts[5], `"found": true`) {
+		t.Fatalf("path must find main->run over MCP: %s", texts[5])
 	}
 }
 

@@ -53,6 +53,38 @@ func mermaidIDs(d *graph.Document) map[string]string {
 	return ids
 }
 
+// DOT는 Document를 Graphviz dot 형식으로 직렬화한다.
+// 정점 ID는 따옴표로 감싼 문자열이라 `/`·`.`·`(`를 그대로 쓸 수 있다.
+// contains는 소유 관계라 의존 그림에서 뺀다 — mermaid와 같은 기준이다.
+func DOT(d *graph.Document) ([]byte, error) {
+	d.Sort()
+	var b strings.Builder
+	b.WriteString("digraph gartograph {\n  rankdir=LR;\n")
+	for _, v := range d.Vertices {
+		fmt.Fprintf(&b, "  %s [label=%s];\n", dotNode(v.ID), dotQuote(v.ID))
+	}
+	for _, e := range d.Edges {
+		if e.Kind == graph.EdgeContains {
+			continue
+		}
+		fmt.Fprintf(&b, "  %s -> %s [label=%s];\n",
+			dotNode(e.From), dotNode(e.To), dotQuote(string(e.Kind)))
+	}
+	b.WriteString("}\n")
+	return []byte(b.String()), nil
+}
+
+// dotNode는 정점 ID를 dot 노드 식별자로 바꾼다 — ID 자체를 따옴표로 감싸면
+// 노드명과 라벨이 갈라지지 않아 읽는 사람이 대응표를 되짚지 않아도 된다.
+func dotNode(id string) string {
+	return dotQuote(id)
+}
+
+// dotQuote는 dot 문자열 리터럴로 감싼다.
+func dotQuote(s string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
+}
+
 // escapeLabel은 라벨 안의 큰따옴표를 mermaid가 먹는 형태로 감싼다.
 func escapeLabel(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `#quot;`) + `"`

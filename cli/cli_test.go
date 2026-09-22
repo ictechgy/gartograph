@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -419,6 +420,104 @@ func TestGraphMermaid(t *testing.T) {
 	}
 	if !strings.Contains(out, "flowchart LR") {
 		t.Fatalf("expected mermaid flowchart: %s", out)
+	}
+}
+
+// TestPath는 path 명령의 최단 경로와 notFound/사용법 계약을 확인한다.
+func TestPath(t *testing.T) {
+	dir := fixture(t)
+	code, out, errb := run(t, "path", "example.com/fixture/a",
+		"example.com/fixture/b", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("path failed: %d %s", code, errb)
+	}
+	var res struct {
+		Found bool `json:"found"`
+		Hops  []struct {
+			ID    string   `json:"id"`
+			Kinds []string `json:"edges"`
+		} `json:"hops"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("path output is not JSON: %v", err)
+	}
+	if !res.Found || len(res.Hops) != 2 ||
+		res.Hops[1].ID != "example.com/fixture/b" ||
+		res.Hops[1].Kinds[0] != "import" {
+		t.Fatalf("unexpected path result: %s", out)
+	}
+	// 역방향 경로는 없다 — found:false가 그래프 사실로 돌아와야 한다.
+	code, out, _ = run(t, "path", "example.com/fixture/b",
+		"example.com/fixture/a", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("path (no route) must still exit 0: %d", code)
+	}
+	var none struct {
+		Found bool `json:"found"`
+	}
+	if err := json.Unmarshal([]byte(out), &none); err != nil || none.Found {
+		t.Fatalf("expected found:false, got %s", out)
+	}
+	if code, _, _ := run(t, "path", "example.com/fixture/a", "ghost",
+		"--dir", dir); code != 2 {
+		t.Fatalf("path to missing vertex: expected 2, got %d", code)
+	}
+	if code, _, _ := run(t, "path", "onlyone", "--dir", dir); code != 2 {
+		t.Fatalf("path with one arg: expected 2, got %d", code)
+	}
+}
+
+// TestGraphDot은 graph의 Graphviz dot 출력 경로를 확인한다.
+func TestGraphDot(t *testing.T) {
+	dir := fixture(t)
+	code, out, errb := run(t, "graph", "--dir", dir, "--format", "dot")
+	if code != 0 {
+		t.Fatalf("dot failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "digraph") ||
+		!strings.Contains(out, `"example.com/fixture/a" -> "example.com/fixture/b"`) {
+		t.Fatalf("expected dot digraph with the import edge: %s", out)
+	}
+}
+
+// TestDiff는 두 저장 문서의 차이와 --strict의 breaking 계약을 확인한다.
+func TestDiff(t *testing.T) {
+	dir := deadFixture(t)
+	tmp := t.TempDir()
+	oldPath := filepath.Join(tmp, "old.json")
+	newPath := filepath.Join(tmp, "new.json")
+	if code, _, errb := run(t, "graph", "--dir", dir, "--level", "symbol",
+		"--out", oldPath); code != 0 {
+		t.Fatalf("graph old failed: %d %s", code, errb)
+	}
+	// 공개 함수 Unused를 지우면 exported 정점 제거 = breaking이다.
+	lib := filepath.Join(dir, "lib", "lib.go")
+	src, _ := os.ReadFile(lib)
+	src = bytes.Replace(src,
+		[]byte("func Unused() {}\n"), nil, 1)
+	if err := os.WriteFile(lib, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errb := run(t, "graph", "--dir", dir, "--level", "symbol",
+		"--out", newPath); code != 0 {
+		t.Fatalf("graph new failed: %d %s", code, errb)
+	}
+	code, out, errb := run(t, "diff", oldPath, newPath, "--strict")
+	if code != 1 {
+		t.Fatalf("diff --strict with removed exported vertex: expected 1, got %d %s",
+			code, errb)
+	}
+	if !strings.Contains(out, "lib.Unused") {
+		t.Fatalf("expected Unused in diff output: %s", out)
+	}
+	// strict 없이는 차이가 있어도 0이다.
+	if code, _, _ := run(t, "diff", oldPath, newPath); code != 0 {
+		t.Fatalf("diff without --strict: expected 0, got %d", code)
+	}
+	// 같은 파일의 diff는 차이 없음.
+	code, out, _ = run(t, "diff", oldPath, oldPath)
+	if code != 0 || strings.Contains(out, "breaking:") {
+		t.Fatalf("self diff must be empty: %d %s", code, out)
 	}
 }
 

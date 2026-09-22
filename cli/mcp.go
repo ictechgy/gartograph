@@ -220,6 +220,19 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 			return "", err
 		}
 		return marshal(res)
+	case "gartograph_path":
+		var a struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		}
+		if err := json.Unmarshal(args, &a); err != nil || a.From == "" || a.To == "" {
+			return "", fmt.Errorf("path needs \"from\" and \"to\" arguments")
+		}
+		res, err := analysis.Path(s.doc, a.From, a.To)
+		if err != nil {
+			return "", err
+		}
+		return marshal(res)
 	case "gartograph_cycles":
 		var a struct {
 			Level string `json:"level"`
@@ -295,6 +308,11 @@ func mcpTools() []map[string]any {
 			"inputSchema": obj(map[string]any{
 				"id": idProp["id"], "depth": depthProp["depth"], "max": num("max dependers"),
 			}, []string{"id"})},
+		{"name": "gartograph_path",
+			"description": "Shortest dependency path between two vertices — why does 'from' reach 'to'",
+			"inputSchema": obj(map[string]any{
+				"from": str("source vertex ID"), "to": str("target vertex ID"),
+			}, []string{"from", "to"})},
 		{"name": "gartograph_cycles",
 			"description": "Dependency cycles at a level (default: the document's level)",
 			"inputSchema": obj(map[string]any{

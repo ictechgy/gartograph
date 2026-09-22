@@ -41,6 +41,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdQuery(args[1:], stdout, stderr)
 	case "impact":
 		return cmdImpact(args[1:], stdout, stderr)
+	case "path":
+		return cmdPath(args[1:], stdout, stderr)
+	case "diff":
+		return cmdDiff(args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMcp(args[1:], stdout, stderr)
 	case "version":
@@ -62,12 +66,15 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, `gartograph — Go dependency graph tool
 
 Usage:
-  gartograph graph  [--level package|type|symbol] [--format json|mermaid] [--out FILE] [flags]
+  gartograph graph  [--level package|type|symbol] [--format json|mermaid|dot] [--out FILE] [flags]
   gartograph cycles [--level package|type|symbol] [--strict] [--format text|json] [flags]
   gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--strict] [flags]
   gartograph rules  [--config FILE] [--strict] [--format text|json|sarif] [flags]
   gartograph query  <id> [--depth N] [--max N] [flags]
   gartograph impact <id> [--depth N] [--max N] [flags]
+  gartograph impact --since <git-rev>|--files F... [--depth N] [flags]
+  gartograph path   <from-id> <to-id> [flags]
+  gartograph diff   <old.json> <new.json> [--strict] [--format text|json]
   gartograph mcp    serve the graph over MCP stdio [flags]
   gartograph version
 
@@ -167,7 +174,7 @@ func fail(stderr io.Writer, err error) int {
 // cmdGraph는 그래프 산출물 자체를보낸다.
 func cmdGraph(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("graph", stderr)
-	format := fs.String("format", "json", "output format: json|mermaid")
+	format := fs.String("format", "json", "output format: json|mermaid|dot")
 	level := fs.String("level", string(graph.LevelPackage), "harvest level: package|type|symbol")
 	out := fs.String("out", "", "also write the document to FILE")
 	if fs.Parse(args) != nil {
@@ -204,6 +211,8 @@ func emit(doc *graph.Document, format string, stdout, stderr io.Writer) int {
 		out, err = export.JSON(doc)
 	case "mermaid":
 		out, err = export.Mermaid(doc)
+	case "dot":
+		out, err = export.DOT(doc)
 	default:
 		fmt.Fprintf(stderr, "unknown format %q\n", format)
 		return 2
@@ -518,6 +527,106 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	out, _ := json.MarshalIndent(res, "", "  ")
 	fmt.Fprintln(stdout, string(out))
 	return 0
+}
+
+// cmdPath는 두 정점 사이의 최단 의존 경로를 찾는다.
+// "왜 A가 B를 아는가"에 답하는 명령 — 경로가 없으면 found:false가
+// 그래프 사실로 돌아가고, 정점이 없으면 사용법이 아닌 분석 오류(2)다.
+func cmdPath(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("path", stderr)
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(positional) != 2 {
+		fmt.Fprintln(stderr, "usage: gartograph path <from-id> <to-id>")
+		return 2
+	}
+	doc, err := loadDoc(opts, *graphPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	res, err := analysis.Path(doc, positional[0], positional[1])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	out, _ := json.MarshalIndent(res, "", "  ")
+	fmt.Fprintln(stdout, string(out))
+	return 0
+}
+
+// cmdDiff는 두 저장 문서의 구조 차이를 보고한다.
+// 수확 없이 파일만 비교하므로 수확 플래그를 받지 않는다.
+// --strict는 호환성 위험 신호(Breaking — exported 정점 제거,
+// 공개 시그니처의 타입 참조 제거)가 있을 때 1을 돌려준다.
+func cmdDiff(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	format := fs.String("format", "text", "output format: text|json")
+	strict := fs.Bool("strict", false, "exit 1 on breaking changes")
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(positional) != 2 {
+		fmt.Fprintln(stderr, "usage: gartograph diff <old.json> <new.json> [--strict]")
+		return 2
+	}
+	oldDoc, err := export.LoadFile(positional[0])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	newDoc, err := export.LoadFile(positional[1])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	diff := analysis.DiffDocuments(oldDoc, newDoc)
+	switch *format {
+	case "json":
+		out, _ := json.MarshalIndent(diff, "", "  ")
+		fmt.Fprintln(stdout, string(out))
+	case "text":
+		printDiffText(diff, stdout)
+	default:
+		fmt.Fprintf(stderr, "unknown format %q\n", *format)
+		return 2
+	}
+	if *strict && len(diff.Breaking) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// printDiffText는 diff를 유니파이드 스타일의 한 줄 레코드로 출력한다.
+func printDiffText(d *analysis.Diff, w io.Writer) {
+	for _, v := range d.AddedVertices {
+		fmt.Fprintf(w, "+ vertex %s\n", v)
+	}
+	for _, v := range d.RemovedVertices {
+		fmt.Fprintf(w, "- vertex %s\n", v)
+	}
+	for _, e := range d.AddedEdges {
+		fmt.Fprintf(w, "+ edge %s -> %s (%s)\n", e.From, e.To, e.Kind)
+	}
+	for _, e := range d.RemovedEdges {
+		fmt.Fprintf(w, "- edge %s -> %s (%s)\n", e.From, e.To, e.Kind)
+	}
+	for _, c := range d.ChangedVertices {
+		fmt.Fprintf(w, "~ vertex %s: %s %s -> %s\n", c.ID, c.Field, c.From, c.To)
+	}
+	for _, s := range d.SignatureChanges {
+		fmt.Fprintf(w, "~ signature %s: +%v -%v\n", s.ID, s.Added, s.Removed)
+	}
+	for _, b := range d.Breaking {
+		fmt.Fprintf(w, "breaking: %s\n", b)
+	}
+	for _, n := range d.Notes {
+		fmt.Fprintf(w, "note: %s\n", n)
+	}
+	fmt.Fprintf(w, "diff: +%d/-%d vertices, +%d/-%d edges, %d signature changes, %d breaking\n",
+		len(d.AddedVertices), len(d.RemovedVertices),
+		len(d.AddedEdges), len(d.RemovedEdges),
+		len(d.SignatureChanges), len(d.Breaking))
 }
 
 // sortNeighborsJSON은 질의 결과를 결정적으로 정렬한다.
