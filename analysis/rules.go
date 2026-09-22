@@ -21,12 +21,27 @@ type Violation struct {
 	Rule          string         `json:"rule"`
 }
 
+// RuleReport는 규칙 검사 결과다.
+// Violations는 규칙을 어긴 실제 간선, Unmapped는 모듈 내부인데
+// 컴포넌트 미매핑인 패키지, UnmappedExternal은 --deps로 들어온
+// 외부 패키지 중 미매핑이다 — "규칙이 모르는 내부 영역"과
+// "규칙이 굳이 매핑하지 않은 바깥"은 다른 사실이라 섞지 않는다.
+// UnmatchedComponents는 어떤 패키지 정점에도 매칭되지 않은 컴포넌트다 —
+// 오타·stale·"외부 패턴인데 --deps 없이 수확"의 신호다.
+type RuleReport struct {
+	Violations          []Violation `json:"violations"`
+	Unmapped            []string    `json:"unmapped,omitempty"`
+	UnmappedExternal    []string    `json:"unmappedExternal,omitempty"`
+	UnmatchedComponents []string    `json:"unmatchedComponents,omitempty"`
+}
+
 // CheckRules는 import 간선을 컴포넌트 규칙과 대조하고, 문서가 심볼 레벨이면
 // signature 규칙도 검사한다. 어떤 컴포넌트에도 매핑되지 않은 패키지는
 // unmapped로 돌려준다 — 매핑 구멍은 "규칙 무관"이 아니라 "규칙이 모르는 영역"이다.
-func CheckRules(d *graph.Document, cfg *config.File) (violations []Violation, unmapped []string) {
-	comp := componentMap(d, cfg)
+func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
+	comp, used := componentMap(d, cfg)
 	vmap := vertexMap(d)
+	rep := &RuleReport{}
 	for _, e := range d.Edges {
 		var from, to string
 		switch e.Kind {
@@ -50,21 +65,38 @@ func CheckRules(d *graph.Document, cfg *config.File) (violations []Violation, un
 		}
 		rule := ruleBroken(cfg, e.Kind, from, to)
 		if rule != "" {
-			violations = append(violations, Violation{
+			rep.Violations = append(rep.Violations, Violation{
 				From: e.From, To: e.To,
 				FromComponent: from, ToComponent: to,
 				Kind: e.Kind, Rule: rule,
 			})
 		}
 	}
-	unmapped = unmappedPackages(d, comp)
-	sort.Slice(violations, func(i, j int) bool {
-		if violations[i].From != violations[j].From {
-			return violations[i].From < violations[j].From
+	for _, v := range d.Vertices {
+		if v.Kind != graph.KindPackage || comp[v.ID] != "" {
+			continue
 		}
-		return violations[i].To < violations[j].To
+		if isExternalPackage(d, v.ID) {
+			rep.UnmappedExternal = append(rep.UnmappedExternal, v.ID)
+		} else {
+			rep.Unmapped = append(rep.Unmapped, v.ID)
+		}
+	}
+	for name := range cfg.Components {
+		if !used[name] {
+			rep.UnmatchedComponents = append(rep.UnmatchedComponents, name)
+		}
+	}
+	sort.Slice(rep.Violations, func(i, j int) bool {
+		if rep.Violations[i].From != rep.Violations[j].From {
+			return rep.Violations[i].From < rep.Violations[j].From
+		}
+		return rep.Violations[i].To < rep.Violations[j].To
 	})
-	return violations, unmapped
+	sort.Strings(rep.Unmapped)
+	sort.Strings(rep.UnmappedExternal)
+	sort.Strings(rep.UnmatchedComponents)
+	return rep
 }
 
 // ruleBroken은 간선이 어긴 규칙 이름을 돌려준다. 위반이 없으면 ""다.
@@ -94,9 +126,13 @@ func vertexMap(d *graph.Document) map[string]graph.Vertex {
 }
 
 // componentMap은 패키지 정점을 컴포넌트로 해석한다.
-// 모듈 경로 접두사를 벗겨 상대 경로로 패턴과 맞춘다.
-func componentMap(d *graph.Document, cfg *config.File) map[string]string {
+// 모듈 경로 접두사를 벗겨 상대 경로로 패턴과 맞춘다. 모듈 밖의 패키지는
+// 접두사가 벗겨지지 않아 전체 import 경로가 그대로 패턴과 맞는다 —
+// `github.com/aws/**` 같은 컴포넌트가 --deps 수확에서 vendor 규칙이 된다.
+// 두 번째 반환값은 실제로 한 정점 이상에 매칭된 컴포넌트 집합이다.
+func componentMap(d *graph.Document, cfg *config.File) (map[string]string, map[string]bool) {
 	out := make(map[string]string)
+	used := make(map[string]bool)
 	for _, v := range d.Vertices {
 		if v.Kind != graph.KindPackage {
 			continue
@@ -104,21 +140,18 @@ func componentMap(d *graph.Document, cfg *config.File) map[string]string {
 		rel := relPath(v.ID, d.Module)
 		if c, ok := cfg.ComponentOf(rel); ok {
 			out[v.ID] = c
+			used[c] = true
 		}
 	}
-	return out
+	return out, used
 }
 
-// unmappedPackages는 어떤 컴포넌트에도 속하지 않은 패키지 정점을 모은다.
-func unmappedPackages(d *graph.Document, comp map[string]string) []string {
-	var out []string
-	for _, v := range d.Vertices {
-		if v.Kind == graph.KindPackage && comp[v.ID] == "" {
-			out = append(out, v.ID)
-		}
-	}
-	sort.Strings(out)
-	return out
+// isExternalPackage는 패키지 정점이 주 모듈 밖에 있는지 본다.
+// --deps로 수확된 의존 패키지만 여기 해당한다 — 모듈 정보가 없는 문서는
+// 모두 내부로 본다.
+func isExternalPackage(d *graph.Document, pkgID string) bool {
+	return d.Module != "" && pkgID != d.Module &&
+		!strings.HasPrefix(pkgID, d.Module+"/")
 }
 
 // relPath는 패키지 경로를 모듈 상대 경로로 바꾼다.

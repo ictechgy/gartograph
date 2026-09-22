@@ -272,9 +272,12 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		violations, unmapped := analysis.CheckRules(s.doc, cfg)
+		rep := analysis.CheckRules(s.doc, cfg)
 		return marshal(rulesReport{
-			Violations: violations, Unmapped: unmapped, Limitations: s.doc.Limitations,
+			Violations: rep.Violations, Unmapped: rep.Unmapped,
+			UnmappedExternal: rep.UnmappedExternal,
+			UnmatchedComponents: rep.UnmatchedComponents,
+			Limitations: s.doc.Limitations,
 		})
 	default:
 		return "", fmt.Errorf("unknown tool %q — see tools/list", name)

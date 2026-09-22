@@ -35,7 +35,8 @@ func rulesCfg() *config.File {
 
 // TestCheckRules는 금지 의존이 위반으로, 매핑 구멍이 unmapped로 나오는지 확인한다.
 func TestCheckRules(t *testing.T) {
-	violations, unmapped := CheckRules(rulesDoc(), rulesCfg())
+	rep := CheckRules(rulesDoc(), rulesCfg())
+	violations, unmapped := rep.Violations, rep.Unmapped
 	if len(violations) != 1 {
 		t.Fatalf("expected 1 violation, got %+v", violations)
 	}
@@ -54,14 +55,14 @@ func TestCheckRules(t *testing.T) {
 func TestCheckRulesAllowed(t *testing.T) {
 	cfg := rulesCfg()
 	cfg.Deps["web"] = []string{"db"}
-	violations, _ := CheckRules(rulesDoc(), cfg)
+	violations := CheckRules(rulesDoc(), cfg).Violations
 	if len(violations) != 0 {
 		t.Fatalf("allowed dep reported as violation: %+v", violations)
 	}
 	// 역방향(db→web)은 허용 목록에 없으므로 여전히 위반이다.
 	d := rulesDoc()
 	d.Edges[0].From, d.Edges[0].To = "example.com/m/db", "example.com/m/web"
-	violations, _ = CheckRules(d, cfg)
+	violations = CheckRules(d, cfg).Violations
 	if len(violations) != 1 {
 		t.Fatalf("reverse dep must violate, got %+v", violations)
 	}
@@ -91,7 +92,7 @@ func TestCheckRulesDeny(t *testing.T) {
 	cfg := rulesCfg()
 	cfg.Deps["web"] = []string{"db"}
 	cfg.Deny = map[string][]string{"web": {"db"}}
-	violations, _ := CheckRules(rulesDoc(), cfg)
+	violations := CheckRules(rulesDoc(), cfg).Violations
 	if len(violations) != 1 || violations[0].Rule != "deny" {
 		t.Fatalf("deny must win over allow, got %+v", violations)
 	}
@@ -125,7 +126,7 @@ func TestCheckRulesSignature(t *testing.T) {
 		Deps:       map[string][]string{"api": {"db"}},
 		Signature:  map[string][]string{"api": {}},
 	}
-	violations, _ := CheckRules(d, cfg)
+	violations := CheckRules(d, cfg).Violations
 	if len(violations) != 1 {
 		t.Fatalf("expected exactly the exported signature violation, got %+v", violations)
 	}
@@ -135,9 +136,60 @@ func TestCheckRulesSignature(t *testing.T) {
 	}
 	// signature 목록에 db를 허용하면 위반은 사라진다 — 본문 deps와는 별개 축이다.
 	cfg.Signature["api"] = []string{"db"}
-	violations, _ = CheckRules(d, cfg)
+	violations = CheckRules(d, cfg).Violations
 	if len(violations) != 0 {
 		t.Fatalf("allowed signature dep reported: %+v", violations)
+	}
+}
+
+// TestCheckRulesExternal은 --deps로 들어온 외부 패키지가 컴포넌트 패턴에
+// 매칭되어 vendor 규칙이 걸리는지, 미매핑 외부는 UnmappedExternal로
+// 분리되는지 확인한다.
+func TestCheckRulesExternal(t *testing.T) {
+	d := &graph.Document{
+		Module: "example.com/m",
+		Vertices: []graph.Vertex{
+			{ID: "example.com/m/web", Kind: graph.KindPackage},
+			{ID: "example.com/m/db", Kind: graph.KindPackage},
+			{ID: "github.com/aws/s3", Kind: graph.KindPackage},
+			{ID: "golang.org/x/tools", Kind: graph.KindPackage},
+		},
+		Edges: []graph.Edge{
+			{From: "example.com/m/web", To: "github.com/aws/s3", Kind: graph.EdgeImport},
+			{From: "example.com/m/db", To: "github.com/aws/s3", Kind: graph.EdgeImport},
+		},
+	}
+	cfg := &config.File{
+		Components: map[string][]string{
+			"web": {"web"},
+			"db":  {"db"},
+			"aws": {"github.com/aws/**"},
+		},
+		Deps: map[string][]string{"db": {"aws"}},
+	}
+	rep := CheckRules(d, cfg)
+	// web→aws는 허용 목록에 없어 위반, db→aws는 허용이다.
+	if len(rep.Violations) != 1 || rep.Violations[0].ToComponent != "aws" {
+		t.Fatalf("vendor rule: %+v", rep.Violations)
+	}
+	// golang.org/x/tools는 외부이고 미매핑 — 내부 unmapped와 섞이지 않는다.
+	if len(rep.UnmappedExternal) != 1 ||
+		rep.UnmappedExternal[0] != "golang.org/x/tools" {
+		t.Fatalf("external unmapped: %+v", rep.UnmappedExternal)
+	}
+	if len(rep.Unmapped) != 0 {
+		t.Fatalf("internal unmapped must be empty: %+v", rep.Unmapped)
+	}
+}
+
+// TestUnmatchedComponents는 어느 정점에도 매칭되지 않은 컴포넌트가
+// 보고되는지 확인한다 — 오타나 --deps 누락의 신호다.
+func TestUnmatchedComponents(t *testing.T) {
+	cfg := rulesCfg()
+	cfg.Components["ghost"] = []string{"ghost/**"}
+	rep := CheckRules(rulesDoc(), cfg)
+	if len(rep.UnmatchedComponents) != 1 || rep.UnmatchedComponents[0] != "ghost" {
+		t.Fatalf("expected ghost unmatched: %+v", rep.UnmatchedComponents)
 	}
 }
 
@@ -155,7 +207,8 @@ func TestCheckRulesSelfDep(t *testing.T) {
 		},
 	}
 	cfg := &config.File{Components: map[string][]string{"web": {"web/**"}}}
-	violations, unmapped := CheckRules(d, cfg)
+	rep := CheckRules(d, cfg)
+	violations, unmapped := rep.Violations, rep.Unmapped
 	if len(violations) != 0 || len(unmapped) != 0 {
 		t.Fatalf("self-component dep: violations=%v unmapped=%v", violations, unmapped)
 	}

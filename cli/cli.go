@@ -392,12 +392,16 @@ func explainDead(doc *graph.Document, id string, roots []string,
 // rulesReport는 rules 명령의 JSON 출력 형식이다.
 // Baselined는 baseline에 이미 있어 넘어간 위반, StaleBaseline은
 // 더 이상 발생하지 않아 baseline 재생성이 필요한 항목이다.
+// UnmappedExternal은 --deps로 들어온 외부 패키지 중 컴포넌트 미매핑,
+// UnmatchedComponents는 어느 패키지에도 매칭되지 않은 컴포넌트다.
 type rulesReport struct {
-	Violations    []analysis.Violation `json:"violations"`
-	Baselined     []analysis.Violation `json:"baselined,omitempty"`
-	StaleBaseline []analysis.Violation `json:"staleBaseline,omitempty"`
-	Unmapped      []string             `json:"unmapped,omitempty"`
-	Limitations   []string             `json:"limitations,omitempty"`
+	Violations          []analysis.Violation `json:"violations"`
+	Baselined           []analysis.Violation `json:"baselined,omitempty"`
+	StaleBaseline       []analysis.Violation `json:"staleBaseline,omitempty"`
+	Unmapped            []string             `json:"unmapped,omitempty"`
+	UnmappedExternal    []string             `json:"unmappedExternal,omitempty"`
+	UnmatchedComponents []string             `json:"unmatchedComponents,omitempty"`
+	Limitations         []string             `json:"limitations,omitempty"`
 }
 
 // cmdRules는 .gartograph.yml의 컴포넌트 의존 규칙을 검사한다.
@@ -435,7 +439,9 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	violations, unmapped := analysis.CheckRules(doc, cfg)
+	rep := analysis.CheckRules(doc, cfg)
+	violations := rep.Violations
+	unmapped := rep.Unmapped
 
 	// baseline과의 비교는 보고 전에 한다 — baselined는 "알려진 위반"이라
 	// strict·SARIF 어느 쪽으로도 새어 나가면 안 된다.
@@ -464,6 +470,16 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d packages match no component; rules did not check them", len(unmapped)))
 	}
+	if len(rep.UnmappedExternal) > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d external packages match no component; component patterns can cover them",
+			len(rep.UnmappedExternal)))
+	}
+	if len(rep.UnmatchedComponents) > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"components %v matched no packages — typo, stale, or external pattern without --deps",
+			rep.UnmatchedComponents))
+	}
 	if len(stale) > 0 {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d baseline violations no longer occur; regenerate the baseline", len(stale)))
@@ -474,7 +490,8 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	case "json":
 		out, _ := json.MarshalIndent(rulesReport{
 			Violations: violations, Baselined: baselined, StaleBaseline: stale,
-			Unmapped: unmapped, Limitations: limitations,
+			Unmapped: unmapped, UnmappedExternal: rep.UnmappedExternal,
+			UnmatchedComponents: rep.UnmatchedComponents, Limitations: limitations,
 		}, "", "  ")
 		fmt.Fprintln(stdout, string(out))
 	case "sarif":
@@ -488,8 +505,8 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "violation[%s]: %s (%s) -> %s (%s)\n",
 				v.Rule, v.From, v.FromComponent, v.To, v.ToComponent)
 		}
-		fmt.Fprintf(stdout, "%d violations (%d baselined, %d packages unmapped)\n",
-			len(violations), len(baselined), len(unmapped))
+		fmt.Fprintf(stdout, "%d violations (%d baselined, %d packages unmapped, %d external unmapped)\n",
+			len(violations), len(baselined), len(unmapped), len(rep.UnmappedExternal))
 		if len(limitations) > 0 {
 			fmt.Fprintln(stdout, "limitations:")
 			for _, l := range limitations {
