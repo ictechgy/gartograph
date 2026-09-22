@@ -192,6 +192,47 @@ func TestSymbolRoots(t *testing.T) {
 	}
 }
 
+// TestTestsHarvest는 --tests 수확을 검증한다. 두 가지 회귀를 묶는다:
+// err.Error() 같은 universe 스코프 피호출자는 Pkg()가 nil이라 옛 코드는
+// 여기서 패닉했고, go test 진입점은 호출자가 없어 루트로 잡아야 한다.
+func TestTestsHarvest(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+func main() { run() }
+func run() int { return 1 }
+`,
+		"main_test.go": `package main
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestRun(t *testing.T) {
+	if err := errors.New("x"); err.Error() == "" {
+		t.Fatal("empty")
+	}
+	_ = run()
+}
+
+func BenchmarkRun(b *testing.B) { _ = run() }
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: graph.LevelSymbol, Tests: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hasTest, hasBench bool
+	for _, r := range doc.Roots {
+		hasTest = hasTest || r == "example.com/fixture.TestRun"
+		hasBench = hasBench || r == "example.com/fixture.BenchmarkRun"
+	}
+	if !hasTest || !hasBench {
+		t.Fatalf("test entry points should be roots, got %v", doc.Roots)
+	}
+}
+
 // TestTypeLevel은 type 레벨이 타입과 구조 간선만 담는지 확인한다.
 // 함수 정점과 call 간선이 새어 들어오면 레벨 구분이 깨진 것이다.
 func TestTypeLevel(t *testing.T) {
