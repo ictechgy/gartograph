@@ -69,7 +69,8 @@ Usage:
   gartograph graph  [--level package|type|symbol] [--format json|mermaid|dot] [--out FILE] [flags]
   gartograph cycles [--level package|type|symbol] [--strict] [--format text|json] [flags]
   gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--strict] [flags]
-  gartograph rules  [--config FILE] [--strict] [--format text|json|sarif] [flags]
+  gartograph rules  [--config FILE] [--strict] [--format text|json|sarif]
+                    [--baseline FILE | --write-baseline FILE] [flags]
   gartograph query  <id> [--depth N] [--max N] [flags]
   gartograph impact <id> [--depth N] [--max N] [flags]
   gartograph impact --since <git-rev>|--files F... [--depth N] [flags]
@@ -389,18 +390,26 @@ func explainDead(doc *graph.Document, id string, roots []string,
 }
 
 // rulesReport는 rules 명령의 JSON 출력 형식이다.
+// Baselined는 baseline에 이미 있어 넘어간 위반, StaleBaseline은
+// 더 이상 발생하지 않아 baseline 재생성이 필요한 항목이다.
 type rulesReport struct {
-	Violations  []analysis.Violation `json:"violations"`
-	Unmapped    []string             `json:"unmapped,omitempty"`
-	Limitations []string             `json:"limitations,omitempty"`
+	Violations    []analysis.Violation `json:"violations"`
+	Baselined     []analysis.Violation `json:"baselined,omitempty"`
+	StaleBaseline []analysis.Violation `json:"staleBaseline,omitempty"`
+	Unmapped      []string             `json:"unmapped,omitempty"`
+	Limitations   []string             `json:"limitations,omitempty"`
 }
 
 // cmdRules는 .gartograph.yml의 컴포넌트 의존 규칙을 검사한다.
+// --baseline은 알려진 위반을 걸러 새 위반만 남기고,
+// --write-baseline은 현재 위반 전부를 새 baseline으로 저장한다.
 func cmdRules(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("rules", stderr)
 	configPath := fs.String("config", "", "rules file (default: .gartograph.yml in --dir)")
 	format := fs.String("format", "text", "output format: text|json|sarif")
 	strict := fs.Bool("strict", false, "exit 1 when violations exist")
+	baselinePath := fs.String("baseline", "", "baseline file of known violations")
+	writeBaseline := fs.String("write-baseline", "", "write all current violations to FILE")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -428,6 +437,24 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	}
 	violations, unmapped := analysis.CheckRules(doc, cfg)
 
+	// baseline과의 비교는 보고 전에 한다 — baselined는 "알려진 위반"이라
+	// strict·SARIF 어느 쪽으로도 새어 나가면 안 된다.
+	all := violations
+	var baselined, stale []analysis.Violation
+	if *baselinePath != "" {
+		base, err := loadBaseline(*baselinePath)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		violations, baselined, stale = analysis.SplitBaseline(violations, base.Violations)
+	}
+	if *writeBaseline != "" {
+		// 새 baseline은 분할 전의 현재 위반 전부를 담는다.
+		if err := saveBaseline(*writeBaseline, all); err != nil {
+			return fail(stderr, err)
+		}
+	}
+
 	limitations := append([]string(nil), doc.Limitations...)
 	if len(cfg.Signature) > 0 && doc.Level.Rank() < graph.LevelSymbol.Rank() {
 		limitations = append(limitations,
@@ -437,12 +464,17 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d packages match no component; rules did not check them", len(unmapped)))
 	}
+	if len(stale) > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d baseline violations no longer occur; regenerate the baseline", len(stale)))
+	}
 	sort.Strings(limitations)
 
 	switch *format {
 	case "json":
 		out, _ := json.MarshalIndent(rulesReport{
-			Violations: violations, Unmapped: unmapped, Limitations: limitations,
+			Violations: violations, Baselined: baselined, StaleBaseline: stale,
+			Unmapped: unmapped, Limitations: limitations,
 		}, "", "  ")
 		fmt.Fprintln(stdout, string(out))
 	case "sarif":
@@ -456,8 +488,8 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "violation[%s]: %s (%s) -> %s (%s)\n",
 				v.Rule, v.From, v.FromComponent, v.To, v.ToComponent)
 		}
-		fmt.Fprintf(stdout, "%d violations (%d packages unmapped)\n",
-			len(violations), len(unmapped))
+		fmt.Fprintf(stdout, "%d violations (%d baselined, %d packages unmapped)\n",
+			len(violations), len(baselined), len(unmapped))
 		if len(limitations) > 0 {
 			fmt.Fprintln(stdout, "limitations:")
 			for _, l := range limitations {

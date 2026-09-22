@@ -290,6 +290,93 @@ deny:
 	}
 }
 
+// rulesFixture는 web→db 위반이 있는 모듈과 규칙 파일을 만든다.
+// api 패키지는 비어 있지만 컴포넌트에 매핑돼 있어, import가 생기면
+// 즉시 규칙 검사 대상이 된다 — baseline 테스트의 "새 위반" 시나리오용이다.
+func rulesFixture(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"web/web.go": `package web
+
+import _ "example.com/fixture/db"
+`,
+		"db/db.go": `package db
+`,
+		"api/api.go": `package api
+`,
+		".gartograph.yml": `components:
+  web: ["web"]
+  db: ["db"]
+  api: ["api"]
+deps: {}
+`,
+	})
+}
+
+// TestRulesBaseline은 baseline 기록→재비교→신규 위반 검출의 전체 흐름을 확인한다.
+func TestRulesBaseline(t *testing.T) {
+	dir := rulesFixture(t)
+	base := filepath.Join(t.TempDir(), "baseline.json")
+
+	// 위반을 baseline으로 기록한다.
+	code, _, errb := run(t, "rules", "--dir", dir, "--write-baseline", base)
+	if code != 0 {
+		t.Fatalf("--write-baseline failed: %d %s", code, errb)
+	}
+	// 기록된 위반은 baselined로 넘어가고 strict도 0이다.
+	code, out, errb := run(t, "rules", "--dir", dir,
+		"--baseline", base, "--strict", "--format", "json")
+	if code != 0 {
+		t.Fatalf("baselined violation must not fail strict: %d %s", code, errb)
+	}
+	var rep struct {
+		Violations []struct{ ID string } `json:"violations"`
+		Baselined  []struct {
+			From string `json:"from"`
+		} `json:"baselined"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(rep.Violations) != 0 || len(rep.Baselined) != 1 {
+		t.Fatalf("expected 0 fresh + 1 baselined: %s", out)
+	}
+
+	// 새 위반이 생기면 baseline을 뚫고 fresh로 보고된다.
+	if err := os.WriteFile(filepath.Join(dir, "api", "api.go"),
+		[]byte("package api\n\nimport _ \"example.com/fixture/db\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ = run(t, "rules", "--dir", dir, "--baseline", base, "--strict")
+	if code != 1 {
+		t.Fatalf("new violation past baseline must fail strict: %d %s", code, out)
+	}
+	if !strings.Contains(out, "1 violations (1 baselined") {
+		t.Fatalf("expected 1 fresh + 1 baselined: %s", out)
+	}
+}
+
+// TestRulesBaselineStale는 고쳐진 위반이 stale로 보고되는지 확인한다.
+func TestRulesBaselineStale(t *testing.T) {
+	dir := rulesFixture(t)
+	base := filepath.Join(t.TempDir(), "baseline.json")
+	if code, _, _ := run(t, "rules", "--dir", dir, "--write-baseline", base); code != 0 {
+		t.Fatal("write baseline")
+	}
+	// 위반을 고친다 — web의 db import를 제거.
+	if err := os.WriteFile(filepath.Join(dir, "web", "web.go"),
+		[]byte("package web\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ := run(t, "rules", "--dir", dir, "--baseline", base)
+	if code != 0 {
+		t.Fatalf("rules failed: %d", code)
+	}
+	if !strings.Contains(out, "regenerate the baseline") {
+		t.Fatalf("expected stale baseline notice: %s", out)
+	}
+}
+
 // TestRulesNoConfig는 설정 파일이 없으면 사용법 오류(2)인지 확인한다.
 // 규칙 없이 "위반 없음"을 뱉으면 소비자가 규칙이 검사됐다고 오해한다.
 func TestRulesNoConfig(t *testing.T) {
