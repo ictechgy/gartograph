@@ -4,11 +4,32 @@
 
 ## 현재 상태 (2026-09-22)
 
-**v0.2.0 릴리스·Homebrew tap 배포까지 완료.** 공개 리포
+**v0.2.0 릴리스·Homebrew tap 배포 완료 + 경쟁 툴 비교 패스 2 진행 중**
+(브랜치 `feature/parity-gaps`, 미머지). 공개 리포
 https://github.com/ictechgy/gartograph. `go vet`·`go test ./...` 통과,
-커버리지 90.5%(게이트 90), `Scripts/verify-cli-contract.sh` 통과.
+커버리지 90.1%(게이트 90), `Scripts/verify-cli-contract.sh` 통과.
 `brew upgrade`로 0.1.0→0.2.0 실측, `gartograph 0.2.0` 보고,
 `brew test` 통과.
+
+feature/parity-gaps가 추가한 것(비교 대상: goda·go-arch-lint·deadcode·
+depguard·dependency-cruiser·import-linter·apidiff):
+- `path <from> <to>` — 임의 두 정점 간 최단 의존 경로(deadcode -whylive의
+  일반화). found:false는 그래프 사실, 정점 부재는 ErrNotFound.
+- `diff <old.json> <new.json>` — 저장 문서 비교. 정점·간선 차이 +
+  exported 시그니처 변경을 SignatureChanges로, exported 제거·시그니처
+  참조 제거를 `breaking`으로 모음. `--strict`는 breaking에 1.
+- `impact --since <rev>`/`--files F` — git diff(`--relative`) 또는 명시
+  목록으로 바뀐 .go 파일을 정점(선언 위치 + 패키지 디렉터리)으로 해석해
+  합집합 역방향 클로저. 비-.go 파일은 unmappedFiles.
+- `rules --baseline/--write-baseline` — 알려진 위반을 합법화.
+  fresh 위반만 violations/strict/SARIF에 나오고, 사라진 항목은
+  staleBaseline. 파일 버전ed.
+- 외부/vendor 규칙 — 컴포넌트 패턴이 --deps 수확 외부 패키지의 전체
+  경로를 매칭(`aws: ["github.com/aws/**"]` + deps/deny).
+  `unmappedExternal`(외부 미매핑)·`unmatchedComponents`(0 정점 매칭 —
+  --deps 누락·오타 신호) 추가. CheckRules는 이제 *RuleReport 반환.
+- `graph --format dot` — Graphviz 출력. MCP 도구 `gartograph_path` 추가
+  (도구 7개).
 
 v0.2.0이 추가한 것(타 도구 비교 패스, PR #6·#7):
 - `impact <id>` 역방향 전이 클로저, `rules --format sarif` (SARIF 2.1.0),
@@ -73,9 +94,15 @@ v0.2.0이 추가한 것(타 도구 비교 패스, PR #6·#7):
 
 1. ~~배포~~ — v0.2.0 릴리스 + tap formula 배포 완료. 다음 릴리스 전에
    `HOMEBREW_TAP_TOKEN`을 리포 시크릿에 넣으면 탭 갱신이 자동화된다.
-2. **isthmus 조인** — cgo/gomobile 브리지가 생기면 bridge facts producer.
-3. **정밀도** — RTA/포인터 분석으로 CHA 오탐을 좁히는 것은 필요해질 때.
+2. **feature/parity-gaps 머지 + v0.3.0** — 새 명령·플래그가 들어갔으므로
+   minor 범프 대상.
+3. **isthmus 조인** — cgo/gomobile 브리지가 생기면 bridge facts producer.
+4. **정밀도** — RTA/포인터 분석으로 CHA 오탐을 좁히는 것은 필요해질 때.
    dead의 "살아 있다" 편향이 계약이라 급하지 않다.
+5. **남은 비교 격차**(이번에 안 한 것) — `visibleTo` 공급자 측 규칙,
+   deny의 간접(transitive) 검사 옵션, independence 계약, `metrics`
+   (Ca/Ce/불안정성), `init` 스캐폴딩, depguard식 deny 사유 메시지,
+   간선 위치 속성(스키마 v2 — 파일 스코프 규칙의 전제).
 
 ## 결정 기록
 
@@ -88,6 +115,11 @@ v0.2.0이 추가한 것(타 도구 비교 패스, PR #6·#7):
   메서드를 임베딩 타입 아래 두면 같은 선언이 둘이 된다.
 - **`--graph` 저장 문서 입력**: 재수확 없이 질의만 돌리는 경로 —
   Go에는 index store가 없어 이 문서가 영속 산출물이다.
+- **파일→정점 해석은 .go만**: 비-Go 파일을 패키지 정점에 매핑하면
+  문서 변경이 코드 영향으로 둔갑한다 — unmappedFiles로 보고.
+- **vendor 규칙은 새 키 없이**: `vendors:` 섹션을 따로 두지 않고
+  components의 외부 경로 패턴 매칭으로 — 스키마 확장 없이 deps/deny가
+  그대로 외부 의존을 통제한다.
 - **MCP는 cli 패키지 안 파일(`cli/mcp.go`)**: 별도 패키지로 빼면
   cli→mcp 디스패치와 mcp→cli 인자 파서 공유가 패키지 순환이 된다 —
   rustograph v0.2.0에서 같은 구조가 `cycles --strict`에 잡혀 파서를

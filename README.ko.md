@@ -34,7 +34,7 @@ go install github.com/ictechgy/gartograph/cmd/gartograph@latest
 gartograph graph                              # 패키지 그래프(JSON, 결정적)
 gartograph graph --level symbol               # call/implements/embeds/references
 gartograph graph --level module               # 모듈(go.work 워크스페이스)
-gartograph graph --level type --format mermaid
+gartograph graph --level type --format mermaid    # Graphviz는 --format dot
 gartograph graph --level symbol --out .gartograph/graph.json
 
 gartograph cycles --level symbol --strict     # 순환 검사 — 패키지 순환은 Go가 금지하므로
@@ -47,6 +47,10 @@ gartograph rules --strict                     # .gartograph.yml 레이어 규칙
 
 gartograph query <정점ID> --depth 2            # 이웃 되묻기(에이전트용 JSON)
 gartograph impact <정점ID> --depth 2           # 역방향 전이 — 바꾸면 뭐가 깨지나
+gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분석
+                                              # (--files cli/cli.go도 가능)
+gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
+gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 gartograph mcp --level symbol                  # MCP stdio로 에이전트에 서빙
 gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 ```
@@ -89,6 +93,34 @@ signature:                # 공개 API 타입 누출 (심볼 레벨 필요)
   허용하면서 공개 API의 타입 누출만 막을 때 씁니다. 위반은 `rule` 필드로
   구분됩니다(`allow`/`deny`/`signature`).
 
+**외부/vendor 규칙.** 컴포넌트 패턴은 `--deps`로 수확된 외부 패키지의 전체
+import 경로에도 매칭됩니다 — `deps`/`deny`가 서드파티 모듈을 통제합니다:
+
+```yaml
+components:
+  store: ["internal/store/**"]
+  aws:   ["github.com/aws/**"]     # --deps 수확 시 외부 정점에 매칭
+deps:
+  store: ["core", "aws"]           # store 계층만 AWS를 import 가능
+```
+
+외부 정점이 있으려면 `rules --deps`로 검사하세요. 어느 패키지에도 매칭되지
+않은 컴포넌트는 `unmatchedComponents`로 보고됩니다 — 외부 패턴을 쓰고
+`--deps`를 빼먹었다는(또는 패턴이 stale하다는) 신호입니다. 컴포넌트에 매칭
+되지 않은 외부 패키지는 `unmappedExternal`로 따로 보고됩니다.
+
+**Baseline.** 기존 레포에 규칙을 도입할 때: 오늘의 위반을 한 번 기록하고,
+이후에는 새 위반만 `--strict`에서 실패합니다.
+
+```bash
+gartograph rules --write-baseline .gartograph-baseline.json
+gartograph rules --baseline .gartograph-baseline.json --strict
+```
+
+기록된 위반은 `baselined`로 보고되고, 더 이상 발생하지 않는 항목은
+`staleBaseline`으로 돌아옵니다 — 쌓이면 재생성하세요. SARIF와 `--strict`는
+새 위반만 봅니다.
+
 패턴: 정확 일치, `x/**` 재귀 접두사, `*` 세그먼트 글롭.
 `rules --format sarif`는 CI 코드 스캐닝용 SARIF 2.1.0을 냅니다.
 
@@ -118,8 +150,9 @@ signature:                # 공개 API 타입 누출 (심볼 레벨 필요)
 
 `gartograph mcp`는 수확한 문서를 MCP stdio(개행 구분 JSON-RPC)로 서빙합니다:
 `gartograph_summary`, `gartograph_query`, `gartograph_impact`,
-`gartograph_cycles`, `gartograph_dead`, `gartograph_rules`. 문서는 기동 시
-한 번 수확해 모든 호출이 같은 스냅샷 위에서 답합니다.
+`gartograph_path`, `gartograph_cycles`, `gartograph_dead`,
+`gartograph_rules`. 문서는 기동 시 한 번 수확해 모든 호출이 같은 스냅샷
+위에서 답합니다.
 
 ```json
 {"mcpServers": {"gartograph": {

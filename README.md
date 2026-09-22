@@ -44,7 +44,7 @@ go build -o gartograph ./cmd/gartograph
 gartograph graph                          # package level
 gartograph graph --level symbol           # call/implements/embeds/references
 gartograph graph --level module           # modules (go.work workspaces)
-gartograph graph --level type --format mermaid
+gartograph graph --level type --format mermaid    # or --format dot for Graphviz
 gartograph graph --level symbol --out .gartograph/graph.json
 
 # Detect dependency cycles — package cycles are impossible in Go,
@@ -65,6 +65,15 @@ gartograph query github.com/ictechgy/gartograph/cli --depth 2
 
 # Reverse transitive closure: what breaks if this vertex changes
 gartograph impact github.com/ictechgy/gartograph/graph --depth 2
+
+# Diff-aware impact: what breaks given the files changed since a revision
+gartograph impact --since origin/main...HEAD          # or --files cli/cli.go
+
+# Shortest dependency path: why does 'from' reach 'to'
+gartograph path github.com/ictechgy/gartograph/cmd/gartograph github.com/ictechgy/gartograph/graph
+
+# Compare two saved documents: structure drift and breaking signals
+gartograph diff old.json new.json --strict
 
 # Serve the harvested document to agents over MCP stdio
 gartograph mcp --level symbol
@@ -118,6 +127,36 @@ signature:                # public-API type leakage (needs symbol level)
 - `signature` checks `signature` edges of **exported** symbols: a component's
   public API may only reference types from listed components, even when body
   dependencies are allowed. Violations carry `rule: "deny"|"signature"|"allow"`.
+
+**External/vendor rules.** Component patterns also match the full import
+paths of external packages harvested with `--deps`, so `deps`/`deny` can
+gate third-party modules:
+
+```yaml
+components:
+  store: ["internal/store/**"]
+  aws:   ["github.com/aws/**"]     # matches external vertices under --deps
+deps:
+  store: ["core", "aws"]           # only the store layer may import AWS
+```
+
+Run `rules --deps` so external vertices exist. A component pattern matching
+zero packages is reported in `unmatchedComponents` — the signal that an
+external pattern ran without `--deps` (or the pattern is stale). External
+packages matching no component are reported separately as
+`unmappedExternal`.
+
+**Baseline.** Adopting rules on an existing repo: record today's violations
+once, then only new violations fail `--strict`.
+
+```bash
+gartograph rules --write-baseline .gartograph-baseline.json
+gartograph rules --baseline .gartograph-baseline.json --strict
+```
+
+Baselined violations are reported under `baselined`; entries that stop
+occurring come back as `staleBaseline` — regenerate when they pile up.
+SARIF output and `--strict` see only fresh violations.
 
 Patterns: exact match, `x/**` recursive prefix, `*` segment glob. Packages
 matching no component are reported as `unmapped` — a mapping gap is "rules
@@ -197,9 +236,9 @@ go run ./cmd/gartograph dead
 
 `gartograph mcp` serves the harvested document over MCP stdio
 (newline-delimited JSON-RPC): `gartograph_summary`, `gartograph_query`,
-`gartograph_impact`, `gartograph_cycles`, `gartograph_dead`,
-`gartograph_rules`. The document is harvested once at startup so every
-tool call answers over the same snapshot. Example client config:
+`gartograph_impact`, `gartograph_path`, `gartograph_cycles`,
+`gartograph_dead`, `gartograph_rules`. The document is harvested once at
+startup so every tool call answers over the same snapshot. Example client config:
 
 ```json
 {"mcpServers": {"gartograph": {
@@ -215,8 +254,12 @@ tool call answers over the same snapshot. Example client config:
 - ~~Verification scripts + CI~~ — `Scripts/coverage.sh`, `Scripts/verify-cli-contract.sh`
 - ~~Homebrew tap~~ — `brew install ictechgy/tap/gartograph`
 - ~~`impact`, `deny`/`signature` rules, SARIF, MCP, `--tags`, generated marking~~ — done
+- ~~`path`, `diff`, `impact --since/--files`, rules baseline, external
+  (vendor) rules, `--format dot`~~ — done
 - isthmus bridge-facts producer (cgo/gomobile boundary — open question)
 - RTA/pointer analysis to narrow CHA over-approximation (optional precision)
+- Provider-side rules (`visibleTo`), transitive/indirect rule checking,
+  `metrics` (Ca/Ce/instability), `init` scaffolding
 
 ## License
 
