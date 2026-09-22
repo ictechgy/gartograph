@@ -231,6 +231,103 @@ func TestGraphFileRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUnknownFormat은 지원하지 않는 형식이 사용법 오류(2)인지 확인한다.
+// 모르는 형식을 조용히 text로 출력하면 소비자가 깨진 출력을 받는다.
+func TestUnknownFormat(t *testing.T) {
+	dir := deadFixture(t)
+	for _, args := range [][]string{
+		{"cycles", "--dir", dir, "--format", "xml"},
+		{"dead", "--dir", dir, "--format", "xml"},
+		{"rules", "--dir", dir, "--config", "/dev/null", "--format", "xml"},
+		{"graph", "--dir", dir, "--format", "xml"},
+	} {
+		if code, _, _ := run(t, args...); code != 2 {
+			t.Fatalf("%v: expected 2, got %d", args, code)
+		}
+	}
+}
+
+// TestHarvestFlags는 --pattern·--root 같은 반복 플래그가 파싱되는지 확인한다.
+// flag.Value.Set이 실제 호출 경로에서 동작해야 한다.
+func TestHarvestFlags(t *testing.T) {
+	dir := deadFixture(t)
+	// --pattern은 루트만 좁힌다 — import로 도달되는 내부 패키지는 여전히 정점이다.
+	// ./lib만 루트로 잡으면 main 패키지가 빠지고 lib만 남는다.
+	code, out, errb := run(t, "graph", "--dir", dir, "--pattern", "./lib")
+	if code != 0 {
+		t.Fatalf("graph --pattern failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "example.com/fixture/lib") ||
+		strings.Contains(out, `"id": "example.com/fixture"`) {
+		t.Fatalf("--pattern ./lib must hold only lib: %s", out)
+	}
+	// dead --root는 추가 보존 루트를 받는다 — 없는 루트는 unknownRoots로 나온다.
+	code, out, _ = run(t, "dead", "--dir", dir, "--format", "json",
+		"--root", "example.com/fixture/lib.Unused", "--root", "ghost")
+	if code != 0 {
+		t.Fatalf("dead --root failed: %d", code)
+	}
+	var rep struct {
+		Roots        []string              `json:"roots"`
+		UnknownRoots []string              `json:"unknownRoots"`
+		Unreachable  []struct{ ID string } `json:"unreachable"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(rep.Unreachable) != 0 {
+		t.Fatalf("Unused must be retained as explicit root: %s", out)
+	}
+	if len(rep.UnknownRoots) != 1 || rep.UnknownRoots[0] != "ghost" {
+		t.Fatalf("expected ghost in unknownRoots: %s", out)
+	}
+}
+
+// TestCyclesJSON은 cycles의 JSON 출력과 --level 투영을 확인한다.
+func TestCyclesJSON(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "cycles", "--dir", dir,
+		"--level", "symbol", "--format", "json", "--strict")
+	if code != 0 {
+		t.Fatalf("cycles json failed: %d %s", code, errb)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(out), "[") &&
+		!strings.Contains(out, "null") {
+		t.Fatalf("cycles --format json must emit JSON: %s", out)
+	}
+}
+
+// TestQueryDependedBy는 역방향 이웃이 정렬·보고되는지 확인한다.
+func TestQueryDependedBy(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "query", "example.com/fixture/lib", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("query failed: %d %s", code, errb)
+	}
+	var res struct {
+		DependedBy []struct{ ID string } `json:"dependedBy"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(res.DependedBy) != 1 ||
+		res.DependedBy[0].ID != "example.com/fixture" {
+		t.Fatalf("expected dependedBy main pkg: %s", out)
+	}
+}
+
+// TestGraphMermaid는 graph의 mermaid 출력 경로를 확인한다.
+func TestGraphMermaid(t *testing.T) {
+	dir := fixture(t)
+	code, out, errb := run(t, "graph", "--dir", dir, "--format", "mermaid")
+	if code != 0 {
+		t.Fatalf("mermaid failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "flowchart LR") {
+		t.Fatalf("expected mermaid flowchart: %s", out)
+	}
+}
+
 // TestGraphLevel은 --level이 문서의 레벨과 정점 종류를 바꾸는지 확인한다.
 func TestGraphLevel(t *testing.T) {
 	dir := deadFixture(t)

@@ -215,6 +215,69 @@ func TestTypeLevel(t *testing.T) {
 	}
 }
 
+// TestSymbolEdgeCases는 제네릭 인스턴스화·괄호 감싸기·포인터 임베드·
+// linkname 지시문의 수확 경로를 확인한다.
+func TestSymbolEdgeCases(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"a/a.go": `package a
+
+import _ "unsafe"
+
+//go:linkname hidden
+func hidden() {}
+
+func Generic[T any](v T) T { return v }
+
+func Caller() {
+	_ = Generic[int](1)
+	((hidden))()
+}
+`,
+		"b/b.go": `package b
+
+type Inner struct{}
+
+type Outer struct {
+	*Inner
+}
+`,
+	})
+	doc := loadSymbol(t, dir)
+	const a = "example.com/fixture/a"
+	if !hasEdge(doc, a+".Caller", a+".Generic", graph.EdgeCall) {
+		t.Fatal("generic call Generic[int]() must unwrap to a call edge")
+	}
+	if !hasEdge(doc, a+".Caller", a+".hidden", graph.EdgeCall) {
+		t.Fatal("parenthesized call must unwrap to a call edge")
+	}
+	if !hasEdge(doc, "example.com/fixture/b.Outer",
+		"example.com/fixture/b.Inner", graph.EdgeEmbeds) {
+		t.Fatal("embedded *Inner must produce an embeds edge")
+	}
+	// linkname은 그래프 밖에서 심볼을 살리므로 limitation으로 남아야 한다.
+	var linknameNoted bool
+	for _, l := range doc.Limitations {
+		if strings.Contains(l, "linkname") {
+			linknameNoted = true
+		}
+	}
+	if !linknameNoted {
+		t.Fatalf("expected linkname limitation: %v", doc.Limitations)
+	}
+}
+
+// TestSortedPackagePaths는 디버깅용 정렬 헬퍼를 확인한다.
+func TestSortedPackagePaths(t *testing.T) {
+	pkgs, err := load(Options{Dir: fixture(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := SortedPackagePaths(pkgs)
+	if len(paths) != 2 || paths[0] != "example.com/fixture/a" {
+		t.Fatalf("unexpected paths: %v", paths)
+	}
+}
+
 // TestSymbolExternalRefs는 모듈 밖 참조가 유령 정점이 아니라
 // limitation 개수로 남는지 확인한다.
 func TestSymbolExternalRefs(t *testing.T) {

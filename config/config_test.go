@@ -67,6 +67,24 @@ func TestComponentOf(t *testing.T) {
 	}
 }
 
+// TestComponentOfGlob은 `*` 세그먼트 글롭이 `/`를 넘지 않는지 확인한다.
+// `app/*`가 `app/web/x`까지 먹으면 재귀 접두사 `**`와 구분이 없어진다.
+func TestComponentOfGlob(t *testing.T) {
+	f := &File{Components: map[string][]string{
+		"flat": {"app/*"},
+		"deep": {"*"},
+	}}
+	if got, ok := f.ComponentOf("app/web"); !ok || got != "flat" {
+		t.Fatalf("app/web: expected flat, got %s %v", got, ok)
+	}
+	if _, ok := f.ComponentOf("app/web/x"); ok {
+		t.Fatal("app/* must not cross a segment boundary")
+	}
+	if got, ok := f.ComponentOf("solo"); !ok || got != "deep" {
+		t.Fatalf("solo: expected deep, got %s %v", got, ok)
+	}
+}
+
 // TestAllowed는 허용 목록 의미론을 확인한다 — 자기 의존은 항상 허용이다.
 func TestAllowed(t *testing.T) {
 	f := &File{Deps: map[string][]string{"web": {"db"}}}

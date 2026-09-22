@@ -67,6 +67,24 @@ func TestCheckRulesAllowed(t *testing.T) {
 	}
 }
 
+// TestRelPath는 모듈 경로 벗기기의 경계 조건을 확인한다.
+// 모듈 루트 패키지는 "."이 되고, 모듈이 없는 문서는 경로가 그대로다.
+func TestRelPath(t *testing.T) {
+	if got := relPath("example.com/m", "example.com/m"); got != "." {
+		t.Fatalf("module root must map to ., got %s", got)
+	}
+	if got := relPath("x/y", ""); got != "x/y" {
+		t.Fatalf("empty module must leave path alone, got %s", got)
+	}
+	if got := relPath("example.com/m/a/b", "example.com/m"); got != "a/b" {
+		t.Fatalf("nested package: got %s", got)
+	}
+	// 모듈 접두사가 우연이 겹치는 경로(example.com/mx)는 벗기면 안 된다.
+	if got := relPath("example.com/mx/p", "example.com/m"); got != "example.com/mx/p" {
+		t.Fatalf("prefix collision stripped wrongly: %s", got)
+	}
+}
+
 // TestCheckRulesSelfDep는 같은 컴포넌트 안의 의존이 규칙 밖인지 확인한다.
 func TestCheckRulesSelfDep(t *testing.T) {
 	d := &graph.Document{
