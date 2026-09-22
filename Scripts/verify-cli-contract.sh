@@ -69,11 +69,16 @@ check 0 "dead retain"      dead --retain-public
 check 1 "rules strict"     rules --strict
 check 0 "query"            query example.com/contract/lib
 check 2 "query missing"    query example.com/missing
+check 0 "impact"           impact example.com/contract/lib
+check 2 "impact missing"   impact example.com/missing
+check 0 "rules sarif"      rules --format sarif
 check 2 "unknown command"  frobnicate
 check 2 "usage"            ""
 check 2 "bad format"       cycles --format xml
+check 2 "bad rules format" rules --format xml
 check 2 "bad level"        graph --level bogus
 check 2 "level mismatch"   cycles --graph /dev/null
+check 0 "tags flag"        graph --tags customtag
 
 if [ "$fails" -gt 0 ]; then
 	echo "$fails contract checks failed" >&2

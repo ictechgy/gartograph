@@ -63,6 +63,12 @@ gartograph rules --strict
 # Ask about one vertex: what it uses, what uses it (JSON for agents)
 gartograph query github.com/ictechgy/gartograph/cli --depth 2
 
+# Reverse transitive closure: what breaks if this vertex changes
+gartograph impact github.com/ictechgy/gartograph/graph --depth 2
+
+# Serve the harvested document to agents over MCP stdio
+gartograph mcp --level symbol
+
 # Query a saved document instead of re-harvesting
 gartograph cycles --graph .gartograph/graph.json --level type
 gartograph dead   --graph .gartograph/graph.json
@@ -74,8 +80,9 @@ Harvest flags (all analysis commands):
 |---|---|---|
 | `--dir` | `.` | module root to analyze |
 | `--pattern` | `./...` | package pattern (repeatable) |
-| `--tests` | off | include test variant packages |
+| `--tests` | off | include test variant packages (Test/Benchmark/Example/Fuzz become retention roots) |
 | `--deps` | off | include dependency packages/modules outside the main module |
+| `--tags` | — | build tags for the loader; files excluded by constraints are counted in `limitations` |
 | `--graph` | — | read a saved graph document instead of harvesting |
 
 Exit codes: `0` ok · `1` `--strict` violation · `2` usage/analysis error.
@@ -98,9 +105,25 @@ deps:
   core:     []
 ```
 
+Two optional sections narrow it further:
+
+```yaml
+deny:                     # hard bans — beat deps entries
+  analysis: ["cli"]       # analysis must never reach back into cli
+signature:                # public-API type leakage (needs symbol level)
+  api:      ["core"]      # api's exported signatures may only name core types
+```
+
+- `deny` wins over `deps` — "usually allowed, but this pair is forbidden".
+- `signature` checks `signature` edges of **exported** symbols: a component's
+  public API may only reference types from listed components, even when body
+  dependencies are allowed. Violations carry `rule: "deny"|"signature"|"allow"`.
+
 Patterns: exact match, `x/**` recursive prefix, `*` segment glob. Packages
 matching no component are reported as `unmapped` — a mapping gap is "rules
 don't know this area", not "no rules apply".
+
+`rules --format sarif` emits SARIF 2.1.0 for CI code scanning.
 
 ## Output contract (for agents)
 
@@ -121,13 +144,18 @@ don't know this area", not "no rules apply".
 ## Graph document
 
 `version: 1`, `tool: "gartograph"`, `level`, `root` (filesystem dir),
-`module` (module path), `roots` (harvested retention roots: `main`, `init`),
+`module` (module path), `roots` (harvested retention roots: `main`, `init`,
+plus `Test*`/`Benchmark*`/`Example*`/`Fuzz*` entry points under `--tests`),
 `vertices`, `edges`, `limitations`.
 
 Vertex IDs: `pkg/path` for packages, `pkg/path.Name` for package-level
 symbols, `pkg/path.(Recv).Name` for methods. Vertex `kind`:
-`module`/`package`/`type`/`func`/`method`/`var`/`const`. Edge `kind`:
-`import`/`contains`/`embeds`/`implements`/`references`/`call`.
+`module`/`package`/`type`/`func`/`method`/`var`/`const`. Vertices carry
+`generated: true` when they come from files marked
+`// Code generated ... DO NOT EDIT.` — marked, never hidden. Edge `kind`:
+`import`/`contains`/`embeds`/`implements`/`references`/`call`/`signature`
+(signature = type references inside declaration signatures; a dependency
+edge, unlike `contains` which is ownership).
 
 Interface calls get CHA fan-out: an edge to the interface method *and* to
 every known implementation — over-approximation errs toward "alive" so
@@ -165,6 +193,20 @@ go run ./cmd/gartograph cycles --level symbol --strict
 go run ./cmd/gartograph dead
 ```
 
+## MCP server
+
+`gartograph mcp` serves the harvested document over MCP stdio
+(newline-delimited JSON-RPC): `gartograph_summary`, `gartograph_query`,
+`gartograph_impact`, `gartograph_cycles`, `gartograph_dead`,
+`gartograph_rules`. The document is harvested once at startup so every
+tool call answers over the same snapshot. Example client config:
+
+```json
+{"mcpServers": {"gartograph": {
+  "command": "gartograph",
+  "args": ["mcp", "--dir", "/path/to/repo", "--level", "symbol"]}}}
+```
+
 ## Roadmap
 
 - ~~Symbol/type level harvest~~ — done via `go/packages` + `go/types` + AST
@@ -172,7 +214,9 @@ go run ./cmd/gartograph dead
 - ~~Module-level graph~~ — done (go.work workspaces; `--deps` adds dependency modules)
 - ~~Verification scripts + CI~~ — `Scripts/coverage.sh`, `Scripts/verify-cli-contract.sh`
 - ~~Homebrew tap~~ — `brew install ictechgy/tap/gartograph`
+- ~~`impact`, `deny`/`signature` rules, SARIF, MCP, `--tags`, generated marking~~ — done
 - isthmus bridge-facts producer (cgo/gomobile boundary — open question)
+- RTA/pointer analysis to narrow CHA over-approximation (optional precision)
 
 ## License
 

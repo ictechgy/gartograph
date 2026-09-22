@@ -46,11 +46,14 @@ gartograph dead --explain my/pkg.F            # 왜 살아 있나 — 도달 경
 gartograph rules --strict                     # .gartograph.yml 레이어 규칙 검사
 
 gartograph query <정점ID> --depth 2            # 이웃 되묻기(에이전트용 JSON)
+gartograph impact <정점ID> --depth 2           # 역방향 전이 — 바꾸면 뭐가 깨지나
+gartograph mcp --level symbol                  # MCP stdio로 에이전트에 서빙
 gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 ```
 
-공통 플래그: `--dir`(모듈 루트), `--pattern`(반복 가능), `--tests`, `--deps`,
-`--graph`(저장 문서 읽기).
+공통 플래그: `--dir`(모듈 루트), `--pattern`(반복 가능), `--tests`(테스트
+진입점이 보존 루트가 됨), `--deps`, `--tags`(빌드 태그; 제약으로 빠진 파일은
+limitations에 셈), `--graph`(저장 문서 읽기).
 종료 코드: `0` 정상 · `1` strict 위반 · `2` 사용법/분석 오류.
 
 ## 규칙 설정
@@ -72,7 +75,22 @@ deps:
   core:     []
 ```
 
+선택 섹션 둘이 더 좁힙니다:
+
+```yaml
+deny:                     # 무조건 금지 — deps보다 우선
+  analysis: ["cli"]
+signature:                # 공개 API 타입 누출 (심볼 레벨 필요)
+  api:      ["core"]      # api의 공개 시그니처는 core 타입만 가리킬 수 있음
+```
+
+- `deny`는 `deps`를 이깁니다 — "보통 허용, 이 조합은 금지".
+- `signature`는 **exported** 심볼의 `signature` 간선을 검사합니다 — 본문 의존은
+  허용하면서 공개 API의 타입 누출만 막을 때 씁니다. 위반은 `rule` 필드로
+  구분됩니다(`allow`/`deny`/`signature`).
+
 패턴: 정확 일치, `x/**` 재귀 접두사, `*` 세그먼트 글롭.
+`rules --format sarif`는 CI 코드 스캐닝용 SARIF 2.1.0을 냅니다.
 
 ## 출력 계약(에이전트용)
 
@@ -88,9 +106,26 @@ deps:
 ## 그래프 문서
 
 정점 ID: 패키지는 `pkg/path`, 패키지 수준 심볼은 `pkg/path.Name`,
-메서드는 `pkg/path.(Recv).Name`. 인터페이스 호출은 CHA 팬아웃으로
-인터페이스 메서드와 모든 구현 메서드에 간선을 긋습니다 — 과대 근사는
-"살아 있다" 쪽으로만 기울어 `dead`가 도달 가능 코드를 오판하지 않습니다.
+메서드는 `pkg/path.(Recv).Name`. `// Code generated ... DO NOT EDIT.`
+마커 파일 출신 정점은 `generated: true`를 답니다 — 숨기지 않고 표시합니다.
+간선 종류: `import`/`contains`/`embeds`/`implements`/`references`/`call`/
+`signature`(선언 시그니처 안의 타입 참조 — `contains`와 달리 의존 관계).
+인터페이스 호출은 CHA 팬아웃으로 인터페이스 메서드와 모든 구현 메서드에
+간선을 긋습니다 — 과대 근사는 "살아 있다" 쪽으로만 기울어 `dead`가
+도달 가능 코드를 오판하지 않습니다.
+
+## MCP 서버
+
+`gartograph mcp`는 수확한 문서를 MCP stdio(개행 구분 JSON-RPC)로 서빙합니다:
+`gartograph_summary`, `gartograph_query`, `gartograph_impact`,
+`gartograph_cycles`, `gartograph_dead`, `gartograph_rules`. 문서는 기동 시
+한 번 수확해 모든 호출이 같은 스냅샷 위에서 답합니다.
+
+```json
+{"mcpServers": {"gartograph": {
+  "command": "gartograph",
+  "args": ["mcp", "--dir", "/path/to/repo", "--level", "symbol"]}}}
+```
 
 ## 개발
 
