@@ -6,7 +6,10 @@
 
 **네 레벨(module/package/type/symbol) + dead + rules + 영속 문서 + 검증 체계 완성.**
 브랜치 `feature/symbol-type-level`. `go vet`·`go test ./...` 통과,
-커버리지 90.1%(게이트 90), 자기 분석(rules/cycles×2/dead) 정상.
+커버리지 90.1%(게이트 90), `Scripts/verify-cli-contract.sh` 통과,
+자기 분석(rules/cycles×2/dead) 정상. `go install ./cmd/gartograph`로
+설치된 바이너리까지 검증됨. 리모트가 없어 push·Homebrew tap·GitHub
+릴리스는 미착수 — 리모트 생성 후 가능.
 
 - `graph` — 순수 도메인. `Document` v1 + `Module`·`Roots`, `Level`(module/package/
   type/symbol), `Vertex`(kind/name/package/position/exported)·`Edge`,
