@@ -23,6 +23,8 @@ Go에는 이미 `deadcode`, `goda`, `go-arch-lint`, `go-callvis`가 있지만 �
 ## 설치
 
 ```bash
+brew install ictechgy/tap/gartograph
+# 또는
 go install github.com/ictechgy/gartograph/cmd/gartograph@latest
 ```
 

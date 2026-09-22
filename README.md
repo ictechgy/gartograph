@@ -171,7 +171,7 @@ go run ./cmd/gartograph dead
 - ~~`dead`, `rules`, persisted `graph.json`~~ — done
 - ~~Module-level graph~~ — done (go.work workspaces; `--deps` adds dependency modules)
 - ~~Verification scripts + CI~~ — `Scripts/coverage.sh`, `Scripts/verify-cli-contract.sh`
-- Homebrew tap
+- ~~Homebrew tap~~ — `brew install ictechgy/tap/gartograph`
 - isthmus bridge-facts producer (cgo/gomobile boundary — open question)
 
 ## License
