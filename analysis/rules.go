@@ -17,15 +17,18 @@ import (
 // Path는 forbidden 위반의 목격 경로다 — 간선이 아니라 도달 사실을 어겼으므로
 // 어느 사슬로 닿았는지를 함께 준다. forbidden 위반은 단일 간선이 아니라
 // Kind가 비어 있다.
+// Position은 위반 간선의 첫 사용 지점이다 — "어디를 고치면 되나"에 답한다.
+// 지점이 없는 관계(forbidden 등)나 v1 문서에서는 비어 있다.
 type Violation struct {
-	From          string         `json:"from"`
-	To            string         `json:"to"`
-	FromComponent string         `json:"fromComponent"`
-	ToComponent   string         `json:"toComponent"`
-	Kind          graph.EdgeKind `json:"kind,omitempty"`
-	Rule          string         `json:"rule"`
-	Reason        string         `json:"reason,omitempty"`
-	Path          []string       `json:"path,omitempty"`
+	From          string          `json:"from"`
+	To            string          `json:"to"`
+	FromComponent string          `json:"fromComponent"`
+	ToComponent   string          `json:"toComponent"`
+	Kind          graph.EdgeKind  `json:"kind,omitempty"`
+	Rule          string          `json:"rule"`
+	Reason        string          `json:"reason,omitempty"`
+	Path          []string        `json:"path,omitempty"`
+	Position      *graph.Position `json:"position,omitempty"`
 }
 
 // RuleReport는 규칙 검사 결과다.
@@ -84,6 +87,7 @@ func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
 				From: e.From, To: e.To,
 				FromComponent: from, ToComponent: to,
 				Kind: e.Kind, Rule: rule, Reason: reason,
+				Position:    firstPosition(e),
 			})
 		}
 	}
@@ -195,6 +199,16 @@ func reachPath(adj map[string][]string, vcomp map[string]string,
 		path = append([]string{cur}, path...)
 	}
 	return path
+}
+
+// firstPosition은 간선의 첫 사용 지점을 돌려준다 — 위반 보고는
+// "가장 먼저 나오는" 지점 하나를 가리키고, 전체 지점은 문서의 간선에 남는다.
+func firstPosition(e graph.Edge) *graph.Position {
+	if len(e.Positions) == 0 {
+		return nil
+	}
+	p := e.Positions[0]
+	return &p
 }
 
 // vertexMap은 정점 ID로 정점을 찾는 인덱스다.

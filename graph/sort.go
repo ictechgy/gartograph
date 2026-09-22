@@ -29,15 +29,52 @@ func (d *Document) Sort() {
 	sort.Strings(d.Roots)
 }
 
-// dedupeEdges는 정렬된 간선 목록에서 연속 중복을 제거한다.
+// positionLess는 사용 지점의 결정적 순서다 — 파일, 줄, 열 순.
+func positionLess(a, b Position) bool {
+	if a.File != b.File {
+		return a.File < b.File
+	}
+	if a.Line != b.Line {
+		return a.Line < b.Line
+	}
+	return a.Column < b.Column
+}
+
+// sameEdge는 간선의 집합 동일성이다 — 위치가 아니라 관계가 단위다.
+// 같은 관계가 여러 지점에서 성립하면 Positions이 합쳐진다.
+func sameEdge(a, b Edge) bool {
+	return a.From == b.From && a.To == b.To && a.Kind == b.Kind
+}
+
+// dedupeEdges는 정렬된 간선 목록에서 같은 관계를 하나로 합친다.
+// Positions는 모아서 정렬한다 — 사용 지점은 순서가 아니라 집합이다.
 // Sort 전용이며 정렬되지 않은 입력에는 쓰지 않는다.
 func dedupeEdges(edges []Edge) []Edge {
 	out := edges[:0]
 	for i, e := range edges {
-		if i > 0 && e == edges[i-1] {
+		if i > 0 && sameEdge(e, edges[i-1]) {
+			out[len(out)-1].Positions = append(out[len(out)-1].Positions, e.Positions...)
 			continue
 		}
 		out = append(out, e)
+	}
+	for i := range out {
+		sort.Slice(out[i].Positions, func(a, b int) bool {
+			return positionLess(out[i].Positions[a], out[i].Positions[b])
+		})
+		out[i].Positions = dedupePositions(out[i].Positions)
+	}
+	return out
+}
+
+// dedupePositions는 정렬된 위치 목록에서 연속 중복을 제거한다.
+func dedupePositions(ps []Position) []Position {
+	out := ps[:0]
+	for i, p := range ps {
+		if i > 0 && p == ps[i-1] {
+			continue
+		}
+		out = append(out, p)
 	}
 	return out
 }

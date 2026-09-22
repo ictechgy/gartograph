@@ -379,6 +379,42 @@ type Outer struct {
 	}
 }
 
+// TestEdgePositions는 사용 지점이 간선에 실리고 같은 관계의 반복 호출이
+// 지점으로 합쳐지는지 확인한다 — 위치가 diff의 노이즈가 아니라
+// "어디서"의 사실이 되는 v2 계약이다.
+func TestEdgePositions(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/posfix\n\ngo 1.27\n",
+		"main.go": `package main
+
+func main() {
+	help()
+	help()
+}
+
+func help() {}
+`,
+	})
+	doc := loadSymbol(t, dir)
+	var call *graph.Edge
+	for i := range doc.Edges {
+		e := &doc.Edges[i]
+		if e.Kind == graph.EdgeCall && e.To == "example.com/posfix.help" {
+			call = e
+		}
+	}
+	if call == nil || len(call.Positions) != 2 {
+		t.Fatalf("two call sites must merge into one edge with two positions: %+v",
+			doc.Edges)
+	}
+	if call.Positions[0].Line >= call.Positions[1].Line {
+		t.Fatalf("positions must be sorted: %+v", call.Positions)
+	}
+	if !strings.HasSuffix(call.Positions[0].File, "main.go") {
+		t.Fatalf("position must point at the caller file: %+v", call.Positions)
+	}
+}
+
 // TestSortedPackagePaths는 디버깅용 정렬 헬퍼를 확인한다.
 func TestSortedPackagePaths(t *testing.T) {
 	pkgs, err := load(Options{Dir: fixture(t)})

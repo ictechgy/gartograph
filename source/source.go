@@ -8,10 +8,13 @@ package source
 import (
 	"bufio"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -142,10 +145,14 @@ func buildDocument(root string, reachable []*packages.Package,
 		if kept[p.PkgPath] == nil {
 			continue
 		}
+		// import 간선의 사용 지점은 import 선언이다 — 파일 스코프 규칙과
+		// 위반 위치 보고가 이 지점을 근거로 삼는다.
+		sites := importSites(p)
 		for _, imp := range p.Imports {
 			if kept[imp.PkgPath] != nil {
 				doc.Edges = append(doc.Edges, graph.Edge{
 					From: p.PkgPath, To: imp.PkgPath, Kind: graph.EdgeImport,
+					Positions: sites[imp.PkgPath],
 				})
 			} else {
 				extImports++
@@ -260,6 +267,38 @@ func markGenerated(doc *graph.Document, kept map[string]*packages.Package) {
 			v.Generated = pkgAllGen[v.ID]
 		}
 	}
+}
+
+// importSites는 패키지의 import 선언 위치를 import 경로별로 모은다.
+// 패키지 레벨 수확은 Syntax를 로드하지 않으므로 ImportsOnly 파싱으로
+// 선언부만 읽는다 — 전체 AST를 만들 이유가 없고, 파싱이 안 되는 파일은
+// 건너뛰되 지점이 비는 사실은 그대로 남는다.
+func importSites(p *packages.Package) map[string][]graph.Position {
+	files := p.CompiledGoFiles
+	if len(files) == 0 {
+		files = p.GoFiles
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	fset := token.NewFileSet()
+	out := make(map[string][]graph.Position)
+	for _, file := range files {
+		f, err := parser.ParseFile(fset, file, nil, parser.ImportsOnly)
+		if err != nil {
+			continue
+		}
+		for _, spec := range f.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				continue
+			}
+			pos := fset.Position(spec.Pos())
+			out[path] = append(out[path], graph.Position{
+				File: pos.Filename, Line: pos.Line, Column: pos.Column})
+		}
+	}
+	return out
 }
 
 // countIgnored는 그래프에 남은 패키지의 빌드 제약 제외 파일을 센다.

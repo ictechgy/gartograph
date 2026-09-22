@@ -336,7 +336,17 @@ deps: {}
 		Version string `json:"version"`
 		Runs    []struct {
 			Results []struct {
-				RuleID string `json:"ruleId"`
+				RuleID    string `json:"ruleId"`
+				Locations []struct {
+					PhysicalLocation *struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+						Region struct {
+							StartLine int `json:"startLine"`
+						} `json:"region"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
 			} `json:"results"`
 		} `json:"runs"`
 	}
@@ -348,6 +358,12 @@ deps: {}
 	}
 	if len(doc.Runs[0].Results) != 1 || doc.Runs[0].Results[0].RuleID != "layer-allow" {
 		t.Fatalf("expected one layer-allow result: %s", out)
+	}
+	// v2 문서는 위반 지점을 안다 — SARIF에 물리 위치가 실려야 한다.
+	phys := doc.Runs[0].Results[0].Locations[0].PhysicalLocation
+	if phys == nil || !strings.HasSuffix(phys.ArtifactLocation.URI, "web/web.go") ||
+		phys.Region.StartLine == 0 {
+		t.Fatalf("violation must carry physicalLocation: %s", out)
 	}
 }
 

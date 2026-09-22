@@ -7,7 +7,9 @@ package graph
 
 // Version은 Document 와이어 형식의 버전이다.
 // 형식이 바뀌면 올리고, isthmus의 GRAPH-EXCHANGE 계약과 함께 갱신한다.
-const Version = 1
+// 2: Edge에 positions — "의존이 어디서 일어나는가"를 남겨 파일 스코프
+// 규칙과 위반 위치 보고의 재료가 된다.
+const Version = 2
 
 // Tool은 Document를 만든 생산자 식별자다.
 const Tool = "gartograph"
@@ -109,10 +111,14 @@ type Vertex struct {
 
 // Edge는 방향 있는 관계다.
 // 의존 간선은 From이 To를 필요로 한다(From → To).
+// Positions는 이 관계가 성립하는 사용 지점들이다 — 같은 From→To 호출이
+// 파일 여럿에 흩어져 있으면 지점이 여러 개다. 정렬돼 있고, 한 지점이
+// 없는 관계(contains·implements·모듈 import)는 비어 있다.
 type Edge struct {
-	From string   `json:"from"`
-	To   string   `json:"to"`
-	Kind EdgeKind `json:"kind"`
+	From      string     `json:"from"`
+	To        string     `json:"to"`
+	Kind      EdgeKind   `json:"kind"`
+	Positions []Position `json:"positions,omitempty"`
 }
 
 // Document는 버전ed 그래프 산출물이다.

@@ -20,9 +20,9 @@ import (
 // harvester는 한 번의 심볼 수확 동안 공유되는 상태다.
 type harvester struct {
 	doc      *graph.Document
-	vertices map[string]bool     // 존재 확인 — 없는 정점으로의 간선은 금지
-	edgeSet  map[graph.Edge]bool // 수확 중 중복 간선 억제
-	roots    map[string]bool     // 보존 루트 중복 억제
+	vertices map[string]bool // 존재 확인 — 없는 정점으로의 간선은 금지
+	edgeIdx  map[string]int  // (from,to,kind) → doc.Edges 인덱스 — 지점 병합용
+	roots    map[string]bool // 보존 루트 중복 억제
 	impls    map[string][]string // 인터페이스 메서드 ID → 구현 메서드 ID들
 	extRefs  int                 // 모듈 밖 심볼 참조 수
 	noTypes  int                 // 타입 정보 없는 패키지 수
@@ -37,7 +37,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	h := &harvester{
 		doc:      doc,
 		vertices: make(map[string]bool),
-		edgeSet:  make(map[graph.Edge]bool),
+		edgeIdx:  make(map[string]int),
 		roots:    make(map[string]bool),
 		impls:    make(map[string][]string),
 	}
@@ -100,7 +100,9 @@ func (h *harvester) addSymbolVertices(internal []*packages.Package, wantSymbols 
 				Position: position(p, obj.Pos()),
 				Exported: obj.Exported(),
 			})
-			h.edge(p.PkgPath, id, graph.EdgeContains)
+			// contains는 소유 관계라 사용 지점이 없다 — 정점 자체의
+			// position이 그 사실을 이미 담는다.
+			h.edge(p.PkgPath, id, graph.EdgeContains, nil)
 			if _, isFunc := obj.(*types.Func); isFunc && name == "main" && p.Name == "main" {
 				h.root(id)
 			}
@@ -149,7 +151,7 @@ func (h *harvester) methodVertex(f *types.Func, fset *token.FileSet) {
 		Position: positionAt(fset, f.Pos()),
 		Exported: f.Exported(),
 	})
-	h.edge(f.Pkg().Path(), id, graph.EdgeContains)
+	h.edge(f.Pkg().Path(), id, graph.EdgeContains, nil)
 }
 
 // addStructuralEdges는 타입 간 구조적 관계(embeds, implements)를 긋는다.
@@ -176,14 +178,17 @@ func (h *harvester) addStructuralEdges(internal []*packages.Package) {
 			} else {
 				concrete = append(concrete, named)
 			}
-			h.embedEdges(tn, named)
+			h.embedEdges(tn, named, p.Fset)
 		}
 	}
 	h.implementsEdges(concrete, ifaces)
 }
 
 // embedEdges는 구조체 임베드 필드와 인터페이스 임베드에서 embeds 간선을 긋는다.
-func (h *harvester) embedEdges(tn *types.TypeName, named *types.Named) {
+// 구조체 필드는 선언 위치가 있고, 인터페이스 임베드는 타입 표현식이
+// 하나의 지점을 이루지 않아 위치를 비워 둔다.
+func (h *harvester) embedEdges(tn *types.TypeName, named *types.Named,
+	fset *token.FileSet) {
 	from := objectID(tn)
 	switch u := named.Underlying().(type) {
 	case *types.Struct:
@@ -193,13 +198,14 @@ func (h *harvester) embedEdges(tn *types.TypeName, named *types.Named) {
 				continue
 			}
 			if target := namedOf(f.Type()); target != nil {
-				h.edge(from, objectID(target), graph.EdgeEmbeds)
+				h.edge(from, objectID(target), graph.EdgeEmbeds,
+					positionAt(fset, f.Pos()))
 			}
 		}
 	case *types.Interface:
 		for i := 0; i < u.NumEmbeddeds(); i++ {
 			if target := namedOf(u.EmbeddedType(i)); target != nil {
-				h.edge(from, objectID(target), graph.EdgeEmbeds)
+				h.edge(from, objectID(target), graph.EdgeEmbeds, nil)
 			}
 		}
 	}
@@ -219,7 +225,9 @@ func (h *harvester) implementsEdges(concrete, ifaces []*types.Named) {
 			if !types.Implements(t, iface) && !types.Implements(types.NewPointer(t), iface) {
 				continue
 			}
-			h.edge(objectID(t.Obj()), objectID(i.Obj()), graph.EdgeImplements)
+			// implements는 선언 위치가 아니라 타입 집합 계산의 산물이다 —
+			// 지어낸 위치를 싣지 않는다.
+			h.edge(objectID(t.Obj()), objectID(i.Obj()), graph.EdgeImplements, nil)
 			for j := 0; j < iface.NumMethods(); j++ {
 				m := iface.Method(j)
 				sel := tset.Lookup(m.Pkg(), m.Name())
@@ -273,7 +281,7 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 				Package:  p.PkgPath,
 				Position: position(p, d.Pos()),
 			})
-			h.edge(p.PkgPath, from, graph.EdgeContains)
+			h.edge(p.PkgPath, from, graph.EdgeContains, nil)
 			h.root(from)
 		}
 		// Test*/Benchmark*/Example*/Fuzz*는 go test 러너만 호출한다 —
@@ -345,7 +353,7 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 		// Pkg()가 nil인 객체(universe 스코프의 error.Error 등)는 정점이
 		// 될 수 없다 — 그대로 objectID에 넣으면 nil 역참조로 죽는다.
 		if fn, ok := p.TypesInfo.Uses[f].(*types.Func); ok && fn.Pkg() != nil {
-			h.edge(from, objectID(fn), graph.EdgeCall)
+			h.edge(from, objectID(fn), graph.EdgeCall, position(p, ce.Pos()))
 		}
 	case *ast.SelectorExpr:
 		if sel, ok := p.TypesInfo.Selections[f]; ok {
@@ -354,15 +362,16 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 				return
 			}
 			id := objectID(fn)
-			h.edge(from, id, graph.EdgeCall)
+			pos := position(p, ce.Pos())
+			h.edge(from, id, graph.EdgeCall, pos)
 			if isInterface(sel.Recv()) {
 				for _, impl := range h.impls[id] {
-					h.edge(from, impl, graph.EdgeCall)
+					h.edge(from, impl, graph.EdgeCall, pos)
 				}
 			}
 		} else if fn, ok := p.TypesInfo.Uses[f.Sel].(*types.Func); ok && fn.Pkg() != nil {
 			// pkg.F() — 패키지 한정 선택자는 Selections가 아니라 Uses로 해석된다.
-			h.edge(from, objectID(fn), graph.EdgeCall)
+			h.edge(from, objectID(fn), graph.EdgeCall, position(p, ce.Pos()))
 		}
 	}
 }
@@ -374,9 +383,9 @@ func (h *harvester) sigTypeEdges(p *packages.Package, expr ast.Expr, from string
 	ast.Inspect(expr, func(n ast.Node) bool {
 		switch t := n.(type) {
 		case *ast.Ident:
-			h.sigRef(p.TypesInfo.Uses[t], from)
+			h.sigRef(p.TypesInfo.Uses[t], from, position(p, t.Pos()))
 		case *ast.SelectorExpr:
-			h.sigRef(p.TypesInfo.Uses[t.Sel], from)
+			h.sigRef(p.TypesInfo.Uses[t.Sel], from, position(p, t.Pos()))
 		}
 		return true
 	})
@@ -385,7 +394,7 @@ func (h *harvester) sigTypeEdges(p *packages.Package, expr ast.Expr, from string
 // sigRef는 시그니처 타입 참조 하나를 간선으로 긴다. 모듈 밖 참조는
 // inspect의 references 패스에서 이미 extRefs로 셌으므로 여기서는 건너뛴다 —
 // 같은 참조를 두 번 세면 limitation 수치가 부푼다.
-func (h *harvester) sigRef(obj types.Object, from string) {
+func (h *harvester) sigRef(obj types.Object, from string, pos *graph.Position) {
 	if obj == nil || obj.Pkg() == nil || !isPackageLevel(obj) {
 		return
 	}
@@ -393,29 +402,29 @@ func (h *harvester) sigRef(obj types.Object, from string) {
 	if !h.vertices[id] {
 		return
 	}
-	h.edge(from, id, graph.EdgeSignature)
+	h.edge(from, id, graph.EdgeSignature, pos)
 }
 
 // selectorEdge는 비호출 위치의 선택자(메서드 값, 필드 접근)를
 // references 간선으로 기록한다. 호출 위치는 callEdge가 call로 이미 남긴다.
 func (h *harvester) selectorEdge(p *packages.Package, sel *ast.SelectorExpr, from string) {
 	if s, ok := p.TypesInfo.Selections[sel]; ok {
-		h.refObject(s.Obj(), from)
+		h.refObject(s.Obj(), from, position(p, sel.Pos()))
 		return
 	}
-	h.refObject(p.TypesInfo.Uses[sel.Sel], from)
+	h.refObject(p.TypesInfo.Uses[sel.Sel], from, position(p, sel.Pos()))
 }
 
 // identEdge는 식별자 참조를 references 간선으로 기록한다.
 // 지역 변수는 패키지 스코프 선언이 아니라 걸러진다 — 같은 이름의 지역 변수가
 // 패키지 수준 심볼을 가리키는 가짜 간선을 막는다.
 func (h *harvester) identEdge(p *packages.Package, id *ast.Ident, from string) {
-	h.refObject(p.TypesInfo.Uses[id], from)
+	h.refObject(p.TypesInfo.Uses[id], from, position(p, id.Pos()))
 }
 
 // refObject는 패키지 수준의 모듈 안 객체를 가리키는 references 간선을 긋는다.
 // 지역 선언·모듈 밖 심볼은 정점이 없으므로 외부 참조는 개수만 세어 둔다.
-func (h *harvester) refObject(obj types.Object, from string) {
+func (h *harvester) refObject(obj types.Object, from string, pos *graph.Position) {
 	if obj == nil || obj.Pkg() == nil || !isPackageLevel(obj) {
 		return
 	}
@@ -424,7 +433,7 @@ func (h *harvester) refObject(obj types.Object, from string) {
 		h.extRefs++
 		return
 	}
-	h.edge(from, id, graph.EdgeReferences)
+	h.edge(from, id, graph.EdgeReferences, pos)
 }
 
 // isPackageLevel은 객체가 패키지 스코프 선언인지 확인한다.
@@ -467,18 +476,27 @@ func (h *harvester) vertex(v graph.Vertex) {
 // edge는 양 끝 정점이 있을 때만 간선을 추가한다.
 // 의존 간선의 목적지가 없으면 모듈 밖 참조로 센다 — 없는 정점을 가리키는
 // 간선은 유령이라 만들지 않고, 그 사실은 limitation으로 남긴다.
-func (h *harvester) edge(from, to string, kind graph.EdgeKind) {
+// pos는 이 관계가 성립하는 소스 지점이다 — 같은 관계가 지점마다 반복되면
+// 간선은 하나인 채 positions에 지점만 쌓인다.
+func (h *harvester) edge(from, to string, kind graph.EdgeKind, pos *graph.Position) {
 	if !h.vertices[from] || !h.vertices[to] {
 		if h.vertices[from] && kind != graph.EdgeContains {
 			h.extRefs++
 		}
 		return
 	}
-	e := graph.Edge{From: from, To: to, Kind: kind}
-	if h.edgeSet[e] {
+	key := from + "\x00" + to + "\x00" + string(kind)
+	if i, ok := h.edgeIdx[key]; ok {
+		if pos != nil {
+			h.doc.Edges[i].Positions = append(h.doc.Edges[i].Positions, *pos)
+		}
 		return
 	}
-	h.edgeSet[e] = true
+	e := graph.Edge{From: from, To: to, Kind: kind}
+	if pos != nil {
+		e.Positions = []graph.Position{*pos}
+	}
+	h.edgeIdx[key] = len(h.doc.Edges)
 	h.doc.Edges = append(h.doc.Edges, e)
 }
 

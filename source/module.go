@@ -40,7 +40,7 @@ func buildModuleDocument(root string, reachable []*packages.Package,
 		moduleVertex(doc, p.Module)
 	}
 
-	edgeSet := make(map[graph.Edge]bool)
+	edgeSet := make(map[string]bool)
 	for _, p := range reachable {
 		if kept[p.PkgPath] == nil {
 			continue
@@ -50,12 +50,13 @@ func buildModuleDocument(root string, reachable []*packages.Package,
 			if other == nil || p.Module.Path == other.Module.Path {
 				continue
 			}
-			e := graph.Edge{
-				From: p.Module.Path, To: other.Module.Path, Kind: graph.EdgeImport,
-			}
-			if !edgeSet[e] {
-				edgeSet[e] = true
-				doc.Edges = append(doc.Edges, e)
+			// 모듈 간선은 패키지 import들의 합산이라 하나의 사용 지점이 없다.
+			key := p.Module.Path + "\x00" + other.Module.Path
+			if !edgeSet[key] {
+				edgeSet[key] = true
+				doc.Edges = append(doc.Edges, graph.Edge{
+					From: p.Module.Path, To: other.Module.Path, Kind: graph.EdgeImport,
+				})
 			}
 		}
 	}

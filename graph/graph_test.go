@@ -59,6 +59,39 @@ func TestEdgeKinds(t *testing.T) {
 	}
 }
 
+// TestSortEdgePositions는 같은 관계의 간선이 하나로 합쳐지고
+// 사용 지점이 정렬·중복 제거되는지 확인한다 — v2의 "관계가 단위,
+// 지점은 집합" 계약이다.
+func TestSortEdgePositions(t *testing.T) {
+	doc := &Document{
+		Edges: []Edge{
+			{From: "a", To: "b", Kind: EdgeCall, Positions: []Position{
+				{File: "x.go", Line: 9}, {File: "x.go", Line: 2},
+			}},
+			{From: "a", To: "b", Kind: EdgeCall, Positions: []Position{
+				{File: "x.go", Line: 5}, {File: "x.go", Line: 2},
+			}},
+			{From: "a", To: "b", Kind: EdgeCall},
+		},
+	}
+	doc.Sort()
+	if len(doc.Edges) != 1 {
+		t.Fatalf("same relation must merge into one edge: %+v", doc.Edges)
+	}
+	got := doc.Edges[0].Positions
+	want := []Position{
+		{File: "x.go", Line: 2}, {File: "x.go", Line: 5}, {File: "x.go", Line: 9},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("positions must merge and dedupe: %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("positions not sorted: %+v", got)
+		}
+	}
+}
+
 // TestLimitation은 limitation이 문서에 순서대로 기록되는지 확인한다 —
 // "알릴 것이 없으면 조용하다"의 대칭으로, 알릴 것은 실제로 남아야 한다.
 func TestLimitation(t *testing.T) {

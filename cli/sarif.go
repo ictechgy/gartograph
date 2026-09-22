@@ -54,7 +54,22 @@ type sarifMessage struct {
 }
 
 type sarifLocation struct {
-	LogicalLocations []sarifLogical `json:"logicalLocations"`
+	LogicalLocations  []sarifLogical   `json:"logicalLocations"`
+	PhysicalLocation  *sarifPhysical   `json:"physicalLocation,omitempty"`
+}
+
+type sarifPhysical struct {
+	ArtifactLocation sarifArtifact `json:"artifactLocation"`
+	Region           sarifRegion   `json:"region"`
+}
+
+type sarifArtifact struct {
+	URI string `json:"uri"`
+}
+
+type sarifRegion struct {
+	StartLine   int `json:"startLine"`
+	StartColumn int `json:"startColumn,omitempty"`
 }
 
 type sarifLogical struct {
@@ -78,16 +93,27 @@ func rulesSARIF(violations []analysis.Violation) ([]byte, error) {
 			msg += fmt.Sprintf(" (via %s)", strings.Join(v.Path, " -> "))
 			props = map[string]any{"witnessPath": v.Path}
 		}
-		results = append(results, sarifResult{
-			RuleID:  "layer-" + v.Rule,
-			Level:   "error",
-			Message: sarifMessage{Text: msg},
-			Locations: []sarifLocation{{
-				LogicalLocations: []sarifLogical{
-					{FullyQualifiedName: v.From, Kind: "module"},
-					{FullyQualifiedName: v.To, Kind: "module"},
+		loc := sarifLocation{
+			LogicalLocations: []sarifLogical{
+				{FullyQualifiedName: v.From, Kind: "module"},
+				{FullyQualifiedName: v.To, Kind: "module"},
+			},
+		}
+		if v.Position != nil {
+			// v2 문서는 위반 지점을 안다 — 논리 위치와 함께 물리 위치를 준다.
+			loc.PhysicalLocation = &sarifPhysical{
+				ArtifactLocation: sarifArtifact{URI: v.Position.File},
+				Region: sarifRegion{
+					StartLine:   v.Position.Line,
+					StartColumn: v.Position.Column,
 				},
-			}},
+			}
+		}
+		results = append(results, sarifResult{
+			RuleID:     "layer-" + v.Rule,
+			Level:      "error",
+			Message:    sarifMessage{Text: msg},
+			Locations:  []sarifLocation{loc},
 			Properties: props,
 		})
 	}

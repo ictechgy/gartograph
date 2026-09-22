@@ -53,6 +53,29 @@ func TestLoadPackageGraph(t *testing.T) {
 	}
 }
 
+// TestImportEdgePositions는 import 간선이 선언 위치를 싣는지 확인한다.
+// v2 스키마에서 "의존이 어디서 일어나는가"는 간선이 직접 담는 사실이다.
+func TestImportEdgePositions(t *testing.T) {
+	doc, err := LoadPackageGraph(Options{Dir: fixture(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e *graph.Edge
+	for i := range doc.Edges {
+		if doc.Edges[i].Kind == graph.EdgeImport &&
+			doc.Edges[i].From == "example.com/fixture/a" {
+			e = &doc.Edges[i]
+		}
+	}
+	if e == nil || len(e.Positions) != 1 {
+		t.Fatalf("import edge must carry its decl site: %+v", doc.Edges)
+	}
+	pos := e.Positions[0]
+	if !strings.HasSuffix(pos.File, "a/a.go") || pos.Line != 3 {
+		t.Fatalf("position must point at the import spec in a/a.go: %+v", pos)
+	}
+}
+
 // TestLoadPackageGraphDeps는 --deps가 외부 패키지를 정점으로 담는지 확인한다.
 func TestLoadPackageGraphDeps(t *testing.T) {
 	doc, err := LoadPackageGraph(Options{Dir: fixture(t), IncludeDeps: true})
