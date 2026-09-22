@@ -1,0 +1,13 @@
+# 바이너리와 커버리지 산출물
+/gartograph
+*.test
+*.out
+coverage/
+
+# 빌드 캐시·에디터
+.DS_Store
+.idea/
+.vscode/
+
+# gartograph 자기분석 산출물(향후)
+/.gartograph/
