@@ -11,6 +11,7 @@ import (
 	"sort"
 
 	"github.com/ictechgy/gartograph/analysis"
+	"github.com/ictechgy/gartograph/config"
 	"github.com/ictechgy/gartograph/export"
 	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/source"
@@ -31,6 +32,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdGraph(args[1:], stdout, stderr)
 	case "cycles":
 		return cmdCycles(args[1:], stdout, stderr)
+	case "dead":
+		return cmdDead(args[1:], stdout, stderr)
+	case "rules":
+		return cmdRules(args[1:], stdout, stderr)
 	case "query":
 		return cmdQuery(args[1:], stdout, stderr)
 	case "version":
@@ -52,29 +57,34 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, `gartograph — Go dependency graph tool
 
 Usage:
-  gartograph graph  [--level package] [--format json|mermaid] [flags]
-  gartograph cycles [--level package] [--strict] [--format text|json] [flags]
-  gartograph query  <id> [--depth N] [--format json] [flags]
+  gartograph graph  [--level package|type|symbol] [--format json|mermaid] [--out FILE] [flags]
+  gartograph cycles [--level package|type|symbol] [--strict] [--format text|json] [flags]
+  gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--strict] [flags]
+  gartograph rules  [--config FILE] [--strict] [--format text|json] [flags]
+  gartograph query  <id> [--depth N] [--max N] [flags]
   gartograph version
 
-Flags:
+Harvest flags (graph, cycles, dead, rules, query):
   --dir PATH    module root to analyze (default ".")
   --pattern P   package pattern, repeatable (default "./...")
   --tests       include test variant packages
-  --deps        include dependencies outside the main module`)
+  --deps        include dependencies outside the main module
+  --graph FILE  read a saved graph document instead of harvesting`)
 }
 
 // flagSet는 공통 수확 플래그를 등록한다.
 // 명령마다 같은 수확 옵션을 쓰므로 한 곳에서 만든다.
-func flagSet(name string, stderr io.Writer) (*flag.FlagSet, *source.Options) {
+func flagSet(name string, stderr io.Writer) (*flag.FlagSet, *source.Options, *string) {
 	var opts source.Options
+	var graphPath string
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&opts.Dir, "dir", ".", "module root to analyze")
 	fs.Var((*patterns)(&opts.Patterns), "pattern", "package pattern (repeatable)")
 	fs.BoolVar(&opts.Tests, "tests", false, "include test variant packages")
 	fs.BoolVar(&opts.IncludeDeps, "deps", false, "include dependencies outside the main module")
-	return fs, &opts
+	fs.StringVar(&graphPath, "graph", "", "read a saved graph document instead of harvesting")
+	return fs, &opts, &graphPath
 }
 
 // patterns는 --pattern 반복 플래그용 flag.Value다.
@@ -89,81 +99,16 @@ func (p *patterns) Set(v string) error {
 	return nil
 }
 
-// cmdGraph는 그래프 산출물 자체를 내보낸다.
-func cmdGraph(args []string, stdout, stderr io.Writer) int {
-	fs, opts := flagSet("graph", stderr)
-	format := fs.String("format", "json", "output format: json|mermaid")
-	level := fs.String("level", "package", "graph level: package")
-	if fs.Parse(args) != nil {
-		return 2
-	}
-	if *level != string(graph.LevelPackage) {
-		fmt.Fprintf(stderr, "level %q is not implemented yet; only package\n", *level)
-		return 2
-	}
-	doc, err := source.LoadPackageGraph(*opts)
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 2
-	}
-	return emit(doc, *format, stdout, stderr)
-}
+// stringsFlag는 --root 같은 반복 문자열 플래그다.
+type stringsFlag []string
 
-// emit는 형식별 직렬화를 고른다.
-// 지원하지 않는 형식은 사용법 오류(2)로 돌린다.
-func emit(doc *graph.Document, format string, stdout, stderr io.Writer) int {
-	var out []byte
-	var err error
-	switch format {
-	case "json":
-		out, err = export.JSON(doc)
-	case "mermaid":
-		out, err = export.Mermaid(doc)
-	default:
-		fmt.Fprintf(stderr, "unknown format %q\n", format)
-		return 2
-	}
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 2
-	}
-	_, _ = stdout.Write(out)
-	return 0
-}
+// String은 flag.Value 계약이다.
+func (s *stringsFlag) String() string { return fmt.Sprint([]string(*s)) }
 
-// cmdCycles는 순환 의존성을 찾는다.
-// --strict가 켜지면 순환이 있을 때 1을 돌려준다.
-func cmdCycles(args []string, stdout, stderr io.Writer) int {
-	fs, opts := flagSet("cycles", stderr)
-	strict := fs.Bool("strict", false, "exit 1 when cycles are found")
-	format := fs.String("format", "text", "output format: text|json")
-	level := fs.String("level", "package", "graph level: package")
-	if fs.Parse(args) != nil {
-		return 2
-	}
-	if *level != string(graph.LevelPackage) {
-		fmt.Fprintf(stderr, "level %q is not implemented yet; only package\n", *level)
-		return 2
-	}
-	doc, err := source.LoadPackageGraph(*opts)
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 2
-	}
-	cycles := analysis.Cycles(doc)
-	switch *format {
-	case "json":
-		out, _ := json.MarshalIndent(cycles, "", "  ")
-		fmt.Fprintln(stdout, string(out))
-	default:
-		for _, c := range cycles {
-			fmt.Fprintf(stdout, "cycle: %v\n", c.Members)
-		}
-	}
-	if *strict && len(cycles) > 0 {
-		return 1
-	}
-	return 0
+// Set은 값을 누적한다.
+func (s *stringsFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
 }
 
 // parseInterspersed는 positional 인자 사이에 낀 플래그도 파싱한다.
@@ -185,10 +130,322 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	return positional, nil
 }
 
+// loadDoc는 --graph가 있으면 파일에서, 없으면 수확해서 Document를 얻는다.
+// 저장 문서를 읽을 때 수확 플래그는 무시된다 — 두 입력 경로가 섞이면
+// 어느 쪽이 쓰였는지 불분명해진다.
+func loadDoc(opts *source.Options, graphPath string) (*graph.Document, error) {
+	if graphPath != "" {
+		return export.LoadFile(graphPath)
+	}
+	return source.Load(*opts)
+}
+
+// requireLevel은 문서가 want 레벨 이상을 담았는지 확인한다.
+// 부족하면 어떻게 다시 수확할지를 메시지에 담는다.
+func requireLevel(doc *graph.Document, want graph.Level) error {
+	if doc.Level.Rank() < want.Rank() {
+		return fmt.Errorf("document level is %q; re-harvest with --level %s",
+			doc.Level, want)
+	}
+	return nil
+}
+
+// fail은 에러를 출력하고 종료 코드 2를 돌려준다.
+func fail(stderr io.Writer, err error) int {
+	fmt.Fprintln(stderr, "error:", err)
+	return 2
+}
+
+// cmdGraph는 그래프 산출물 자체를보낸다.
+func cmdGraph(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("graph", stderr)
+	format := fs.String("format", "json", "output format: json|mermaid")
+	level := fs.String("level", string(graph.LevelPackage), "harvest level: package|type|symbol")
+	out := fs.String("out", "", "also write the document to FILE")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	if *graphPath != "" {
+		fmt.Fprintln(stderr, "--graph is meaningless for the graph command; it produces the document")
+		return 2
+	}
+	lvl, err := graph.ParseLevel(*level)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	opts.Level = lvl
+	doc, err := source.Load(*opts)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if *out != "" {
+		if err := export.SaveFile(doc, *out); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	return emit(doc, *format, stdout, stderr)
+}
+
+// emit는 형식별 직렬화를 고른다.
+// 지원하지 않는 형식은 사용법 오류(2)로 돌린다.
+func emit(doc *graph.Document, format string, stdout, stderr io.Writer) int {
+	var out []byte
+	var err error
+	switch format {
+	case "json":
+		out, err = export.JSON(doc)
+	case "mermaid":
+		out, err = export.Mermaid(doc)
+	default:
+		fmt.Fprintf(stderr, "unknown format %q\n", format)
+		return 2
+	}
+	if err != nil {
+		return fail(stderr, err)
+	}
+	_, _ = stdout.Write(out)
+	return 0
+}
+
+// cmdCycles는 순환 의존성을 찾는다.
+// --level은 문서를 어느 레벨로 투영할지 고른다 — 패키지 순환은 컴파일러가
+// 막으므로 실전 검사는 type·symbol 레벨이다.
+// --strict가 켜지면 순환이 있을 때 1을 돌려준다.
+func cmdCycles(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("cycles", stderr)
+	strict := fs.Bool("strict", false, "exit 1 when cycles are found")
+	format := fs.String("format", "text", "output format: text|json")
+	level := fs.String("level", string(graph.LevelPackage), "view level: package|type|symbol")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	lvl, err := graph.ParseLevel(*level)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	// 질의 레벨을 담을 수 있게 수확 레벨을 맞춘다 — 저장 문서를 읽을 때는 무시된다.
+	opts.Level = lvl
+	doc, err := loadDoc(opts, *graphPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if err := requireLevel(doc, lvl); err != nil {
+		return fail(stderr, err)
+	}
+	view, err := doc.View(lvl)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	cycles := analysis.Cycles(view)
+	switch *format {
+	case "json":
+		out, _ := json.MarshalIndent(cycles, "", "  ")
+		fmt.Fprintln(stdout, string(out))
+	case "text":
+		for _, c := range cycles {
+			fmt.Fprintf(stdout, "cycle: %v\n", c.Members)
+		}
+	default:
+		fmt.Fprintf(stderr, "unknown format %q\n", *format)
+		return 2
+	}
+	if *strict && len(cycles) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// deadReport는 dead 명령의 JSON 출력 형식이다.
+// 루트 목록을 함께 실어 "무엇에서 도달하지 못했나"를 소비자가 스스로 판단하게 한다.
+type deadReport struct {
+	Roots        []string           `json:"roots"`
+	UnknownRoots []string           `json:"unknownRoots,omitempty"`
+	Unreachable  []analysis.Finding `json:"unreachable"`
+	Limitations  []string           `json:"limitations,omitempty"`
+}
+
+// cmdDead는 보존 루트에서 도달 불가능한 심볼을 보고한다.
+// 도달성은 그래프 사실이고 삭제 판정은 어디에도 없다.
+func cmdDead(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("dead", stderr)
+	retainPublic := fs.Bool("retain-public", false,
+		"retain all exported symbols — use for libraries without main")
+	var extraRoots stringsFlag
+	fs.Var(&extraRoots, "root", "additional retention root vertex ID (repeatable)")
+	explain := fs.String("explain", "", "show a reachability path for vertex ID")
+	format := fs.String("format", "text", "output format: text|json")
+	strict := fs.Bool("strict", false, "exit 1 when unreachable symbols exist")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	opts.Level = graph.LevelSymbol
+	doc, err := loadDoc(opts, *graphPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if err := requireLevel(doc, graph.LevelSymbol); err != nil {
+		return fail(stderr, err)
+	}
+	roots, unknown := analysis.RetentionRoots(doc, *retainPublic, extraRoots)
+
+	if *explain != "" {
+		return explainDead(doc, *explain, roots, stdout, stderr)
+	}
+
+	limitations := append([]string(nil), doc.Limitations...)
+	for _, u := range unknown {
+		limitations = append(limitations,
+			fmt.Sprintf("retention root %q is not in the graph", u))
+	}
+	if len(doc.Roots) == 0 && !*retainPublic {
+		limitations = append(limitations,
+			"no main or init roots found; exported API may appear unreachable (use --retain-public)")
+	}
+	reachable := analysis.Reachable(doc, roots)
+	findings := analysis.Dead(doc, reachable)
+	if hasMethodFinding(findings) {
+		limitations = append(limitations,
+			"methods may satisfy interfaces declared outside the module; "+
+				"dynamic dispatch from external packages is invisible to this graph")
+	}
+	sort.Strings(limitations)
+
+	switch *format {
+	case "json":
+		out, _ := json.MarshalIndent(deadReport{
+			Roots: roots, UnknownRoots: unknown,
+			Unreachable: findings, Limitations: limitations,
+		}, "", "  ")
+		fmt.Fprintln(stdout, string(out))
+	case "text":
+		for _, f := range findings {
+			fmt.Fprintf(stdout, "unreachable %s: %s\n", f.Kind, f.ID)
+		}
+		fmt.Fprintf(stdout, "%d unreachable symbols (%d retention roots)\n",
+			len(findings), len(roots))
+		if len(limitations) > 0 {
+			fmt.Fprintln(stdout, "limitations:")
+			for _, l := range limitations {
+				fmt.Fprintf(stdout, "  - %s\n", l)
+			}
+		}
+	default:
+		fmt.Fprintf(stderr, "unknown format %q\n", *format)
+		return 2
+	}
+	if *strict && len(findings) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// hasMethodFinding은 unreachable 보고에 메서드가 있는지 확인한다.
+// 메서드가 하나라도 있으면 외부 인터페이스 디스패치의 blind spot을 밝힐 가치가 있다.
+func hasMethodFinding(findings []analysis.Finding) bool {
+	for _, f := range findings {
+		if f.Kind == graph.KindMethod {
+			return true
+		}
+	}
+	return false
+}
+
+// explainDead는 한 정점이 왜 살아 있는지(또는 왜 못 찾았는지) 보여준다.
+func explainDead(doc *graph.Document, id string, roots []string,
+	stdout, stderr io.Writer) int {
+	path, found, err := analysis.Explain(doc, id, roots)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if !found {
+		fmt.Fprintf(stdout, "no path from %d retention roots to %s\n", len(roots), id)
+		return 0
+	}
+	for i, p := range path {
+		if i == 0 {
+			fmt.Fprintf(stdout, "root: %s\n", p)
+		} else {
+			fmt.Fprintf(stdout, "  -> %s\n", p)
+		}
+	}
+	return 0
+}
+
+// rulesReport는 rules 명령의 JSON 출력 형식이다.
+type rulesReport struct {
+	Violations  []analysis.Violation `json:"violations"`
+	Unmapped    []string             `json:"unmapped,omitempty"`
+	Limitations []string             `json:"limitations,omitempty"`
+}
+
+// cmdRules는 .gartograph.yml의 컴포넌트 의존 규칙을 검사한다.
+func cmdRules(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("rules", stderr)
+	configPath := fs.String("config", "", "rules file (default: .gartograph.yml in --dir)")
+	format := fs.String("format", "text", "output format: text|json")
+	strict := fs.Bool("strict", false, "exit 1 when violations exist")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	cfgPath := *configPath
+	if cfgPath == "" {
+		found, ok := config.Find(opts.Dir)
+		if !ok {
+			fmt.Fprintf(stderr, "error: no .gartograph.yml found in %s\n", opts.Dir)
+			return 2
+		}
+		cfgPath = found
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	doc, err := loadDoc(opts, *graphPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	violations, unmapped := analysis.CheckRules(doc, cfg)
+
+	limitations := append([]string(nil), doc.Limitations...)
+	if len(unmapped) > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d packages match no component; rules did not check them", len(unmapped)))
+	}
+	sort.Strings(limitations)
+
+	switch *format {
+	case "json":
+		out, _ := json.MarshalIndent(rulesReport{
+			Violations: violations, Unmapped: unmapped, Limitations: limitations,
+		}, "", "  ")
+		fmt.Fprintln(stdout, string(out))
+	case "text":
+		for _, v := range violations {
+			fmt.Fprintf(stdout, "violation: %s (%s) -> %s (%s)\n",
+				v.From, v.FromComponent, v.To, v.ToComponent)
+		}
+		fmt.Fprintf(stdout, "%d violations (%d packages unmapped)\n",
+			len(violations), len(unmapped))
+		if len(limitations) > 0 {
+			fmt.Fprintln(stdout, "limitations:")
+			for _, l := range limitations {
+				fmt.Fprintf(stdout, "  - %s\n", l)
+			}
+		}
+	default:
+		fmt.Fprintf(stderr, "unknown format %q\n", *format)
+		return 2
+	}
+	if *strict && len(violations) > 0 {
+		return 1
+	}
+	return 0
+}
+
 // cmdQuery는 정점 하나에 대해 이웃을 되묻는다.
 // JSON은 에이전트 소비용이다 — 잘렸으면 truncated, 깊이는 depth를 싣는다.
 func cmdQuery(args []string, stdout, stderr io.Writer) int {
-	fs, opts := flagSet("query", stderr)
+	fs, opts, graphPath := flagSet("query", stderr)
 	depth := fs.Int("depth", 1, "neighbor depth")
 	maxN := fs.Int("max", 0, "max neighbors per direction (0 = unlimited)")
 	positional, err := parseInterspersed(fs, args)
@@ -199,15 +456,13 @@ func cmdQuery(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: gartograph query <vertex-id> [--depth N]")
 		return 2
 	}
-	doc, err := source.LoadPackageGraph(*opts)
+	doc, err := loadDoc(opts, *graphPath)
 	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 2
+		return fail(stderr, err)
 	}
 	res, err := analysis.Query(doc, positional[0], *depth, *maxN)
 	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 2
+		return fail(stderr, err)
 	}
 	sortNeighborsJSON(res)
 	out, _ := json.MarshalIndent(res, "", "  ")

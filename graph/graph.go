@@ -82,12 +82,15 @@ type Position struct {
 // Vertex는 그래프의 정점이다.
 // ID는 안정 식별자로, 패키지 경로 또는 "pkgpath.Name"·"pkgpath.(Recv).Name"
 // 형태를 쓴다 — 이름 충돌이 나면 reader가 분리해 부여한다.
+// Exported는 도달성 루트 확장(retain_public)의 기준이다 —
+// 수확 시점의 types.Object.Exported()를 그대로 옮긴다.
 type Vertex struct {
 	ID       string     `json:"id"`
 	Kind     VertexKind `json:"kind"`
 	Name     string     `json:"name"`
 	Package  string     `json:"package,omitempty"`
 	Position *Position  `json:"position,omitempty"`
+	Exported bool       `json:"exported,omitempty"`
 }
 
 // Edge는 방향 있는 관계다.
@@ -102,10 +105,15 @@ type Edge struct {
 // 리포트 diff와 캐시가 성립하려면 같은 입력이 같은 바이트가 되어야 하므로,
 // 내보내기 전에 반드시 Sort로 정규화한다.
 type Document struct {
-	Version     int      `json:"version"`
-	Tool        string   `json:"tool"`
-	Level       Level    `json:"level"`
-	Root        string   `json:"root"`
+	Version int    `json:"version"`
+	Tool    string `json:"tool"`
+	Level   Level  `json:"level"`
+	Root    string `json:"root"`
+	// Module은 주 모듈 경로다 — 규칙의 컴포넌트 패턴이 파일시스템이 아니라
+	// 모듈 상대 경로로 매칭되도록 한다.
+	Module string `json:"module,omitempty"`
+	// Roots는 수확 시점의 보존 루트(main·init)다 — 루트는 입력 사실이라 문서에 남긴다.
+	Roots       []string `json:"roots,omitempty"`
 	Vertices    []Vertex `json:"vertices"`
 	Edges       []Edge   `json:"edges"`
 	Limitations []string `json:"limitations,omitempty"`

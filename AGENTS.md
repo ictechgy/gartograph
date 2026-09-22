@@ -37,20 +37,26 @@ go test ./...             # 전체 테스트
 go test ./analysis -run TestCycles   # 특정 테스트만
 go vet ./...              # 정적 검사
 
-go run ./cmd/gartograph graph                     # 패키지 그래프(JSON)
-go run ./cmd/gartograph graph --format mermaid    # Mermaid
-go run ./cmd/gartograph cycles --strict           # 순환 검사(위반 시 종료 1)
-go run ./cmd/gartograph query <정점ID> --depth 2  # 이웃 되묻기(JSON)
+go run ./cmd/gartograph graph --level symbol --out /tmp/g.json  # 심볼 그래프
+go run ./cmd/gartograph cycles --level symbol --strict          # 심볼 순환 검사
+go run ./cmd/gartograph dead                                    # 도달 불가 심볼
+go run ./cmd/gartograph rules --strict                          # .gartograph.yml 검사
+go run ./cmd/gartograph query <정점ID> --depth 2                # 이웃 되묻기(JSON)
 ```
 
 완료를 보고할 때는 빌드·vet·테스트 통과와 **자기 분석**(이 도구로 이 저장소를
-돌려보는 것)의 출력 근거가 있어야 합니다. 입력이 바뀌지 않은 검사는 기존 근거를
-재사용합니다. 문서만 바꾸면 구조·링크·적용 범위를 검증하고, 제품 검사를 새로
-실행했다고 쓰지 마세요.
+돌려보는 것)의 출력 근거가 있어야 합니다. 자기 분석은 위 네 질의를 전부 돌립니다
+— `.gartograph.yml`이 이 저장소의 실제 계층 규칙입니다.
 
 **순환 검사는 패키지 레벨만으로 끝내지 않습니다.** Go 컴파일러가 패키지 순환
-import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상입니다. 타입·심볼
-레벨이 실전이고, 그 레벨이 아직 없다는 것을 결과에 밝히세요.
+import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상입니다. 실전 검사는
+`cycles --level type`과 `--level symbol`입니다.
+
+**`dead`의 기본 루트는 `main`·`init`뿐입니다.** 라이브러리에서는 저장소 안에
+호출자가 없는 공개 API 전체가 unreachable로 나옵니다 — `--retain-public`이
+그때의 스위치입니다. 모듈 밖 인터페이스(error, flag.Value 같은)를 만족하는
+메서드는 외부 디스패치가 그래프에 안 보여 unreachable로 나올 수 있고,
+보고에 해당 limitation이 실립니다.
 
 ## 절대 하지 말 것
 
@@ -59,6 +65,11 @@ import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상
 - **`golang.org/x/tools`를 `source` 밖에서 import 하지 마세요.** 수확 기술이
   새 나가면 같은 저장소가 어디서 스캔됐냐에 따라 다른 그래프가 됩니다.
   수확은 원문을 옮기기만 하고, 판정·의미론은 `analysis`에 둡니다.
+  `gopkg.in/yaml.v3`도 `config` 안에서만 import합니다.
+- **인터페이스 디스패치를 과소 근사하지 마세요.** 인터페이스 메서드 호출은
+  CHA로 모든 구현 메서드에 call 간선을 긋습니다. 간선을 빼먹으면 dead가
+  살아 있는 코드를 죽었다고 보고합니다 — 과대 근사는 "살아 있다" 쪽으로만
+  기울이세요. 모듈 밖 인터페이스의 디스패치는 여전히 blind spot입니다.
 - **JSON 출력을 비결정적으로 만들지 마세요.** 내보내기 전에 `Document.Sort`.
   같은 입력이 매번 다른 파일이 되면 리포트 diff와 캐시가 무의미해집니다.
 - **삭제 판정을 내지 마세요.** `unreachable`은 "보존 루트에서 도달할 수 없다"는

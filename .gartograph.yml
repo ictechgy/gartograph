@@ -1,0 +1,21 @@
+# gartograph의 자기 아키텍처 규칙.
+# 계층은 한 방향이다: cmd → cli → {analysis, source, config, export} → graph.
+# graph는 아무것도 의존하지 않는 순수 도메인이다.
+components:
+  main: ["cmd/**"]
+  cli: ["cli"]
+  analysis: ["analysis"]
+  harvest: ["source"]
+  config: ["config"]
+  export: ["export"]
+  core: ["graph"]
+  testutil: ["internal/**"]
+deps:
+  main: ["cli"]
+  cli: ["analysis", "harvest", "config", "export", "core"]
+  analysis: ["core", "config"]
+  harvest: ["core"]
+  config: []
+  export: ["core"]
+  core: []
+  testutil: []

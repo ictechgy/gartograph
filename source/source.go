@@ -19,6 +19,8 @@ type Options struct {
 	Dir string
 	// Patterns은 packages.Load에 넘길 패턴이다. 빈 슬라이스는 "./..."다.
 	Patterns []string
+	// Level은 수확할 가장 세밀한 레벨이다. 빈 값은 package다.
+	Level graph.Level
 	// Tests는 테스트 변형 패키지 포함 여부다.
 	// 외부 테스트 패키지(x_test)는 원 패키지를 import하므로, 켜면
 	// 패키지 레벨에서 가짜 순환처럼 보일 수 있다는 점을 기억한다.
@@ -29,29 +31,49 @@ type Options struct {
 	IncludeDeps bool
 }
 
-// LoadPackageGraph는 패키지 레벨 의존 그래프를 수확한다.
-// 패키지 정점은 모듈 경로 안의 것만 기본으로 담고, 간선은 import다.
-func LoadPackageGraph(opts Options) (*graph.Document, error) {
+// Load는 opts.Level에 맞는 가장 세밀한 그래프를 수확한다.
+// package는 import 간선만, type은 타입 정점과 embeds/implements/references,
+// symbol은 함수·변수·상수 정점과 call/references까지 담는다.
+func Load(opts Options) (*graph.Document, error) {
 	pkgs, err := load(opts)
 	if err != nil {
 		return nil, err
 	}
-	return buildDocument(opts.Dir, pkgs, opts.IncludeDeps), nil
+	reachable := walkImports(pkgs)
+	if opts.Level == graph.LevelModule {
+		return buildModuleDocument(opts.Dir, reachable, opts.IncludeDeps), nil
+	}
+	doc, kept := buildDocument(opts.Dir, reachable, opts.IncludeDeps)
+	if opts.Level.Rank() >= graph.LevelType.Rank() {
+		internal := internalPackages(pkgs, kept)
+		harvestSymbols(doc, internal, opts.Level)
+	}
+	doc.Sort()
+	return doc, nil
+}
+
+// LoadPackageGraph는 패키지 레벨 의존 그래프를 수확한다.
+// 하위 호환용 얇은 래퍼다 — 새 코드는 Load에 Level을 넘기는 쪽을 쓴다.
+func LoadPackageGraph(opts Options) (*graph.Document, error) {
+	opts.Level = graph.LevelPackage
+	return Load(opts)
 }
 
 // load는 go/packages를 감싸는 유일한 호출점이다.
-// 수확 모드를 한 곳에 두면 심볼 레벨로 확장할 때도 reader 정책이 갈라지지 않는다.
+// 수확 모드를 한 곳에 두면 레벨 확장 때 reader 정책이 갈라지지 않는다.
 func load(opts Options) ([]*packages.Package, error) {
 	patterns := opts.Patterns
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
-	cfg := &packages.Config{
-		Dir:   opts.Dir,
-		Tests: opts.Tests,
-		Mode: packages.NeedName | packages.NeedImports | packages.NeedDeps |
-			packages.NeedModule,
+	mode := packages.NeedName | packages.NeedImports | packages.NeedDeps |
+		packages.NeedModule
+	if opts.Level.Rank() >= graph.LevelType.Rank() {
+		// 심볼 수확에는 AST와 타입 정보가 필요하다.
+		mode |= packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo
 	}
+	cfg := &packages.Config{Dir: opts.Dir, Tests: opts.Tests, Mode: mode}
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
 		return nil, fmt.Errorf("loading packages: %w — check go.mod and build tags", err)
@@ -62,15 +84,16 @@ func load(opts Options) ([]*packages.Package, error) {
 // buildDocument는 로드된 패키지 목록을 Document로 정규화한다.
 // 정점은 모듈 내부 패키지가 기본이고, 외부 의존은 IncludeDeps일 때만 담는다.
 // 패키지 목록은 패턴에 맞은 루트뿐이라, 정점 후보는 import 그래프를 BFS로 넓힌다.
-func buildDocument(root string, pkgs []*packages.Package, includeDeps bool) *graph.Document {
+// 두 번째 반환값은 그래프에 남은 패키지 — 심볼 수확이 순회할 범위다.
+func buildDocument(root string, reachable []*packages.Package,
+	includeDeps bool) (*graph.Document, map[string]*packages.Package) {
 	doc := &graph.Document{
 		Version: graph.Version,
 		Tool:    graph.Tool,
 		Level:   graph.LevelPackage,
 		Root:    root,
 	}
-	reachable := walkImports(pkgs)
-	kept := make(map[string]bool)
+	kept := make(map[string]*packages.Package)
 	var extImports, errCount int
 
 	// 먼저 정점을 확정한다 — 간선은 양쪽 정점이 살아 있어야 만든다.
@@ -79,16 +102,19 @@ func buildDocument(root string, pkgs []*packages.Package, includeDeps bool) *gra
 		if !keep(p, includeDeps) {
 			continue
 		}
-		kept[p.PkgPath] = true
+		kept[p.PkgPath] = p
 		doc.Vertices = append(doc.Vertices, vertexFor(p))
+		if p.Module != nil && p.Module.Main && doc.Module == "" {
+			doc.Module = p.Module.Path
+		}
 	}
 
 	for _, p := range reachable {
-		if !kept[p.PkgPath] {
+		if kept[p.PkgPath] == nil {
 			continue
 		}
 		for _, imp := range p.Imports {
-			if kept[imp.PkgPath] {
+			if kept[imp.PkgPath] != nil {
 				doc.Edges = append(doc.Edges, graph.Edge{
 					From: p.PkgPath, To: imp.PkgPath, Kind: graph.EdgeImport,
 				})
@@ -109,7 +135,21 @@ func buildDocument(root string, pkgs []*packages.Package, includeDeps bool) *gra
 			"%d packages reported load errors; their import edges may be incomplete", errCount))
 	}
 	doc.Sort()
-	return doc
+	return doc, kept
+}
+
+// internalPackages는 로드된 루트 중 모듈 내부이고 그래프에 남은 것만 골라낸다.
+// 심볼 수확은 syntax가 있는 패키지에서만 의미가 있다.
+func internalPackages(pkgs []*packages.Package, kept map[string]*packages.Package) []*packages.Package {
+	var out []*packages.Package
+	for _, p := range pkgs {
+		if kept[p.PkgPath] == nil || p.Module == nil || !p.Module.Main {
+			continue
+		}
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PkgPath < out[j].PkgPath })
+	return out
 }
 
 // walkImports는 루트 패키지들에서 import 그래프를 BFS로 넓혀

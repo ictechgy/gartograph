@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -112,5 +113,248 @@ func TestQueryNotFound(t *testing.T) {
 	}
 	if !strings.Contains(errb, "not found") {
 		t.Fatalf("expected not-found message: %s", errb)
+	}
+}
+
+// deadFixture는 main과 미도달 심볼이 있는 모듈이다.
+func deadFixture(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func main() { lib.Run() }
+`,
+		"lib/lib.go": `package lib
+
+func Run() { helper() }
+func helper() {}
+func Unused() {}
+`,
+	})
+}
+
+// TestDead는 도달 불가 보고와 strict 종료 코드를 확인한다.
+// unreachable은 그래프 사실이지 삭제 판정이 아니다.
+func TestDead(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "dead", "--dir", dir, "--strict")
+	if code != 1 {
+		t.Fatalf("dead --strict with unreachable: expected 1, got %d %s", code, errb)
+	}
+	if !strings.Contains(out, "example.com/fixture/lib.Unused") {
+		t.Fatalf("expected Unused reported: %s", out)
+	}
+	if strings.Contains(out, "lib.helper") || strings.Contains(out, "lib.Run") {
+		t.Fatalf("reachable symbol reported dead: %s", out)
+	}
+
+	// --retain-public이면 공개 Unused도 루트가 되어 findings가 빈다.
+	code, out, _ = run(t, "dead", "--dir", dir, "--retain-public")
+	if code != 0 || !strings.Contains(out, "0 unreachable") {
+		t.Fatalf("retain-public: %d %s", code, out)
+	}
+}
+
+// TestDeadExplain은 --explain의 경로 출력을 확인한다.
+func TestDeadExplain(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "dead", "--dir", dir,
+		"--explain", "example.com/fixture/lib.helper")
+	if code != 0 {
+		t.Fatalf("explain failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "example.com/fixture.main") ||
+		!strings.Contains(out, "lib.helper") {
+		t.Fatalf("expected root-to-target path: %s", out)
+	}
+}
+
+// TestRules는 규칙 위반과 strict 종료 코드를 확인한다.
+func TestRules(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"web/web.go": `package web
+
+import _ "example.com/fixture/db"
+`,
+		"db/db.go": `package db
+`,
+		".gartograph.yml": `components:
+  web: ["web"]
+  db: ["db"]
+deps: {}
+`,
+	})
+	code, out, errb := run(t, "rules", "--dir", dir, "--strict")
+	if code != 1 {
+		t.Fatalf("rules --strict with violation: expected 1, got %d %s", code, errb)
+	}
+	if !strings.Contains(out, "violation") || !strings.Contains(out, "web") {
+		t.Fatalf("expected violation output: %s", out)
+	}
+}
+
+// TestRulesNoConfig는 설정 파일이 없으면 사용법 오류(2)인지 확인한다.
+// 규칙 없이 "위반 없음"을 뱉으면 소비자가 규칙이 검사됐다고 오해한다.
+func TestRulesNoConfig(t *testing.T) {
+	code, _, _ := run(t, "rules", "--dir", fixture(t))
+	if code != 2 {
+		t.Fatalf("rules without config: expected 2, got %d", code)
+	}
+}
+
+// TestGraphFileRoundTrip은 --out으로 저장한 문서를 --graph로 읽는 경로를 확인한다.
+func TestGraphFileRoundTrip(t *testing.T) {
+	dir := deadFixture(t)
+	path := filepath.Join(t.TempDir(), "graph.json")
+	code, _, errb := run(t, "graph", "--dir", dir, "--level", "symbol", "--out", path)
+	if code != 0 {
+		t.Fatalf("graph --out failed: %d %s", code, errb)
+	}
+	// 저장 문서로 dead를 돌린다 — 수확 없이 파일만으로 분석돼야 한다.
+	code, out, errb := run(t, "dead", "--graph", path)
+	if code != 0 {
+		t.Fatalf("dead --graph failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "lib.Unused") {
+		t.Fatalf("expected Unused from saved doc: %s", out)
+	}
+	// 패키지 레벨 문서에 심볼 질의를 걸면 레벨 부족을 알려야 한다.
+	code, _, errb = run(t, "graph", "--dir", dir, "--out", path)
+	if code != 0 {
+		t.Fatalf("graph --out (package) failed: %d %s", code, errb)
+	}
+	code, _, errb = run(t, "dead", "--graph", path)
+	if code != 2 || !strings.Contains(errb, "re-harvest") {
+		t.Fatalf("expected level-mismatch error, got %d %s", code, errb)
+	}
+}
+
+// TestUnknownFormat은 지원하지 않는 형식이 사용법 오류(2)인지 확인한다.
+// 모르는 형식을 조용히 text로 출력하면 소비자가 깨진 출력을 받는다.
+func TestUnknownFormat(t *testing.T) {
+	dir := deadFixture(t)
+	for _, args := range [][]string{
+		{"cycles", "--dir", dir, "--format", "xml"},
+		{"dead", "--dir", dir, "--format", "xml"},
+		{"rules", "--dir", dir, "--config", "/dev/null", "--format", "xml"},
+		{"graph", "--dir", dir, "--format", "xml"},
+	} {
+		if code, _, _ := run(t, args...); code != 2 {
+			t.Fatalf("%v: expected 2, got %d", args, code)
+		}
+	}
+}
+
+// TestHarvestFlags는 --pattern·--root 같은 반복 플래그가 파싱되는지 확인한다.
+// flag.Value.Set이 실제 호출 경로에서 동작해야 한다.
+func TestHarvestFlags(t *testing.T) {
+	dir := deadFixture(t)
+	// --pattern은 루트만 좁힌다 — import로 도달되는 내부 패키지는 여전히 정점이다.
+	// ./lib만 루트로 잡으면 main 패키지가 빠지고 lib만 남는다.
+	code, out, errb := run(t, "graph", "--dir", dir, "--pattern", "./lib")
+	if code != 0 {
+		t.Fatalf("graph --pattern failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "example.com/fixture/lib") ||
+		strings.Contains(out, `"id": "example.com/fixture"`) {
+		t.Fatalf("--pattern ./lib must hold only lib: %s", out)
+	}
+	// dead --root는 추가 보존 루트를 받는다 — 없는 루트는 unknownRoots로 나온다.
+	code, out, _ = run(t, "dead", "--dir", dir, "--format", "json",
+		"--root", "example.com/fixture/lib.Unused", "--root", "ghost")
+	if code != 0 {
+		t.Fatalf("dead --root failed: %d", code)
+	}
+	var rep struct {
+		Roots        []string              `json:"roots"`
+		UnknownRoots []string              `json:"unknownRoots"`
+		Unreachable  []struct{ ID string } `json:"unreachable"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(rep.Unreachable) != 0 {
+		t.Fatalf("Unused must be retained as explicit root: %s", out)
+	}
+	if len(rep.UnknownRoots) != 1 || rep.UnknownRoots[0] != "ghost" {
+		t.Fatalf("expected ghost in unknownRoots: %s", out)
+	}
+}
+
+// TestCyclesJSON은 cycles의 JSON 출력과 --level 투영을 확인한다.
+func TestCyclesJSON(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "cycles", "--dir", dir,
+		"--level", "symbol", "--format", "json", "--strict")
+	if code != 0 {
+		t.Fatalf("cycles json failed: %d %s", code, errb)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(out), "[") &&
+		!strings.Contains(out, "null") {
+		t.Fatalf("cycles --format json must emit JSON: %s", out)
+	}
+}
+
+// TestQueryDependedBy는 역방향 이웃이 정렬·보고되는지 확인한다.
+func TestQueryDependedBy(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "query", "example.com/fixture/lib", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("query failed: %d %s", code, errb)
+	}
+	var res struct {
+		DependedBy []struct{ ID string } `json:"dependedBy"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(res.DependedBy) != 1 ||
+		res.DependedBy[0].ID != "example.com/fixture" {
+		t.Fatalf("expected dependedBy main pkg: %s", out)
+	}
+}
+
+// TestGraphMermaid는 graph의 mermaid 출력 경로를 확인한다.
+func TestGraphMermaid(t *testing.T) {
+	dir := fixture(t)
+	code, out, errb := run(t, "graph", "--dir", dir, "--format", "mermaid")
+	if code != 0 {
+		t.Fatalf("mermaid failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "flowchart LR") {
+		t.Fatalf("expected mermaid flowchart: %s", out)
+	}
+}
+
+// TestGraphLevel은 --level이 문서의 레벨과 정점 종류를 바꾸는지 확인한다.
+func TestGraphLevel(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "graph", "--dir", dir, "--level", "symbol")
+	if code != 0 {
+		t.Fatalf("graph --level symbol failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Level    string `json:"level"`
+		Vertices []struct {
+			ID   string `json:"id"`
+			Kind string `json:"kind"`
+		} `json:"vertices"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if doc.Level != "symbol" {
+		t.Fatalf("expected symbol level, got %s", doc.Level)
+	}
+	var hasFunc bool
+	for _, v := range doc.Vertices {
+		if v.Kind == "func" && strings.HasSuffix(v.ID, ".main") {
+			hasFunc = true
+		}
+	}
+	if !hasFunc {
+		t.Fatal("symbol level missing func vertices")
 	}
 }

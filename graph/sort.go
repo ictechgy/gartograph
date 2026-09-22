@@ -26,6 +26,7 @@ func (d *Document) Sort() {
 	})
 	d.Edges = dedupeEdges(d.Edges)
 	sort.Strings(d.Limitations)
+	sort.Strings(d.Roots)
 }
 
 // dedupeEdges는 정렬된 간선 목록에서 연속 중복을 제거한다.
