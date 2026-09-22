@@ -31,6 +31,23 @@ depguard·dependency-cruiser·import-linter·apidiff):
 - `graph --format dot` — Graphviz 출력. MCP 도구 `gartograph_path` 추가
   (도구 7개).
 
+같은 브랜치의 두 번째 패스(규칙 표현력 + 메트릭):
+- `common: [c]` — 모든 컴포넌트가 deps에 적지 않아도 의존 가능한 공통 목록.
+- `visibleTo` — 공급자 측 규칙("누가 나를 쓸 수 있나"). deps의 거울,
+  좁히기만 한다. rule:"visibleTo".
+- `forbidden: [{from, to}]` — 간접 도달 금지(import-linter 계약).
+  위반에 목격 경로 `path`를 싣고 Kind는 비운다.
+- `deny` 항목이 `{to, reason}` 맵 형태도 받는다 — reason이 위반에 실린다.
+- `Load`가 규칙의 컴포넌트 참조를 검증한다 — 미정의 이름·forbidden
+  자기자신 쌍은 설정 오류. Violation에 Path가 생겨 baseline 동일성은
+  baselineKey 함수가 정한다(forbidden은 컴포넌트 쌍만).
+- `metrics` — 컴포넌트(설정 없으면 패키지) 단위 Ca/Ce/불안정성 +
+  orphan(내부 임포터 0, main·보존 루트 제외). --strict 없음, 사실 보고.
+- `mapping` — 컴포넌트→패키지 매핑 + unmapped·unmatched 보기.
+- `init` — 관찰된 import를 deps로 옮긴 .gartograph.yml 생성.
+  생성 즉시 rules 통과가 계약. 이미 있으면 거부.
+- MCP 도구 `gartograph_metrics`·`gartograph_mapping` 추가(도구 9개).
+
 v0.2.0이 추가한 것(타 도구 비교 패스, PR #6·#7):
 - `impact <id>` 역방향 전이 클로저, `rules --format sarif` (SARIF 2.1.0),
   `mcp` MCP stdio 서버(도구 6종, 기동 시 문서 1회 수확).
@@ -99,10 +116,12 @@ v0.2.0이 추가한 것(타 도구 비교 패스, PR #6·#7):
 3. **isthmus 조인** — cgo/gomobile 브리지가 생기면 bridge facts producer.
 4. **정밀도** — RTA/포인터 분석으로 CHA 오탐을 좁히는 것은 필요해질 때.
    dead의 "살아 있다" 편향이 계약이라 급하지 않다.
-5. **남은 비교 격차**(이번에 안 한 것) — `visibleTo` 공급자 측 규칙,
-   deny의 간접(transitive) 검사 옵션, independence 계약, `metrics`
-   (Ca/Ce/불안정성), `init` 스캐폴딩, depguard식 deny 사유 메시지,
-   간선 위치 속성(스키마 v2 — 파일 스코프 규칙의 전제).
+5. **남은 비교 격차**(두 패스 후에도 안 한 것) — 간선 위치 속성
+   (Edge.position, 스키마 v2 — isthmus GRAPH-EXCHANGE 계약과 함께
+   올려야 해서 별도 설계 필요), 테스트 변형 패키지 dedup(`p` vs
+   `p [p.test]` — deadcode처럼 위치로 합치기), independence 계약
+   (두 컴포넌트 상호 무의존 — forbidden 양방향으로 표현 가능해 우선순위
+   낮음).
 
 ## 결정 기록
 

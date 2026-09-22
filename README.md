@@ -75,6 +75,13 @@ gartograph path github.com/ictechgy/gartograph/cmd/gartograph github.com/ictechg
 # Compare two saved documents: structure drift and breaking signals
 gartograph diff old.json new.json --strict
 
+# Coupling metrics (Ca/Ce/instability) + orphan packages
+gartograph metrics                # component-level when .gartograph.yml exists
+gartograph mapping                # how packages resolve to components
+
+# Scaffold .gartograph.yml — deps mirror observed imports, so rules pass clean
+gartograph init
+
 # Serve the harvested document to agents over MCP stdio
 gartograph mcp --level symbol
 
@@ -119,6 +126,8 @@ Two optional sections narrow it further:
 ```yaml
 deny:                     # hard bans — beat deps entries
   analysis: ["cli"]       # analysis must never reach back into cli
+  web:                    # entries may carry a reason for the reader
+    - {to: db, reason: "go through internal/store instead"}
 signature:                # public-API type leakage (needs symbol level)
   api:      ["core"]      # api's exported signatures may only name core types
 ```
@@ -127,6 +136,27 @@ signature:                # public-API type leakage (needs symbol level)
 - `signature` checks `signature` edges of **exported** symbols: a component's
   public API may only reference types from listed components, even when body
   dependencies are allowed. Violations carry `rule: "deny"|"signature"|"allow"`.
+
+More optional sections widen the contract vocabulary:
+
+```yaml
+common: ["core"]          # every component may depend on these, unlisted
+visibleTo:                # provider-side rule: who may depend on me
+  db: ["store"]           # only the store component may import db
+forbidden:                # transitive bans — no path at all, direct or not
+  - {from: api, to: db}   # api must not reach db even via other components
+```
+
+- `common` removes allowlist boilerplate for shared components.
+- `visibleTo` is the mirror of `deps`: `deps` says what *I* may use,
+  `visibleTo` says who may use *me*. Both are allowlists — `visibleTo`
+  only narrows, never widens. Violations carry `rule: "visibleTo"`.
+- `forbidden` checks reachability, not just direct edges — deps can only
+  see direct imports. A violation reports one witness `path`.
+- `deny` entries accept a `reason` — it lands on the violation so the
+  reader knows what to do instead.
+- Every name referenced by a rule must be a defined component — `Load`
+  rejects dead references instead of letting a typo pretend to be a rule.
 
 **External/vendor rules.** Component patterns also match the full import
 paths of external packages harvested with `--deps`, so `deps`/`deny` can
@@ -237,8 +267,9 @@ go run ./cmd/gartograph dead
 `gartograph mcp` serves the harvested document over MCP stdio
 (newline-delimited JSON-RPC): `gartograph_summary`, `gartograph_query`,
 `gartograph_impact`, `gartograph_path`, `gartograph_cycles`,
-`gartograph_dead`, `gartograph_rules`. The document is harvested once at
-startup so every tool call answers over the same snapshot. Example client config:
+`gartograph_dead`, `gartograph_rules`, `gartograph_metrics`,
+`gartograph_mapping`. The document is harvested once at startup so every
+tool call answers over the same snapshot. Example client config:
 
 ```json
 {"mcpServers": {"gartograph": {
@@ -256,10 +287,12 @@ startup so every tool call answers over the same snapshot. Example client config
 - ~~`impact`, `deny`/`signature` rules, SARIF, MCP, `--tags`, generated marking~~ — done
 - ~~`path`, `diff`, `impact --since/--files`, rules baseline, external
   (vendor) rules, `--format dot`~~ — done
+- ~~`visibleTo`, `common`, transitive `forbidden`, deny reasons, `metrics`,
+  `mapping`, `init`~~ — done
 - isthmus bridge-facts producer (cgo/gomobile boundary — open question)
 - RTA/pointer analysis to narrow CHA over-approximation (optional precision)
-- Provider-side rules (`visibleTo`), transitive/indirect rule checking,
-  `metrics` (Ca/Ce/instability), `init` scaffolding
+- Edge positions in the document (schema v2 — enables file-scoped rules),
+  test-variant deduplication
 
 ## License
 

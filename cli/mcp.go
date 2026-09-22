@@ -279,6 +279,34 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 			UnmatchedComponents: rep.UnmatchedComponents,
 			Limitations: s.doc.Limitations,
 		})
+	case "gartograph_metrics":
+		// metrics는 설정이 선택이다 — 없으면 패키지 단위로 계산한다.
+		var cfg *config.File
+		var limitations []string
+		if s.cfgPath != "" {
+			loaded, err := config.Load(s.cfgPath)
+			if err != nil {
+				return "", err
+			}
+			cfg = loaded
+		} else {
+			limitations = append(limitations,
+				"no .gartograph.yml found; metrics computed per package")
+		}
+		rep := analysis.Metrics(s.doc, cfg)
+		return marshal(struct {
+			*analysis.MetricsReport
+			Limitations []string `json:"limitations,omitempty"`
+		}{rep, append(limitations, s.doc.Limitations...)})
+	case "gartograph_mapping":
+		if s.cfgPath == "" {
+			return "", fmt.Errorf("no .gartograph.yml found in %s", s.dir)
+		}
+		cfg, err := config.Load(s.cfgPath)
+		if err != nil {
+			return "", err
+		}
+		return marshal(analysis.MapComponents(s.doc, cfg))
 	default:
 		return "", fmt.Errorf("unknown tool %q — see tools/list", name)
 	}
@@ -331,6 +359,12 @@ func mcpTools() []map[string]any {
 			}, nil)},
 		{"name": "gartograph_rules",
 			"description": "Check layer rules from .gartograph.yml; returns violations and unmapped packages",
+			"inputSchema": obj(map[string]any{}, nil)},
+		{"name": "gartograph_metrics",
+			"description": "Coupling metrics per component (or per package without config): Ca, Ce, instability, orphans",
+			"inputSchema": obj(map[string]any{}, nil)},
+		{"name": "gartograph_mapping",
+			"description": "Show how packages resolve to components: mapping, unmapped, unmatched components",
 			"inputSchema": obj(map[string]any{}, nil)},
 	}
 }

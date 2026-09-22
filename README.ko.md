@@ -51,6 +51,9 @@ gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분
                                               # (--files cli/cli.go도 가능)
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
+gartograph metrics                             # Ca/Ce/불안정성 + orphan 패키지
+gartograph mapping                             # 패키지→컴포넌트 매핑 보기
+gartograph init                                # .gartograph.yml 스캐폴딩
 gartograph mcp --level symbol                  # MCP stdio로 에이전트에 서빙
 gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 ```
@@ -84,6 +87,8 @@ deps:
 ```yaml
 deny:                     # 무조건 금지 — deps보다 우선
   analysis: ["cli"]
+  web:                    # 항목에 사유를 달 수 있습니다 — 위반 보고에 실림
+    - {to: db, reason: "internal/store를 거쳐라"}
 signature:                # 공개 API 타입 누출 (심볼 레벨 필요)
   api:      ["core"]      # api의 공개 시그니처는 core 타입만 가리킬 수 있음
 ```
@@ -91,7 +96,26 @@ signature:                # 공개 API 타입 누출 (심볼 레벨 필요)
 - `deny`는 `deps`를 이깁니다 — "보통 허용, 이 조합은 금지".
 - `signature`는 **exported** 심볼의 `signature` 간선을 검사합니다 — 본문 의존은
   허용하면서 공개 API의 타입 누출만 막을 때 씁니다. 위반은 `rule` 필드로
-  구분됩니다(`allow`/`deny`/`signature`).
+  구분됩니다(`allow`/`deny`/`signature`/`visibleTo`/`forbidden`).
+
+선택 섹션이 계약 어휘를 더 넓힙니다:
+
+```yaml
+common: ["core"]          # 모든 컴포넌트가 deps에 적지 않아도 의존 가능
+visibleTo:                # 공급자 측 규칙 — 누가 나를 의존할 수 있나
+  db: ["store"]           # store만 db를 import 가능
+forbidden:                # 전이 금지 — 직접이든 경유든 도달 자체가 위반
+  - {from: api, to: db}   # api는 다른 컴포넌트를 경유해서도 db에 닿으면 안 됨
+```
+
+- `common`은 공통 부품을 매 deps에 반복 적는 boilerplate를 없앱니다.
+- `visibleTo`는 `deps`의 거울입니다 — deps는 "내가 무엇을 쓸 수 있나",
+  visibleTo는 "누가 나를 쓸 수 있나". 둘 다 허용 목록이라 visibleTo는
+  좁힐 뿐 풀지 않습니다.
+- `forbidden`은 직접 간선이 아니라 도달성을 봅니다 — deps는 직접 import만
+  봅니다. 위반에는 목격 경로 `path`가 실립니다.
+- 규칙이 참조하는 모든 이름은 정의된 컴포넌트여야 합니다 — `Load`가
+  죽은 참조를 거부해 오타가 규칙인 척하지 못하게 합니다.
 
 **외부/vendor 규칙.** 컴포넌트 패턴은 `--deps`로 수확된 외부 패키지의 전체
 import 경로에도 매칭됩니다 — `deps`/`deny`가 서드파티 모듈을 통제합니다:
@@ -151,8 +175,8 @@ gartograph rules --baseline .gartograph-baseline.json --strict
 `gartograph mcp`는 수확한 문서를 MCP stdio(개행 구분 JSON-RPC)로 서빙합니다:
 `gartograph_summary`, `gartograph_query`, `gartograph_impact`,
 `gartograph_path`, `gartograph_cycles`, `gartograph_dead`,
-`gartograph_rules`. 문서는 기동 시 한 번 수확해 모든 호출이 같은 스냅샷
-위에서 답합니다.
+`gartograph_rules`, `gartograph_metrics`, `gartograph_mapping`.
+문서는 기동 시 한 번 수확해 모든 호출이 같은 스냅샷 위에서 답합니다.
 
 ```json
 {"mcpServers": {"gartograph": {
