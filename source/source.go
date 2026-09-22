@@ -6,8 +6,12 @@
 package source
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/ictechgy/gartograph/graph"
 	"golang.org/x/tools/go/packages"
@@ -29,6 +33,10 @@ type Options struct {
 	// 기본은 모듈 내부만 — 외부 의존까지 넣으면 정점 수가 폭증해
 	// 저장소 구조 질의가 흐려진다. 생략한 개수는 limitation으로 남긴다.
 	IncludeDeps bool
+	// Tags는 go list -tags에 넘길 빌드 태그 목록(쉼표 구분)이다.
+	// 태그가 없으면 제약에 걸린 파일이 조용히 빠진다 — 빠진 수는
+	// limitation으로 센다.
+	Tags string
 }
 
 // Load는 opts.Level에 맞는 가장 세밀한 그래프를 수확한다.
@@ -48,6 +56,7 @@ func Load(opts Options) (*graph.Document, error) {
 		internal := internalPackages(pkgs, kept)
 		harvestSymbols(doc, internal, opts.Level)
 	}
+	markGenerated(doc, kept)
 	doc.Sort()
 	return doc, nil
 }
@@ -66,14 +75,19 @@ func load(opts Options) ([]*packages.Package, error) {
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
+	// NeedFiles는 파일 목록(GoFiles·IgnoredFiles)을 채운다 — 빌드 제약으로
+	// 빠진 파일 수와 생성 파일 표시에 둘 다 필요하다.
 	mode := packages.NeedName | packages.NeedImports | packages.NeedDeps |
-		packages.NeedModule
+		packages.NeedModule | packages.NeedFiles
 	if opts.Level.Rank() >= graph.LevelType.Rank() {
 		// 심볼 수확에는 AST와 타입 정보가 필요하다.
-		mode |= packages.NeedFiles | packages.NeedSyntax |
+		mode |= packages.NeedSyntax |
 			packages.NeedTypes | packages.NeedTypesInfo
 	}
 	cfg := &packages.Config{Dir: opts.Dir, Tests: opts.Tests, Mode: mode}
+	if opts.Tags != "" {
+		cfg.BuildFlags = []string{"-tags=" + opts.Tags}
+	}
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
 		return nil, fmt.Errorf("loading packages: %w — check go.mod and build tags", err)
@@ -126,6 +140,10 @@ func buildDocument(root string, reachable []*packages.Package,
 	}
 
 	// limitation은 실제로 세어서 만든다 — 알릴 것이 없으면 붙이지 않는다.
+	if ignored := countIgnored(reachable, kept); ignored > 0 {
+		doc.Limitation(fmt.Sprintf(
+			"%d source files were excluded by build constraints (use --tags to include)", ignored))
+	}
 	if extImports > 0 {
 		doc.Limitation(fmt.Sprintf(
 			"%d imports of packages outside the module were omitted (use --deps to include)", extImports))
@@ -173,6 +191,73 @@ func walkImports(roots []*packages.Package) []*packages.Package {
 		}
 	}
 	return out
+}
+
+// generatedMarker는 go.dev/s/generatedcode의 표지 정규식이다.
+// 마커는 패키지 절보다 앞에 있어야 생성 표시로 인정된다.
+var generatedMarker = regexp.MustCompile(`^// Code generated .* DO NOT EDIT\.$`)
+
+// isGeneratedFile은 파일의 패키지 절 이전에 생성 표지가 있는지 본다.
+func isGeneratedFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "package ") {
+			break
+		}
+		if generatedMarker.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// markGenerated는 생성 마커가 있는 파일에서 온 정점에 generated를 표시한다.
+// 패키지 정점은 파일 전부가 생성일 때만 표시한다 — 일부만 생성인 패키지를
+// 생성이라 하면 손으로 쓴 절반이 숨는다.
+func markGenerated(doc *graph.Document, kept map[string]*packages.Package) {
+	fileGen := make(map[string]bool)
+	pkgAllGen := make(map[string]bool)
+	for _, p := range kept {
+		files := p.CompiledGoFiles
+		if len(files) == 0 {
+			files = p.GoFiles
+		}
+		all := len(files) > 0
+		for _, f := range files {
+			if _, ok := fileGen[f]; !ok {
+				fileGen[f] = isGeneratedFile(f)
+			}
+			all = all && fileGen[f]
+		}
+		pkgAllGen[p.PkgPath] = all
+	}
+	for i := range doc.Vertices {
+		v := &doc.Vertices[i]
+		if v.Position != nil {
+			v.Generated = fileGen[v.Position.File]
+		} else if v.Kind == graph.KindPackage {
+			v.Generated = pkgAllGen[v.ID]
+		}
+	}
+}
+
+// countIgnored는 그래프에 남은 패키지의 빌드 제약 제외 파일을 센다.
+// IgnoredFiles는 go list가 알고 있는데 현재 태그로는 빌드되지 않은
+// 파일들이다 — 세지 않으면 소비자가 빠진 파일의 존재 자체를 모른다.
+func countIgnored(reachable []*packages.Package, kept map[string]*packages.Package) int {
+	n := 0
+	for _, p := range reachable {
+		if kept[p.PkgPath] != nil {
+			n += len(p.IgnoredFiles)
+		}
+	}
+	return n
 }
 
 // keep은 패키지를 그래프에 담을지 결정한다.

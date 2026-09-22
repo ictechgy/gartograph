@@ -282,6 +282,7 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 		if d.Recv == nil && isTestEntry(p, d) {
 			h.root(from)
 		}
+		h.sigTypeEdges(p, d.Type, from)
 		h.inspect(p, d, from)
 	case *ast.GenDecl:
 		for _, spec := range d.Specs {
@@ -299,7 +300,9 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec, wantSymbols bo
 		if !ok {
 			return
 		}
-		h.inspect(p, s, objectID(obj))
+		id := objectID(obj)
+		h.sigTypeEdges(p, s.Type, id)
+		h.inspect(p, s, id)
 	case *ast.ValueSpec:
 		if !wantSymbols {
 			return
@@ -309,7 +312,11 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec, wantSymbols bo
 			if obj == nil {
 				continue
 			}
-			h.inspect(p, s, objectID(obj))
+			id := objectID(obj)
+			if s.Type != nil {
+				h.sigTypeEdges(p, s.Type, id)
+			}
+			h.inspect(p, s, id)
 		}
 	}
 }
@@ -358,6 +365,35 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 			h.edge(from, objectID(fn), graph.EdgeCall)
 		}
 	}
+}
+
+// sigTypeEdges는 선언의 타입 표현식 안 타입 참조를 signature 간선으로 긋는다.
+// 같은 참조는 inspect가 references로도 남긴다 — 종류가 다른 두 사실이고,
+// 중복 제거는 간선 키의 kind가 갈라 주므로 둘 다 살아남는다.
+func (h *harvester) sigTypeEdges(p *packages.Package, expr ast.Expr, from string) {
+	ast.Inspect(expr, func(n ast.Node) bool {
+		switch t := n.(type) {
+		case *ast.Ident:
+			h.sigRef(p.TypesInfo.Uses[t], from)
+		case *ast.SelectorExpr:
+			h.sigRef(p.TypesInfo.Uses[t.Sel], from)
+		}
+		return true
+	})
+}
+
+// sigRef는 시그니처 타입 참조 하나를 간선으로 긴다. 모듈 밖 참조는
+// inspect의 references 패스에서 이미 extRefs로 셌으므로 여기서는 건너뛴다 —
+// 같은 참조를 두 번 세면 limitation 수치가 부푼다.
+func (h *harvester) sigRef(obj types.Object, from string) {
+	if obj == nil || obj.Pkg() == nil || !isPackageLevel(obj) {
+		return
+	}
+	id := objectID(obj)
+	if !h.vertices[id] {
+		return
+	}
+	h.edge(from, id, graph.EdgeSignature)
 }
 
 // selectorEdge는 비호출 위치의 선택자(메서드 값, 필드 접근)를
