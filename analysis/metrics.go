@@ -158,7 +158,7 @@ func rootSet(d *graph.Document) map[string]bool {
 // main 패키지(진입점)도 보존 루트 소속도 아닌 것.
 // 외부 패키지는 모듈 안에서의 임포터 유무가 orphan의 뜻을 갖지 않는다.
 func isInternalOrphanCandidate(d *graph.Document, v graph.Vertex, roots map[string]bool) bool {
-	if isExternalPackage(d, v.ID) || v.Name == "main" || roots[v.ID] {
+	if isExternalPackage(d, v) || v.Name == "main" || roots[v.ID] {
 		return false
 	}
 	return true

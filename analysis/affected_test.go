@@ -56,6 +56,28 @@ func TestAffectedByFiles(t *testing.T) {
 	}
 }
 
+// TestAffectedSubdirRoot는 --dir이 모듈 하위 디렉터리일 때 파일→패키지
+// 해석이 ModuleDir 기준으로 이뤄지는지 확인한다 — Root 기준으로 계산하면
+// 패키지 경로가 한 단계 짧아져 루트를 놓친다.
+func TestAffectedSubdirRoot(t *testing.T) {
+	d := &graph.Document{
+		Root:      "/repo/sub", // --dir은 모듈의 하위 디렉터리
+		ModuleDir: "/repo",     // go.mod는 모듈 루트에 있다
+		Module:    "example.com/repo",
+		Vertices: []graph.Vertex{
+			{ID: "example.com/repo/sub/child", Kind: graph.KindPackage},
+		},
+	}
+	// git --relative는 --dir 기준 "child/x.go"를 준다 — 절대화는 Root 기준,
+	// 패키지 해석은 ModuleDir 기준이어야 맞다.
+	roots, unmapped := VerticesForFiles(d, []string{"child/x.go"})
+	if len(unmapped) != 0 || len(roots) != 1 ||
+		roots[0] != "example.com/repo/sub/child" {
+		t.Fatalf("subdir file must resolve to its package: roots=%v unmapped=%v",
+			roots, unmapped)
+	}
+}
+
 // TestAffectedUnmapped는 매칭되지 않는 파일이 unmappedFiles로 보고되는지,
 // 없는 추가 루트가 ErrNotFound인지 확인한다.
 func TestAffectedUnmapped(t *testing.T) {
@@ -69,5 +91,23 @@ func TestAffectedUnmapped(t *testing.T) {
 	}
 	if _, err := AffectedByFiles(affectedDoc(), nil, []string{"ghost"}, 0, 0); err == nil {
 		t.Fatal("missing extra root must be ErrNotFound")
+	}
+}
+
+// TestAffectedNoModule은 모듈 정보가 없는 문서와 모듈 밖 파일이
+// 패키지 해석 없이 unmapped로 떨어지는지 확인한다.
+func TestAffectedNoModule(t *testing.T) {
+	// Module이 없는 문서 — 패키지 추론 자체가 성립하지 않는다.
+	d := &graph.Document{Root: "/x", Vertices: []graph.Vertex{
+		{ID: "p", Kind: graph.KindPackage},
+	}}
+	roots, unmapped := VerticesForFiles(d, []string{"a.go"})
+	if len(roots) != 0 || len(unmapped) != 1 {
+		t.Fatalf("module-less doc must not guess packages: %v %v", roots, unmapped)
+	}
+	// 모듈 밖의 파일 — 절대 경로가 ModuleDir 밖이면 unmapped다.
+	roots, unmapped = VerticesForFiles(affectedDoc(), []string{"/elsewhere/x.go"})
+	if len(roots) != 0 || len(unmapped) != 1 {
+		t.Fatalf("file outside the module must be unmapped: %v %v", roots, unmapped)
 	}
 }

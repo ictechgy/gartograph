@@ -46,7 +46,15 @@ type RuleReport struct {
 // signature 규칙도 검사한다. 어떤 컴포넌트에도 매핑되지 않은 패키지는
 // unmapped로 돌려준다 — 매핑 구멍은 "규칙 무관"이 아니라 "규칙이 모르는 영역"이다.
 func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
-	comp, _ := componentMap(d, cfg)
+	// 매핑은 한 번만 해석한다 — 위반 보고와 unmapped 보고가 같은 해석을
+	// 써야 한 리포트 안에서 모순이 생기지 않는다.
+	mapping := MapComponents(d, cfg)
+	comp := map[string]string{}
+	for name, pkgs := range mapping.Components {
+		for _, p := range pkgs {
+			comp[p] = name
+		}
+	}
 	vmap := vertexMap(d)
 	rep := &RuleReport{}
 	for _, e := range d.Edges {
@@ -80,7 +88,6 @@ func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
 		}
 	}
 	rep.Violations = append(rep.Violations, forbiddenViolations(d, cfg, comp)...)
-	mapping := MapComponents(d, cfg)
 	rep.Unmapped = mapping.Unmapped
 	rep.UnmappedExternal = mapping.UnmappedExternal
 	rep.UnmatchedComponents = mapping.UnmatchedComponents
@@ -244,7 +251,7 @@ func MapComponents(d *graph.Document, cfg *config.File) *Mapping {
 		switch {
 		case c != "":
 			m.Components[c] = append(m.Components[c], v.ID)
-		case isExternalPackage(d, v.ID):
+		case isExternalPackage(d, v):
 			m.UnmappedExternal = append(m.UnmappedExternal, v.ID)
 		default:
 			m.Unmapped = append(m.Unmapped, v.ID)
@@ -268,11 +275,15 @@ func MapComponents(d *graph.Document, cfg *config.File) *Mapping {
 }
 
 // isExternalPackage는 패키지 정점이 주 모듈 밖에 있는지 본다.
-// --deps로 수확된 의존 패키지만 여기 해당한다 — 모듈 정보가 없는 문서는
+// 정점의 External 표시가 정본이다 — 수확 시점의 모듈 소속 사실.
+// 표시가 없는 옛 문서는 경로 접두사로 폴백한다 — 모듈 정보가 없는 문서는
 // 모두 내부로 본다.
-func isExternalPackage(d *graph.Document, pkgID string) bool {
-	return d.Module != "" && pkgID != d.Module &&
-		!strings.HasPrefix(pkgID, d.Module+"/")
+func isExternalPackage(d *graph.Document, v graph.Vertex) bool {
+	if v.External {
+		return true
+	}
+	return d.Module != "" && v.ID != d.Module &&
+		!strings.HasPrefix(v.ID, d.Module+"/")
 }
 
 // relPath는 패키지 경로를 모듈 상대 경로로 바꾼다.

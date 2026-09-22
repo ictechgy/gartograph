@@ -30,6 +30,22 @@ func TestSplitBaseline(t *testing.T) {
 	}
 }
 
+// TestSplitBaselineForbidden는 forbidden 위반이 목격 경로와 무관하게
+// 같은 위반으로 식별되는지 확인한다 — 경로가 바뀌었다고 새 위반으로
+// 울리면 baseline이 소음이 된다.
+func TestSplitBaselineForbidden(t *testing.T) {
+	old := Violation{Rule: "forbidden",
+		FromComponent: "api", ToComponent: "db", Path: []string{"a", "b"}}
+	// 같은 계약 위반인데 증인 경로가 다르다 — baselined여야 한다.
+	cur := Violation{Rule: "forbidden",
+		FromComponent: "api", ToComponent: "db", Path: []string{"a", "x", "b"}}
+	fresh, baselined, _ := SplitBaseline([]Violation{cur}, []Violation{old})
+	if len(baselined) != 1 || len(fresh) != 0 {
+		t.Fatalf("forbidden must key on the component pair, not the path: %+v %+v",
+			fresh, baselined)
+	}
+}
+
 // TestSplitBaselineEmpty는 baseline이 없을 때 전부 fresh인지 확인한다.
 func TestSplitBaselineEmpty(t *testing.T) {
 	v := Violation{From: "a", To: "b", Kind: graph.EdgeImport}

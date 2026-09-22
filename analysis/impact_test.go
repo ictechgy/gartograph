@@ -66,3 +66,31 @@ func TestFindImpactNotFound(t *testing.T) {
 		t.Fatal("expected error for missing vertex")
 	}
 }
+
+// TestAffectedMergesKinds는 여러 루트에 다른 간선 종류로 닿는 의존자의
+// edges가 합쳐지는지 확인한다 — 먼저 발견된 경로의 종류만 남으면
+// "어떤 관계로 깨지는가"라는 사실이 유실된다.
+func TestAffectedMergesKinds(t *testing.T) {
+	d := &graph.Document{
+		Vertices: []graph.Vertex{
+			{ID: "pkg.a", Kind: graph.KindFunc, Package: "pkg"},
+			{ID: "pkg.b", Kind: graph.KindFunc, Package: "pkg"},
+			{ID: "pkg.x", Kind: graph.KindFunc, Package: "pkg"},
+		},
+		Edges: []graph.Edge{
+			{From: "pkg.x", To: "pkg.a", Kind: graph.EdgeCall},
+			{From: "pkg.x", To: "pkg.b", Kind: graph.EdgeReferences},
+		},
+	}
+	res, err := AffectedByFiles(d, nil, []string{"pkg.a", "pkg.b"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Dependers) != 1 || res.Dependers[0].ID != "pkg.x" {
+		t.Fatalf("expected single depender pkg.x: %+v", res.Dependers)
+	}
+	if len(res.Dependers[0].Kinds) != 2 {
+		t.Fatalf("x reaches both roots via different kinds — expected both: %+v",
+			res.Dependers[0].Kinds)
+	}
+}

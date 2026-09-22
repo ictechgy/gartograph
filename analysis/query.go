@@ -3,6 +3,7 @@ package analysis
 import (
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/ictechgy/gartograph/graph"
 )
@@ -107,4 +108,23 @@ func dependencyKinds(d *graph.Document, cur, to string, reverse bool) []graph.Ed
 		}
 	}
 	return kinds
+}
+
+// mergeKinds는 두 간선 종류 목록의 합집합을 정렬해 돌려준다.
+// 멀티 루트 영향 분석에서 같은 의존자가 여러 루트에 다른 종류로 닿을 때
+// 사실을 유실하지 않기 위한 병합이다.
+func mergeKinds(a, b []graph.EdgeKind) []graph.EdgeKind {
+	set := map[graph.EdgeKind]bool{}
+	for _, k := range a {
+		set[k] = true
+	}
+	for _, k := range b {
+		set[k] = true
+	}
+	out := make([]graph.EdgeKind, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }

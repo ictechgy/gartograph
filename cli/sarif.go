@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ictechgy/gartograph/analysis"
 )
@@ -43,6 +44,9 @@ type sarifResult struct {
 	Level     string          `json:"level"`
 	Message   sarifMessage    `json:"message"`
 	Locations []sarifLocation `json:"locations"`
+	// Properties는 규칙이 요구하는 부가 증거다 — forbidden 위반의
+	// 목격 경로처럼 위치 둘로 표현되지 않는 사실을 싣는다.
+	Properties map[string]any `json:"properties,omitempty"`
 }
 
 type sarifMessage struct {
@@ -68,6 +72,12 @@ func rulesSARIF(violations []analysis.Violation) ([]byte, error) {
 		if v.Reason != "" {
 			msg += ": " + v.Reason
 		}
+		var props map[string]any
+		if len(v.Path) > 0 {
+			// forbidden은 도달 위반 — 증거는 양 끝이 아니라 사슬 전체다.
+			msg += fmt.Sprintf(" (via %s)", strings.Join(v.Path, " -> "))
+			props = map[string]any{"witnessPath": v.Path}
+		}
 		results = append(results, sarifResult{
 			RuleID:  "layer-" + v.Rule,
 			Level:   "error",
@@ -78,6 +88,7 @@ func rulesSARIF(violations []analysis.Violation) ([]byte, error) {
 					{FullyQualifiedName: v.To, Kind: "module"},
 				},
 			}},
+			Properties: props,
 		})
 	}
 	return json.MarshalIndent(sarifDoc{

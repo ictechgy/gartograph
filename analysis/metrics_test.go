@@ -80,6 +80,27 @@ func TestMetricsOrphans(t *testing.T) {
 	}
 }
 
+// TestMetricsRootExclusion은 보존 루트 소속 패키지가 orphan에서
+// 빠지는지 확인한다 — 루트가 심볼 ID일 때는 그 패키지를 뽑아야 한다.
+func TestMetricsRootExclusion(t *testing.T) {
+	d := metricsDoc()
+	// util 안의 init이 보존 루트다 — util은 orphan 후보에서 빠져야 한다.
+	d.Roots = []string{"example.com/m/util.init"}
+	d.Vertices = append(d.Vertices,
+		graph.Vertex{ID: "example.com/m/util.init", Kind: graph.KindFunc,
+			Package: "example.com/m/util"})
+	rep := Metrics(d, metricsCfg())
+	if len(rep.Orphans) != 0 {
+		t.Fatalf("root-bearing package must not be an orphan: %+v", rep.Orphans)
+	}
+	// 루트 ID가 문서에 없는 정점이면 그대로 쓴다 — 잘못된 입력을 추리지 않는다.
+	d.Roots = []string{"example.com/m/ghost"}
+	rep = Metrics(d, metricsCfg())
+	if len(rep.Orphans) != 1 {
+		t.Fatalf("unknown root id must not hide the orphan: %+v", rep.Orphans)
+	}
+}
+
 // TestMetricsNoConfig는 설정 없이 패키지 단위로 계산되는지 확인한다.
 func TestMetricsNoConfig(t *testing.T) {
 	rep := Metrics(metricsDoc(), nil)

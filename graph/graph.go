@@ -97,6 +97,10 @@ type Vertex struct {
 	Package  string     `json:"package,omitempty"`
 	Position *Position  `json:"position,omitempty"`
 	Exported bool       `json:"exported,omitempty"`
+	// External은 패키지 정점이 주 모듈 밖에 속한다는 표시다 — --deps로
+	// 수확된 의존이나 중첩 모듈 패키지. 경로 접두사 추론은 중첩 모듈에서
+	// 틀리므로 수확 시점의 모듈 소속 사실을 그대로 옮긴다.
+	External bool `json:"external,omitempty"`
 	// Generated는 `// Code generated ... DO NOT EDIT.` 마커 파일 출신이다.
 	// 생성 코드를 그래프에서 숨기면 사실이 사라진다 — 표시만 하고
 	// 제외 여부는 소비자가 정한다.
@@ -118,10 +122,16 @@ type Document struct {
 	Version int    `json:"version"`
 	Tool    string `json:"tool"`
 	Level   Level  `json:"level"`
-	Root    string `json:"root"`
+	// Root는 수확 시점의 --dir을 절대 경로로 적는다 — Position.File이
+	// 절대 경로이므로 파일→정점 해석의 기준점도 절대여야 한다.
+	Root string `json:"root"`
 	// Module은 주 모듈 경로다 — 규칙의 컴포넌트 패턴이 파일시스템이 아니라
 	// 모듈 상대 경로로 매칭되도록 한다.
 	Module string `json:"module,omitempty"`
+	// ModuleDir은 주 모듈의 go.mod가 있는 디렉터리다 — --dir이 모듈의
+	// 하위 디렉터리를 가리킬 때 Root와 ModuleDir이 갈라지므로, 파일→패키지
+	// 해석은 ModuleDir을 기준으로 해야 한다. 없으면 Root가 그 역할이다.
+	ModuleDir string `json:"moduleDir,omitempty"`
 	// Roots는 수확 시점의 보존 루트(main·init)다 — 루트는 입력 사실이라 문서에 남긴다.
 	Roots       []string `json:"roots,omitempty"`
 	Vertices    []Vertex `json:"vertices"`

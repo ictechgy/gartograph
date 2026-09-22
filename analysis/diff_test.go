@@ -86,6 +86,18 @@ func TestDiffLevelMismatch(t *testing.T) {
 	}
 }
 
+// TestDiffLimitations는 양쪽 문서의 수확 limitation이 출처와 함께
+// diff에 실리는지 확인한다 — 부분 수확 위의 diff는 신호가 아니라
+// 수확 구멍일 수 있음을 소비자가 알아야 한다.
+func TestDiffLimitations(t *testing.T) {
+	old := &graph.Document{Limitations: []string{"2 packages had errors"}}
+	new := &graph.Document{Limitations: []string{"1 import omitted"}}
+	d := DiffDocuments(old, new)
+	if len(d.OldLimitations) != 1 || len(d.NewLimitations) != 1 {
+		t.Fatalf("limitations must carry provenance: %+v", d)
+	}
+}
+
 // TestDiffBreakingOnlyOnRemoval은 추가만 있는 diff가 breaking이 아닌지 확인한다.
 func TestDiffBreakingOnlyOnRemoval(t *testing.T) {
 	old := &graph.Document{

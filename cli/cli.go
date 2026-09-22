@@ -429,6 +429,14 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	if fs.Parse(args) != nil {
 		return 2
 	}
+	// 형식 검증은 부수 효과(--write-baseline 쓰기)보다 먼저다 —
+	// 거부될 호출이 기존 baseline을 덮어쓰면 안 된다.
+	switch *format {
+	case "text", "json", "sarif":
+	default:
+		fmt.Fprintf(stderr, "unknown format %q\n", *format)
+		return 2
+	}
 	cfgPath := *configPath
 	if cfgPath == "" {
 		found, ok := config.Find(opts.Dir)
@@ -617,16 +625,18 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
-		out, _ := json.MarshalIndent(res, "", "  ")
-		fmt.Fprintln(stdout, string(out))
+		if err := emitJSON(stdout, res); err != nil {
+			return fail(stderr, err)
+		}
 		return 0
 	}
 	res, err := analysis.FindImpact(doc, positional[0], *depth, *maxN)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	out, _ := json.MarshalIndent(res, "", "  ")
-	fmt.Fprintln(stdout, string(out))
+	if err := emitJSON(stdout, res); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }
 
@@ -651,8 +661,9 @@ func cmdPath(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	out, _ := json.MarshalIndent(res, "", "  ")
-	fmt.Fprintln(stdout, string(out))
+	if err := emitJSON(stdout, res); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }
 
@@ -684,10 +695,13 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	diff := analysis.DiffDocuments(oldDoc, newDoc)
 	switch *format {
 	case "json":
-		out, _ := json.MarshalIndent(diff, "", "  ")
-		fmt.Fprintln(stdout, string(out))
+		if err := emitJSON(stdout, diff); err != nil {
+			return fail(stderr, err)
+		}
 	case "text":
-		printDiffText(diff, stdout)
+		if err := printDiffText(diff, stdout); err != nil {
+			return fail(stderr, err)
+		}
 	default:
 		fmt.Fprintf(stderr, "unknown format %q\n", *format)
 		return 2
@@ -699,7 +713,7 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 }
 
 // printDiffText는 diff를 유니파이드 스타일의 한 줄 레코드로 출력한다.
-func printDiffText(d *analysis.Diff, w io.Writer) {
+func printDiffText(d *analysis.Diff, w io.Writer) error {
 	for _, v := range d.AddedVertices {
 		fmt.Fprintf(w, "+ vertex %s\n", v)
 	}
@@ -724,10 +738,29 @@ func printDiffText(d *analysis.Diff, w io.Writer) {
 	for _, n := range d.Notes {
 		fmt.Fprintf(w, "note: %s\n", n)
 	}
-	fmt.Fprintf(w, "diff: +%d/-%d vertices, +%d/-%d edges, %d signature changes, %d breaking\n",
+	for _, l := range d.OldLimitations {
+		fmt.Fprintf(w, "limitation(old): %s\n", l)
+	}
+	for _, l := range d.NewLimitations {
+		fmt.Fprintf(w, "limitation(new): %s\n", l)
+	}
+	_, err := fmt.Fprintf(w,
+		"diff: +%d/-%d vertices, +%d/-%d edges, %d signature changes, %d breaking\n",
 		len(d.AddedVertices), len(d.RemovedVertices),
 		len(d.AddedEdges), len(d.RemovedEdges),
 		len(d.SignatureChanges), len(d.Breaking))
+	return err
+}
+
+// emitJSON은 분석 결과를 JSON으로 쓴다. 출력 실패는 분석 성공과 다른
+// 사실이므로 에러를 돌려준다 — 잘린 리포트가 성공(0)으로 끝나면 안 된다.
+func emitJSON(w io.Writer, v any) error {
+	out, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, string(out))
+	return err
 }
 
 // sortNeighborsJSON은 질의 결과를 결정적으로 정렬한다.
@@ -755,20 +788,27 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	if doc.Level.Rank() < graph.LevelPackage.Rank() {
+		fmt.Fprintf(stderr,
+			"error: metrics needs package-level data; document is %s level\n", doc.Level)
+		return 2
+	}
 	cfg, limitations, err := optionalConfig(opts.Dir, *configPath)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	rep := analysis.Metrics(doc, cfg)
 	limitations = append(limitations, doc.Limitations...)
+	sort.Strings(limitations)
 	switch *format {
 	case "json":
 		type metricsJSON struct {
 			*analysis.MetricsReport
 			Limitations []string `json:"limitations,omitempty"`
 		}
-		out, _ := json.MarshalIndent(metricsJSON{rep, limitations}, "", "  ")
-		fmt.Fprintln(stdout, string(out))
+		if err := emitJSON(stdout, metricsJSON{rep, limitations}); err != nil {
+			return fail(stderr, err)
+		}
 	case "text":
 		for _, m := range rep.Components {
 			inst := "n/a"
@@ -842,11 +882,21 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	if doc.Level.Rank() < graph.LevelPackage.Rank() {
+		fmt.Fprintf(stderr,
+			"error: mapping needs package-level data; document is %s level\n", doc.Level)
+		return 2
+	}
 	m := analysis.MapComponents(doc, cfg)
 	switch *format {
 	case "json":
-		out, _ := json.MarshalIndent(m, "", "  ")
-		fmt.Fprintln(stdout, string(out))
+		type mappingJSON struct {
+			*analysis.Mapping
+			Limitations []string `json:"limitations,omitempty"`
+		}
+		if err := emitJSON(stdout, mappingJSON{m, doc.Limitations}); err != nil {
+			return fail(stderr, err)
+		}
 	case "text":
 		names := make([]string, 0, len(m.Components))
 		for n := range m.Components {
@@ -868,6 +918,9 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 		for _, u := range m.UnmatchedComponents {
 			fmt.Fprintf(stdout, "unmatched component: %s\n", u)
 		}
+		for _, l := range doc.Limitations {
+			fmt.Fprintf(stdout, "limitation: %s\n", l)
+		}
 	default:
 		fmt.Fprintf(stderr, "unknown format %q\n", *format)
 		return 2
@@ -879,7 +932,7 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 // 첫 검사부터 통과하는 설정이어야 기존 레포 도입이 성립한다 — 조이는 것은
 // 사용자가 점진적으로 한다. 이미 파일이 있으면 덮어쓰지 않는다.
 func cmdInit(args []string, stdout, stderr io.Writer) int {
-	fs, opts, _ := flagSet("init", stderr)
+	fs, opts, graphPath := flagSet("init", stderr)
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -890,18 +943,33 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	opts.Level = graph.LevelPackage
-	doc, err := source.Load(*opts)
+	doc, err := loadDoc(opts, *graphPath)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	cfg := analysis.ScaffoldConfig(doc)
+	if len(cfg.Components) == 0 {
+		fmt.Fprintf(stderr,
+			"error: no internal packages found in %s — nothing to scaffold\n", opts.Dir)
+		return 2
+	}
 	data, err := config.Render(cfg)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	path := filepath.Join(opts.Dir, ".gartograph.yml")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	// O_EXCL로 만든다 — 존재 확인과 쓰기 사이에 다른 프로세스가 파일을
+	// 만들어도 덮어쓰지 않는다.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
 		return fail(stderr, fmt.Errorf("writing %s: %w", path, err))
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fail(stderr, fmt.Errorf("writing %s: %w", path, err))
+	}
+	if err := f.Close(); err != nil {
+		return fail(stderr, fmt.Errorf("closing %s: %w", path, err))
 	}
 	fmt.Fprintf(stdout, "wrote %s (%d components)\n", path, len(cfg.Components))
 	return 0

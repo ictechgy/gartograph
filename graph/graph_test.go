@@ -59,6 +59,20 @@ func TestEdgeKinds(t *testing.T) {
 	}
 }
 
+// TestLimitation은 limitation이 문서에 순서대로 기록되는지 확인한다 —
+// "알릴 것이 없으면 조용하다"의 대칭으로, 알릴 것은 실제로 남아야 한다.
+func TestLimitation(t *testing.T) {
+	d := &Document{}
+	if len(d.Limitations) != 0 {
+		t.Fatal("fresh document must have no limitations")
+	}
+	d.Limitation("a")
+	d.Limitation("b")
+	if len(d.Limitations) != 2 || d.Limitations[0] != "a" || d.Limitations[1] != "b" {
+		t.Fatalf("limitations must record in order: %v", d.Limitations)
+	}
+}
+
 // TestVertexByID는 정점 조회와 미존재 구분을 확인한다.
 func TestVertexByID(t *testing.T) {
 	doc := &Document{Vertices: []Vertex{{ID: "x", Kind: KindFunc}}}

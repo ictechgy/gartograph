@@ -25,6 +25,9 @@ type Impact struct {
 	Depth     int              `json:"depth"`
 	Dependers []ImpactEntry    `json:"dependers"`
 	Truncated bool             `json:"truncated,omitempty"`
+	// Limitations은 수확이 보지 못한 영역이다 — 부분 수확 위의
+	// 클로저는 하한이지 전체 목록이 아님을 소비자에게 남긴다.
+	Limitations []string `json:"limitations,omitempty"`
 }
 
 // FindImpact는 id를 의존하는 정점들을 depth까지 역방향 BFS로 모은다.
@@ -36,7 +39,8 @@ func FindImpact(d *graph.Document, id string, depth, maxEntries int) (*Impact, e
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	out, truncated := impactFrom(d, []string{id}, depth, maxEntries)
-	return &Impact{ID: id, Kind: vtx.Kind, Depth: depth, Dependers: out, Truncated: truncated}, nil
+	return &Impact{ID: id, Kind: vtx.Kind, Depth: depth, Dependers: out,
+		Truncated: truncated, Limitations: d.Limitations}, nil
 }
 
 // impactFrom은 여러 루트의 합집합을 역방향 BFS로 모은다.
@@ -50,6 +54,9 @@ func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]Imp
 	}
 	frontier := append([]string(nil), roots...)
 	var out []ImpactEntry
+	// 이미 모은 depender가 다른 루트에도 다른 종류의 간선으로 닿을 수 있다 —
+	// 방문 표시와 관계 수집을 분리해야 간선 종류가 유실되지 않는다.
+	index := map[string]int{}
 	truncated := false
 
 	for step := 1; len(frontier) > 0 && (depth <= 0 || step <= depth); step++ {
@@ -57,6 +64,11 @@ func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]Imp
 		for _, cur := range frontier {
 			for _, from := range in[cur] {
 				if seen[from] {
+					// 이미 발견된 의존자라도 이 루트로의 간선 종류는 합친다.
+					if i, ok := index[from]; ok {
+						out[i].Kinds = mergeKinds(out[i].Kinds,
+							dependencyKinds(d, from, cur, false))
+					}
 					continue
 				}
 				seen[from] = true
@@ -70,6 +82,7 @@ func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]Imp
 				if v, ok := d.VertexByID(from); ok {
 					dep.Kind = v.Kind
 				}
+				index[from] = len(out)
 				out = append(out, dep)
 			}
 		}

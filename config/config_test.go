@@ -68,6 +68,20 @@ func TestComponentOf(t *testing.T) {
 	}
 }
 
+// TestComponentOfTie는 같은 길이 패턴이 맞을 때 결정적 우승자가 있는지
+// 확인한다 — 맵 순회에 맡기면 같은 설정이 실행마다 다른 컴포넌트를 고른다.
+func TestComponentOfTie(t *testing.T) {
+	f := &File{Components: map[string][]string{
+		"beta":  {"x/**"},
+		"alpha": {"x/**"},
+	}}
+	for i := 0; i < 20; i++ {
+		if got, ok := f.ComponentOf("x/y"); !ok || got != "alpha" {
+			t.Fatalf("tie must resolve deterministically to alpha, got %s", got)
+		}
+	}
+}
+
 // TestComponentOfGlob은 `*` 세그먼트 글롭이 `/`를 넘지 않는지 확인한다.
 // `app/*`가 `app/web/x`까지 먹으면 재귀 접두사 `**`와 구분이 없어진다.
 func TestComponentOfGlob(t *testing.T) {
@@ -83,6 +97,14 @@ func TestComponentOfGlob(t *testing.T) {
 	}
 	if got, ok := f.ComponentOf("solo"); !ok || got != "deep" {
 		t.Fatalf("solo: expected deep, got %s %v", got, ok)
+	}
+	// 중간에 `*`가 있는 세그먼트 — 접두사와 접미사가 동시에 맞아야 한다.
+	f.Components["gen"] = []string{"gen/*-x"}
+	if got, ok := f.ComponentOf("gen/a-x"); !ok || got != "gen" {
+		t.Fatalf("mid-glob must match: %s %v", got, ok)
+	}
+	if _, ok := f.ComponentOf("gen/ax"); ok {
+		t.Fatal("mid-glob must not match a shorter name")
 	}
 }
 
@@ -100,6 +122,15 @@ func TestAllowed(t *testing.T) {
 	}
 	if f.Allowed("ghost", "db") {
 		t.Fatal("component without deps entry may depend on nothing")
+	}
+	// deny가 자기 자신을 가리켜도 자기 의존은 금지가 성립하지 않는다 —
+	// 컴포넌트 내부 import는 규칙 밖이다.
+	f.Deny = map[string][]DenyEntry{"web": {{To: "web"}}}
+	if _, denied := f.Denied("web", "web"); denied {
+		t.Fatal("self deny must not apply")
+	}
+	if _, denied := f.Denied("web", "db"); denied {
+		t.Fatal("deny key exists but target must match")
 	}
 }
 
@@ -153,6 +184,11 @@ func TestCheckRefs(t *testing.T) {
 		"components: {a: [a]}\ncommon: [ghost]\n",
 		"components: {a: [a]}\nforbidden: [{from: a, to: ghost}]\n",
 		"components: {a: [a]}\nforbidden: [{from: a, to: a}]\n", // 자기 자신 금지는 무의미
+		// 빈 이름도 참조다 — reason만 있는 deny는 조용히 아무것도
+		// 금지하지 않으므로 설정 오류로 드러내야 한다.
+		"components: {a: [a]}\ndeps: {a: []}\ndeny: {a: [{reason: nope}]}\n",
+		"components: {a: [a]}\nforbidden: [{to: a}]\n",
+		"components: {a: [a]}\ndeps: {\"\": [a]}\n",
 	}
 	for _, c := range cases {
 		if _, err := Load(writeRules(t, c)); err == nil {

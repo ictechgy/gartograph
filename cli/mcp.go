@@ -275,11 +275,15 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		rep := analysis.CheckRules(s.doc, cfg)
 		return marshal(rulesReport{
 			Violations: rep.Violations, Unmapped: rep.Unmapped,
-			UnmappedExternal: rep.UnmappedExternal,
+			UnmappedExternal:    rep.UnmappedExternal,
 			UnmatchedComponents: rep.UnmatchedComponents,
-			Limitations: s.doc.Limitations,
+			Limitations:         s.doc.Limitations,
 		})
 	case "gartograph_metrics":
+		if s.doc.Level.Rank() < graph.LevelPackage.Rank() {
+			return "", fmt.Errorf(
+				"metrics needs package-level data; document is %s level", s.doc.Level)
+		}
 		// metrics는 설정이 선택이다 — 없으면 패키지 단위로 계산한다.
 		var cfg *config.File
 		var limitations []string
@@ -299,6 +303,10 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 			Limitations []string `json:"limitations,omitempty"`
 		}{rep, append(limitations, s.doc.Limitations...)})
 	case "gartograph_mapping":
+		if s.doc.Level.Rank() < graph.LevelPackage.Rank() {
+			return "", fmt.Errorf(
+				"mapping needs package-level data; document is %s level", s.doc.Level)
+		}
 		if s.cfgPath == "" {
 			return "", fmt.Errorf("no .gartograph.yml found in %s", s.dir)
 		}
@@ -306,7 +314,10 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return marshal(analysis.MapComponents(s.doc, cfg))
+		return marshal(struct {
+			*analysis.Mapping
+			Limitations []string `json:"limitations,omitempty"`
+		}{analysis.MapComponents(s.doc, cfg), s.doc.Limitations})
 	default:
 		return "", fmt.Errorf("unknown tool %q — see tools/list", name)
 	}

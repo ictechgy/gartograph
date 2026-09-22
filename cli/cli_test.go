@@ -306,6 +306,11 @@ func TestImpactSince(t *testing.T) {
 	if len(res.Roots) == 0 {
 		t.Fatalf("changed file must resolve to vertices: %s", out)
 	}
+	// 존재하지 않는 rev는 git 오류를 그대로 2로 돌린다 — 조용히 빈 diff로
+	// 보면 "영향 없음"으로 오독된다.
+	if code, _, _ := run(t, "impact", "--dir", dir, "--since", "no-such-rev"); code != 2 {
+		t.Fatalf("bad rev must be an error: got %d", code)
+	}
 }
 
 // TestRulesSarif는 SARIF 출력이 스키마를 갖춘 JSON인지 확인한다.
@@ -509,6 +514,46 @@ func TestUnknownFormat(t *testing.T) {
 		if code, _, _ := run(t, args...); code != 2 {
 			t.Fatalf("%v: expected 2, got %d", args, code)
 		}
+	}
+}
+
+// TestBaselineEnvelope는 그래프 문서나 빈 JSON을 baseline으로 읽지 않는지
+// 확인한다 — 봉투 없는 파일을 받으면 모든 위반이 fresh로 오인된다.
+func TestBaselineEnvelope(t *testing.T) {
+	dir := rulesFixture(t)
+	// 그래프 JSON을 baseline으로 먹이면 형식 오류(2)여야 한다.
+	gpath := filepath.Join(t.TempDir(), "graph.json")
+	if code, _, _ := run(t, "graph", "--dir", dir, "--out", gpath); code != 0 {
+		t.Fatal("graph --out failed")
+	}
+	if code, _, _ := run(t, "rules", "--dir", dir, "--baseline", gpath); code != 2 {
+		t.Fatalf("graph JSON must not be accepted as baseline: got %d", code)
+	}
+	// 잘못된 --format과 --write-baseline 조합은 파일을 쓰기 전에 거부다.
+	bpath := filepath.Join(t.TempDir(), "baseline.json")
+	if code, _, _ := run(t, "rules", "--dir", dir,
+		"--write-baseline", bpath, "--format", "xml"); code != 2 {
+		t.Fatalf("bad format must be rejected before writing baseline: got %d", code)
+	}
+	if _, err := os.Stat(bpath); !os.IsNotExist(err) {
+		t.Fatal("rejected invocation must not have written a baseline file")
+	}
+}
+
+// TestModuleLevelRejected는 모듈 레벨 문서가 패키지 데이터를 필요로 하는
+// 명령에서 성공(0)처럼 빈 리포트를 내지 않는지 확인한다.
+func TestModuleLevelRejected(t *testing.T) {
+	dir := rulesFixture(t)
+	gpath := filepath.Join(t.TempDir(), "mod.json")
+	code, _, errb := run(t, "graph", "--dir", dir, "--level", "module", "--out", gpath)
+	if code != 0 {
+		t.Fatalf("module graph failed: %d %s", code, errb)
+	}
+	if code, _, _ := run(t, "metrics", "--graph", gpath); code != 2 {
+		t.Fatalf("metrics on module doc: expected 2, got %d", code)
+	}
+	if code, _, _ := run(t, "mapping", "--dir", dir, "--graph", gpath); code != 2 {
+		t.Fatalf("mapping on module doc: expected 2, got %d", code)
 	}
 }
 
@@ -739,6 +784,19 @@ func TestMapping(t *testing.T) {
 	}
 }
 
+// TestInitEmptyModule은 내부 패키지가 하나도 없는 디렉터리에서 init이
+// 빈 설정을 쓰지 않고 오류(2)인지 확인한다 — 써진 설정이 바로 rules를
+// 통과해야 하는 계약상 components가 비면 성공이 성립하지 않는다.
+func TestInitEmptyModule(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{})
+	if code, _, _ := run(t, "init", "--dir", dir); code != 2 {
+		t.Fatalf("init with no packages must fail: got %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".gartograph.yml")); !os.IsNotExist(err) {
+		t.Fatal("failed init must not leave a config file")
+	}
+}
+
 // TestInit은 스캐폴드된 규칙 파일이 곧바로 rules를 통과하는지 확인한다.
 func TestInit(t *testing.T) {
 	dir := fixture(t)
@@ -799,6 +857,19 @@ func TestDiff(t *testing.T) {
 	code, out, _ = run(t, "diff", oldPath, oldPath)
 	if code != 0 || strings.Contains(out, "breaking:") {
 		t.Fatalf("self diff must be empty: %d %s", code, out)
+	}
+	// JSON 형식도 파싱 가능해야 한다 — diff의 구조 계약.
+	code, out, _ = run(t, "diff", oldPath, newPath, "--format", "json")
+	if code != 0 {
+		t.Fatalf("diff --format json failed: %d", code)
+	}
+	var rep struct {
+		RemovedVertices []string `json:"removedVertices"`
+		Breaking        []string `json:"breaking"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil ||
+		len(rep.RemovedVertices) == 0 || len(rep.Breaking) == 0 {
+		t.Fatalf("diff json must carry the removal and breaking signal: %s", out)
 	}
 }
 

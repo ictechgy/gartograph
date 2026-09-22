@@ -26,6 +26,9 @@ type PathResult struct {
 	To    string    `json:"to"`
 	Found bool      `json:"found"`
 	Hops  []PathHop `json:"hops,omitempty"`
+	// Limitations은 수확이 보지 못한 영역이다 — found:false가
+	// 부분 수확의 산물일 수 있음을 소비자에게 남긴다.
+	Limitations []string `json:"limitations,omitempty"`
 }
 
 // Path는 from에서 to로 가는 최단 의존 경로를 BFS로 찾는다.
@@ -53,7 +56,7 @@ func Path(d *graph.Document, from, to string) (*PathResult, error) {
 			queue = append(queue, next)
 		}
 	}
-	res := &PathResult{From: from, To: to}
+	res := &PathResult{From: from, To: to, Limitations: d.Limitations}
 	if _, ok := parent[to]; !ok {
 		return res, nil
 	}

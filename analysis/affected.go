@@ -21,6 +21,9 @@ type Affected struct {
 	Depth         int           `json:"depth"`
 	Dependers     []ImpactEntry `json:"dependers"`
 	Truncated     bool          `json:"truncated,omitempty"`
+	// Limitations은 수확이 보지 못한 영역이다 — 영향 분석은 닫힌 세계를
+	// 가정하므로 부분 수확 위의 결과임을 소비자에게 남긴다.
+	Limitations []string `json:"limitations,omitempty"`
 }
 
 // AffectedByFiles는 files에 선언된 정점과 extraRoots를 합쳐 역방향 BFS를 돌린다.
@@ -46,6 +49,7 @@ func AffectedByFiles(d *graph.Document, files, extraRoots []string,
 		Files: dedupeSorted(append([]string(nil), files...)),
 		Roots: roots, UnmappedFiles: unmapped,
 		Depth: depth, Dependers: dep, Truncated: trunc,
+		Limitations: d.Limitations,
 	}, nil
 }
 
@@ -104,12 +108,22 @@ func VerticesForFiles(d *graph.Document, files []string) (roots, unmapped []stri
 
 // packageForFile은 파일이 속한 디렉터리의 패키지 정점 ID를 만든다.
 // 루트 디렉터리의 파일은 모듈 경로 자체가 패키지 ID다.
-// Root 밖의 파일(외부 의존)은 모듈 상대 경로가 성립하지 않아 ""를 돌려준다.
+// 기준은 ModuleDir(go.mod 위치)이다 — --dir이 모듈 하위를 가리키면
+// Root 기준 상대 경로는 패키지 경로와 어긋난다. ModuleDir이 없는
+// 옛 문서는 Root로 폴백한다.
+// 모듈 밖의 파일(외부 의존)은 모듈 상대 경로가 성립하지 않아 ""를 돌려준다.
 func packageForFile(d *graph.Document, absFile string) string {
-	if d.Module == "" || d.Root == "" {
+	if d.Module == "" {
 		return ""
 	}
-	root, err := filepath.Abs(d.Root)
+	base := d.ModuleDir
+	if base == "" {
+		base = d.Root
+	}
+	if base == "" {
+		return ""
+	}
+	root, err := filepath.Abs(base)
 	if err != nil {
 		return ""
 	}

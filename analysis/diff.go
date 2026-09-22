@@ -41,13 +41,17 @@ type Diff struct {
 	SignatureChanges []SignatureChange `json:"signatureChanges,omitempty"`
 	Breaking         []string          `json:"breaking,omitempty"`
 	Notes            []string          `json:"notes,omitempty"`
+	// 양쪽 문서의 수확 limitation을 출처와 함께 싣는다 — 한쪽이 부분
+	// 수확이면 diff의 제거/추가 신호가 실제 변경이 아닐 수 있다.
+	OldLimitations []string `json:"oldLimitations,omitempty"`
+	NewLimitations []string `json:"newLimitations,omitempty"`
 }
 
 // DiffDocuments는 old→new 문서 차이를 계산한다.
 // 레벨이 다르면 정점 집합 자체가 달라 의미 없는 diff가 되므로 notes에 적는다 —
 // 에러로 돌리지 않는 이유는 소비자가 차이를 보고 판단할 수 있어야 하기 때문이다.
 func DiffDocuments(old, new *graph.Document) *Diff {
-	d := &Diff{}
+	d := &Diff{OldLimitations: old.Limitations, NewLimitations: new.Limitations}
 	if old.Level != new.Level {
 		d.Notes = append(d.Notes, fmt.Sprintf(
 			"level mismatch: old=%q new=%q — vertex sets are not comparable across levels",
@@ -104,6 +108,7 @@ func recordVertexChanges(d *Diff, id string, ov, nv *graph.Vertex) {
 	}
 	field("exported", ov.Exported, nv.Exported)
 	field("generated", ov.Generated, nv.Generated)
+	field("external", ov.External, nv.External)
 }
 
 // recordSignatureChange는 exported 심볼의 signature 간선 목표 차이를 적는다.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -116,61 +117,66 @@ func Load(path string) (*File, error) {
 // 삼키면 "규칙이 있다"는 착각을 만든다. 정의됐지만 정점에 매칭 안 되는
 // 컴포넌트는 여기서가 아니라 unmatchedComponents로 보고된다.
 func (f *File) checkRefs() error {
+	// 진단은 결정적이어야 한다 — 맵 순회 순서에 맡기면 같은 설정이
+	// 실행마다 다른 첫 오류를 낸다. 섹션별로 키를 정렬해 검사한다.
 	defined := func(name string) bool { _, ok := f.Components[name]; return ok }
 	check := func(section, side, name string) error {
-		if name != "" && !defined(name) {
+		if name == "" {
+			return fmt.Errorf("%s: empty %s component name", section, side)
+		}
+		if !defined(name) {
 			return fmt.Errorf("%s: %s %q is not a defined component",
 				section, side, name)
 		}
 		return nil
 	}
-	for from, tos := range f.Deps {
+	for _, from := range sortedKeys(f.Deps) {
 		if err := check("deps", "key", from); err != nil {
 			return err
 		}
-		for _, to := range tos {
+		for _, to := range f.Deps[from] {
 			if err := check("deps", "target", to); err != nil {
 				return err
 			}
 		}
 	}
-	for from, entries := range f.Deny {
+	for _, from := range sortedKeys(f.Deny) {
 		if err := check("deny", "key", from); err != nil {
 			return err
 		}
-		for _, e := range entries {
+		for _, e := range f.Deny[from] {
 			if err := check("deny", "target", e.To); err != nil {
 				return err
 			}
 		}
 	}
-	for from, tos := range f.Signature {
+	for _, from := range sortedKeys(f.Signature) {
 		if err := check("signature", "key", from); err != nil {
 			return err
 		}
-		for _, to := range tos {
+		for _, to := range f.Signature[from] {
 			if err := check("signature", "target", to); err != nil {
 				return err
 			}
 		}
 	}
-	for from, tos := range f.VisibleTo {
+	for _, from := range sortedKeys(f.VisibleTo) {
 		if err := check("visibleTo", "key", from); err != nil {
 			return err
 		}
-		for _, to := range tos {
+		for _, to := range f.VisibleTo[from] {
 			if err := check("visibleTo", "target", to); err != nil {
 				return err
 			}
 		}
 	}
 	for _, c := range f.Common {
-		if !defined(c) {
-			return fmt.Errorf("common: %q is not a defined component", c)
+		if err := check("common", "entry", c); err != nil {
+			return err
 		}
 	}
 	for _, r := range f.Forbidden {
-		if r.From == r.To {
+		if r.From == r.To && r.From != "" {
 			return fmt.Errorf("forbidden: %q -> %q is meaningless (same component)", r.From, r.To)
 		}
 		if err := check("forbidden", "from", r.From); err != nil {
@@ -181,6 +187,17 @@ func (f *File) checkRefs() error {
 		}
 	}
 	return nil
+}
+
+// sortedKeys는 맵의 키를 정렬해 돌려준다 — 진단 순서를 입력이 아닌
+// 맵 순회에 맡기지 않기 위한 장치다.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Render는 규칙 파일을 .gartograph.yml 텍스트로 만든다 — init 명령이 쓴다.
@@ -206,6 +223,8 @@ func Render(f *File) ([]byte, error) {
 // ComponentOf는 모듈 상대 경로를 컴포넌트로 해석한다.
 // 패턴은 정확 일치, `x/**` 재귀 접두사, path.Match 글롭 순으로 본다.
 // 여러 컴포넌트가 맞으면 더 긴 패턴이 이긴다 — 구체적 규칙이 우선한다.
+// 길이까지 같으면 이름이 작은 쪽이 이긴다 — 맵 순회 순서에 맡기면
+// 같은 설정이 실행마다 다른 컴포넌트를 골라 baseline이 흔들린다.
 func (f *File) ComponentOf(relPath string) (string, bool) {
 	best, bestLen := "", -1
 	for name, pats := range f.Components {
@@ -213,7 +232,7 @@ func (f *File) ComponentOf(relPath string) (string, bool) {
 			if !matchPath(pat, relPath) {
 				continue
 			}
-			if len(pat) > bestLen {
+			if len(pat) > bestLen || (len(pat) == bestLen && name < best) {
 				best, bestLen = name, len(pat)
 			}
 		}

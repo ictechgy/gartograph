@@ -46,3 +46,64 @@ func TestScaffoldConfig(t *testing.T) {
 		t.Fatalf("scaffolded config must pass on the observed graph: %+v", rep.Violations)
 	}
 }
+
+// TestScaffoldExternalFlag은 External 표시된 정점이 경로 접두사와 무관하게
+// 외부로 분류되는지 확인한다 — 주 모듈 안의 중첩 모듈(example.com/m/plugin)
+// 같은 경로는 접두사 추론으로는 내부로 오분된다.
+func TestScaffoldExternalFlag(t *testing.T) {
+	d := &graph.Document{
+		Module: "example.com/m",
+		Vertices: []graph.Vertex{
+			{ID: "example.com/m/app", Kind: graph.KindPackage},
+			// 중첩 모듈 패키지 — 경로는 내부처럼 보이지만 소속은 다르다.
+			{ID: "example.com/m/plugin", Kind: graph.KindPackage, External: true},
+		},
+	}
+	cfg := ScaffoldConfig(d)
+	if _, ok := cfg.Components["plugin"]; ok {
+		t.Fatal("external vertex must not scaffold a component")
+	}
+	m := MapComponents(d, cfg)
+	if len(m.UnmappedExternal) != 1 || m.UnmappedExternal[0] != "example.com/m/plugin" {
+		t.Fatalf("external vertex must report as unmappedExternal: %+v", m)
+	}
+	if len(m.Unmapped) != 0 {
+		t.Fatalf("external vertex must not pollute internal unmapped: %+v", m)
+	}
+}
+
+// TestScaffoldNameCollision은 모듈 루트 패키지와 같은 이름의 하위
+// 패키지가 있을 때 컴포넌트 키가 충돌하지 않는지 확인한다 —
+// 충돌하면 한 패키지의 패턴이 덮여 규칙이 그 패키지를 모른다.
+func TestScaffoldNameCollision(t *testing.T) {
+	d := &graph.Document{
+		Module: "example.com/m",
+		Vertices: []graph.Vertex{
+			{ID: "example.com/m", Kind: graph.KindPackage, Name: "main"},
+			{ID: "example.com/m/root", Kind: graph.KindPackage},
+		},
+		Edges: []graph.Edge{
+			{From: "example.com/m", To: "example.com/m/root", Kind: graph.EdgeImport},
+		},
+	}
+	cfg := ScaffoldConfig(d)
+	if len(cfg.Components) != 2 {
+		t.Fatalf("collision must produce two components: %v", cfg.Components)
+	}
+	// 어느 쪽이 "root"를 가져가든 두 패턴이 모두 살아 있어야 한다.
+	var patterns int
+	for _, pats := range cfg.Components {
+		patterns += len(pats)
+	}
+	if patterns != 2 {
+		t.Fatalf("one package's pattern was overwritten: %v", cfg.Components)
+	}
+	// deps가 어떤 이름으로든 관찰된 의존을 보존하는지.
+	for from, tos := range cfg.Deps {
+		for _, to := range tos {
+			if _, ok := cfg.Components[to]; !ok {
+				t.Fatalf("deps %s -> %s references a missing component", from, to)
+			}
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -47,11 +48,17 @@ func Load(opts Options) (*graph.Document, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Root는 절대 경로로 남긴다 — Position.File이 절대 경로라, 이후
+	// 파일→정점 해석이 어느 cwd에서든 같은 결과를 내야 한다.
+	root, err := filepath.Abs(opts.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving --dir %s: %w", opts.Dir, err)
+	}
 	reachable := walkImports(pkgs)
 	if opts.Level == graph.LevelModule {
-		return buildModuleDocument(opts.Dir, reachable, opts.IncludeDeps), nil
+		return buildModuleDocument(root, reachable, opts.IncludeDeps), nil
 	}
-	doc, kept := buildDocument(opts.Dir, reachable, opts.IncludeDeps)
+	doc, kept := buildDocument(root, reachable, opts.IncludeDeps)
 	if opts.Level.Rank() >= graph.LevelType.Rank() {
 		internal := internalPackages(pkgs, kept)
 		harvestSymbols(doc, internal, opts.Level)
@@ -118,8 +125,16 @@ func buildDocument(root string, reachable []*packages.Package,
 		}
 		kept[p.PkgPath] = p
 		doc.Vertices = append(doc.Vertices, vertexFor(p))
-		if p.Module != nil && p.Module.Main && doc.Module == "" {
-			doc.Module = p.Module.Path
+		if p.Module != nil && p.Module.Main {
+			if doc.Module == "" {
+				doc.Module = p.Module.Path
+				doc.ModuleDir = p.Module.Dir
+			}
+			// main 패키지는 패키지 레벨에서도 보존 루트다 — 심볼 수확 없이도
+			// orphan 판정 같은 소비자가 진입점을 알 수 있게 문서에 남긴다.
+			if p.Name == "main" {
+				doc.Roots = append(doc.Roots, p.PkgPath)
+			}
 		}
 	}
 
@@ -276,6 +291,9 @@ func vertexFor(p *packages.Package) graph.Vertex {
 		ID:   p.PkgPath,
 		Kind: graph.KindPackage,
 		Name: p.Name,
+		// 외부 표시는 수확 시점에만 알 수 있다 — 나중에 경로 접두사로
+		// 추론하면 주 모듈 안의 중첩 모듈을 내부로 오분한다.
+		External: p.Module == nil || !p.Module.Main,
 	}
 }
 

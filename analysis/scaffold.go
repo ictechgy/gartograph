@@ -4,6 +4,7 @@
 package analysis
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/ictechgy/gartograph/config"
@@ -19,7 +20,7 @@ func ScaffoldConfig(d *graph.Document) *config.File {
 	comps := map[string][]string{}
 	unit := map[string]string{} // 패키지 정점 ID → 컴포넌트명
 	for _, v := range d.Vertices {
-		if v.Kind != graph.KindPackage || isExternalPackage(d, v.ID) {
+		if v.Kind != graph.KindPackage || isExternalPackage(d, v) {
 			continue
 		}
 		rel := relPath(v.ID, d.Module)
@@ -28,6 +29,17 @@ func ScaffoldConfig(d *graph.Document) *config.File {
 			// 모듈 루트 패키지 — 경로 "."는 재귀 패턴으로 표현할 수 없어
 			// 정확 일치로 둔다.
 			name, pattern = "root", "."
+		}
+		// 이름은 컴포넌트 키라 유일해야 한다 — 모듈 루트가 "root"를 쓰면
+		// 같은 이름의 root/ 패키지가 밀려나는 식의 충돌을 접미사로 피한다.
+		for i := 2; ; i++ {
+			if _, taken := comps[name]; !taken {
+				break
+			}
+			name = fmt.Sprintf("%s-%d", relPath(v.ID, d.Module), i)
+			if rel == "." {
+				name = fmt.Sprintf("root-%d", i)
+			}
 		}
 		comps[name] = []string{pattern}
 		unit[v.ID] = name

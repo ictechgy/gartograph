@@ -232,7 +232,7 @@ func TestCheckRulesCommon(t *testing.T) {
 // deps가 허용해도 공급자가 닫아 두면 위반이다.
 func TestCheckRulesVisibleTo(t *testing.T) {
 	cfg := rulesCfg()
-	cfg.Deps["web"] = []string{"db"}           // 소비자는 허용하고
+	cfg.Deps["web"] = []string{"db"}                   // 소비자는 허용하고
 	cfg.VisibleTo = map[string][]string{"db": {"api"}} // 공급자는 api만 받는다
 	violations := CheckRules(rulesDoc(), cfg).Violations
 	if len(violations) != 1 || violations[0].Rule != "visibleTo" {
