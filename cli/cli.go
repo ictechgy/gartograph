@@ -288,6 +288,7 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 // deadReport는 dead 명령의 JSON 출력 형식이다.
 // 루트 목록을 함께 실어 "무엇에서 도달하지 못했나"를 소비자가 스스로 판단하게 한다.
 type deadReport struct {
+	Algorithm    string             `json:"algorithm"`
 	Roots        []string           `json:"roots"`
 	UnknownRoots []string           `json:"unknownRoots,omitempty"`
 	Unreachable  []analysis.Finding `json:"unreachable"`
@@ -302,10 +303,23 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		"retain all exported symbols — use for libraries without main")
 	var extraRoots stringsFlag
 	fs.Var(&extraRoots, "root", "additional retention root vertex ID (repeatable)")
-	explain := fs.String("explain", "", "show a reachability path for vertex ID")
+	explain := fs.String("explain", "",
+		"show a reachability path for vertex ID (over the harvested graph, regardless of --algo)")
 	format := fs.String("format", "text", "output format: text|json")
 	strict := fs.Bool("strict", false, "exit 1 when unreachable symbols exist")
+	algo := fs.String("algo", "cha",
+		"reachability algorithm: cha (harvested graph) | rta (SSA-based, source only)")
 	if fs.Parse(args) != nil {
+		return 2
+	}
+	if *algo != "cha" && *algo != "rta" {
+		fmt.Fprintf(stderr, "unknown algo %q: want cha|rta\n", *algo)
+		return 2
+	}
+	// RTA는 SSA로 다시 분석한다 — 저장 문서에는 호출 정밀도의 재료가 없다.
+	if *algo == "rta" && *graphPath != "" {
+		fmt.Fprintln(stderr,
+			"dead --algo rta requires source harvesting — it cannot run on a saved graph (--graph)")
 		return 2
 	}
 	opts.Level = graph.LevelSymbol
@@ -333,6 +347,19 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 	}
 	reachable := analysis.Reachable(doc, roots)
 	findings := analysis.Dead(doc, reachable)
+	if *algo == "rta" {
+		rootSet := make(map[string]bool, len(roots))
+		for _, r := range roots {
+			rootSet[r] = true
+		}
+		rtaSet, err := source.RTAReachable(*opts, rootSet)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		findings = analysis.DeadRTA(doc, reachable, rtaSet)
+		limitations = append(limitations,
+			"rta under-approximates: methods reachable only via reflection or uninstantiated types may appear unreachable")
+	}
 	if hasMethodFinding(findings) {
 		limitations = append(limitations,
 			"methods may satisfy interfaces declared outside the module; "+
@@ -343,7 +370,8 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 	switch *format {
 	case "json":
 		out, _ := json.MarshalIndent(deadReport{
-			Roots: roots, UnknownRoots: unknown,
+			Algorithm: *algo,
+			Roots:     roots, UnknownRoots: unknown,
 			Unreachable: findings, Limitations: limitations,
 		}, "", "  ")
 		fmt.Fprintln(stdout, string(out))

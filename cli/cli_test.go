@@ -173,6 +173,82 @@ func TestDeadExplain(t *testing.T) {
 	}
 }
 
+// TestDeadRTA는 --algo rta가 CHA의 과대 근사를 좁히는지 확인한다.
+// 인터페이스 디스패치는 CHA에서 모든 구현으로 팬아웃하지만, 인스턴스화
+// 되지 않은 구현체는 RTA에서 도달 불가다.
+func TestDeadRTA(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/impl"
+
+func main() {
+	var d impl.Doer = impl.A{}
+	d.Do()
+}
+`,
+		"impl/impl.go": `package impl
+
+type Doer interface{ Do() }
+
+type A struct{}
+
+func (A) Do() {}
+
+// B는 어디서도 만들어지지 않는다 — CHA는 B.Do를 살아 있다고 보지만
+// RTA는 보지 않는다.
+type B struct{}
+
+func (B) Do() {}
+`,
+	})
+	// CHA는 B.Do를 도달 가능으로 본다(과대 근사).
+	code, out, _ := run(t, "dead", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead cha failed: %d", code)
+	}
+	if strings.Contains(out, "(B).Do") {
+		t.Fatalf("cha must keep B.Do alive: %s", out)
+	}
+	// RTA는 인스턴스화된 타입만 보므로 B.Do가 unreachable로 나온다.
+	code, out, _ = run(t, "dead", "--dir", dir, "--format", "json", "--algo", "rta")
+	if code != 0 {
+		t.Fatalf("dead rta failed: %d", code)
+	}
+	var rep struct {
+		Algorithm   string `json:"algorithm"`
+		Unreachable []struct {
+			ID     string `json:"id"`
+			Reason string `json:"reason"`
+		} `json:"unreachable"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if rep.Algorithm != "rta" {
+		t.Fatalf("report must name the algorithm: %s", out)
+	}
+	var found bool
+	for _, f := range rep.Unreachable {
+		if strings.HasSuffix(f.ID, "(B).Do") {
+			found = true
+			if f.Reason != "not reachable under rapid type analysis" {
+				t.Fatalf("rta finding must carry the rta reason: %+v", f)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("rta must report uninstantiated (B).Do: %s", out)
+	}
+	// 저장 문서 위에서는 rta가 성립하지 않는다 — SSA 재료가 없다.
+	if code, _, _ := run(t, "dead", "--algo", "rta", "--graph", "x.json"); code != 2 {
+		t.Fatalf("rta on a saved graph must be a usage error: %d", code)
+	}
+	if code, _, _ := run(t, "dead", "--algo", "bogus", "--dir", dir); code != 2 {
+		t.Fatalf("unknown algo must be a usage error: %d", code)
+	}
+}
+
 // TestRules는 규칙 위반과 strict 종료 코드를 확인한다.
 func TestRules(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{

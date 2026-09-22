@@ -20,9 +20,9 @@ import (
 // harvester는 한 번의 심볼 수확 동안 공유되는 상태다.
 type harvester struct {
 	doc      *graph.Document
-	vertices map[string]bool // 존재 확인 — 없는 정점으로의 간선은 금지
-	edgeIdx  map[string]int  // (from,to,kind) → doc.Edges 인덱스 — 지점 병합용
-	roots    map[string]bool // 보존 루트 중복 억제
+	vertices map[string]bool     // 존재 확인 — 없는 정점으로의 간선은 금지
+	edgeIdx  map[string]int      // (from,to,kind) → doc.Edges 인덱스 — 지점 병합용
+	roots    map[string]bool     // 보존 루트 중복 억제
 	impls    map[string][]string // 인터페이스 메서드 ID → 구현 메서드 ID들
 	extRefs  int                 // 모듈 밖 심볼 참조 수
 	noTypes  int                 // 타입 정보 없는 패키지 수

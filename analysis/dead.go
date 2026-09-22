@@ -87,6 +87,10 @@ func Reachable(d *graph.Document, roots []string) map[string]bool {
 	return seen
 }
 
+// ReasonRTA는 RTA 모드의 사유다 — CHA 그래프와 다른 분석의 말이므로
+// 사유로 구분해 소비자가 알고리즘을 오독하지 않게 한다.
+const ReasonRTA = "not reachable under rapid type analysis"
+
 // Dead는 도달 불가능한 심볼 레벨 정점을 Finding으로 돌려준다.
 // 패키지·모듈 정점은 심볼이 아니라 대상이 아니다.
 func Dead(d *graph.Document, reachable map[string]bool) []Finding {
@@ -103,6 +107,37 @@ func Dead(d *graph.Document, reachable map[string]bool) []Finding {
 			State:    StateUnreachable,
 			Reason:   ReasonUnreachable,
 		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// DeadRTA는 RTA 도달 집합으로 호출 가능 심볼을 판정한다.
+// func·method는 RTA로, var·const·type은 그래프 도달성으로 본다 —
+// RTA의 호출 그래프는 비호출 심볼을 담지 않으므로 두 사실을 섞어
+// 말할 수 없다. RTA는 과소 근사라 "unreachable"의 의미가 CHA보다
+// 넓어진다는 점이 사유와 limitation으로 구분되어야 한다.
+func DeadRTA(d *graph.Document, graphReach, rtaReach map[string]bool) []Finding {
+	var out []Finding
+	for _, v := range d.Symbols() {
+		callable := v.Kind == graph.KindFunc || v.Kind == graph.KindMethod
+		var dead bool
+		reason := ReasonUnreachable
+		if callable {
+			dead, reason = !rtaReach[v.ID], ReasonRTA
+		} else {
+			dead = !graphReach[v.ID]
+		}
+		if dead {
+			out = append(out, Finding{
+				ID:       v.ID,
+				Kind:     v.Kind,
+				Package:  v.Package,
+				Position: v.Position,
+				State:    StateUnreachable,
+				Reason:   reason,
+			})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

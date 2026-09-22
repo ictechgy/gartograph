@@ -56,6 +56,7 @@ gartograph dead                           # symbol level, always
 gartograph dead --retain-public           # libraries: keep exported API
 gartograph dead --root my/pkg.Setup       # extra retention root
 gartograph dead --explain my/pkg.F        # why alive? show a reachability path
+gartograph dead --algo rta                # RTA precision: needs source, not --graph
 
 # Check layer rules from .gartograph.yml
 gartograph rules --strict
@@ -215,10 +216,17 @@ don't know this area", not "no rules apply".
 
 ## Graph document
 
-`version: 1`, `tool: "gartograph"`, `level`, `root` (filesystem dir),
+`version: 2`, `tool: "gartograph"`, `level`, `root` (filesystem dir),
 `module` (module path), `roots` (harvested retention roots: `main`, `init`,
 plus `Test*`/`Benchmark*`/`Example*`/`Fuzz*` entry points under `--tests`),
 `vertices`, `edges`, `limitations`.
+
+Edges carry `positions` — every source site where the relation holds
+(import decls for `import`, call expressions for `call`, and so on).
+Relations without a single site (`contains`, `implements`, module edges)
+omit it. `dead --algo rta` swaps the harvested CHA edges for SSA-based
+rapid type analysis — narrower, source-only, and it under-approximates:
+the report says so in `limitations`.
 
 Vertex IDs: `pkg/path` for packages, `pkg/path.Name` for package-level
 symbols, `pkg/path.(Recv).Name` for methods. Vertex `kind`:

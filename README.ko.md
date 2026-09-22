@@ -43,6 +43,7 @@ gartograph dead                               # main·init에서 도달 불가 �
 gartograph dead --retain-public               # 라이브러리: 공개 API 보존
 gartograph dead --root my/pkg.Setup           # 추가 보존 루트
 gartograph dead --explain my/pkg.F            # 왜 살아 있나 — 도달 경로 출력
+gartograph dead --algo rta                    # RTA 정밀도 — 소스 필요, --graph와 불가
 gartograph rules --strict                     # .gartograph.yml 레이어 규칙 검사
 
 gartograph query <정점ID> --depth 2            # 이웃 되묻기(에이전트용 JSON)
@@ -173,6 +174,12 @@ gartograph rules --baseline .gartograph-baseline.json --strict
 인터페이스 호출은 CHA 팬아웃으로 인터페이스 메서드와 모든 구현 메서드에
 간선을 긋습니다 — 과대 근사는 "살아 있다" 쪽으로만 기울어 `dead`가
 도달 가능 코드를 오판하지 않습니다.
+
+문서 버전은 `2`입니다. 간선은 그 관계가 성립하는 모든 사용 지점을
+`positions`에 담습니다(`import`는 import 선언, `call`은 호출 식).
+`contains`·`implements`·모듈 간선처럼 단일 지점이 없는 관계는 생략합니다.
+`dead --algo rta`는 수확한 CHA 간선 대신 SSA 기반 RTA를 씁니다 —
+더 좁지만 소스가 필요하고 과소 근사이므로 그 사실이 `limitations`에 실립니다.
 
 ## MCP 서버
 
