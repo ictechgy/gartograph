@@ -114,44 +114,15 @@ jobs:
             exit 0
           fi
           git clone "https://github.com/ictechgy/homebrew-tap.git" tap
+          # formula 원본은 이 저장소 Formula/gartograph.rb — 자리표시자만 채워 탭에 둔다.
+          sed -e "s|@TAG@|${TAG}|g" \
+              -e "s|@VERSION@|${VERSION}|g" \
+              -e "s|@SHA_DARWIN_ARM64@|$(sha darwin-arm64.tar.gz)|" \
+              -e "s|@SHA_DARWIN_AMD64@|$(sha darwin-amd64.tar.gz)|" \
+              -e "s|@SHA_LINUX_ARM64@|$(sha linux-arm64.tar.gz)|" \
+              -e "s|@SHA_LINUX_AMD64@|$(sha linux-amd64.tar.gz)|" \
+              Formula/gartograph.rb > tap/Formula/gartograph.rb
           cd tap
-          # heredoc 내용은 열 0에서 시작해야 들여쓰기가 formula에 남지 않는다.
-          cat > Formula/gartograph.rb <<FORMULA
-class Gartograph < Formula
-  desc "Queryable dependency graph for Go codebases, built on go/packages"
-  homepage "https://github.com/ictechgy/gartograph"
-  version "${VERSION}"
-  license "MIT"
-
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/ictechgy/gartograph/releases/download/${TAG}/gartograph-${VERSION}-darwin-arm64.tar.gz"
-      sha256 "$(sha darwin-arm64.tar.gz)"
-    else
-      url "https://github.com/ictechgy/gartograph/releases/download/${TAG}/gartograph-${VERSION}-darwin-amd64.tar.gz"
-      sha256 "$(sha darwin-amd64.tar.gz)"
-    end
-  end
-
-  on_linux do
-    if Hardware::CPU.arm?
-      url "https://github.com/ictechgy/gartograph/releases/download/${TAG}/gartograph-${VERSION}-linux-arm64.tar.gz"
-      sha256 "$(sha linux-arm64.tar.gz)"
-    else
-      url "https://github.com/ictechgy/gartograph/releases/download/${TAG}/gartograph-${VERSION}-linux-amd64.tar.gz"
-      sha256 "$(sha linux-amd64.tar.gz)"
-    end
-  end
-
-  def install
-    bin.install "gartograph"
-  end
-
-  test do
-    assert_match version.to_s, shell_output("#{bin}/gartograph version")
-  end
-end
-FORMULA
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/gartograph.rb
