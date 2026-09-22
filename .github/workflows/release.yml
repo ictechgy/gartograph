@@ -58,7 +58,8 @@ jobs:
               go build -trimpath -ldflags "$ldflags" -o "$dir/$bin" ./cmd/gartograph
             cp LICENSE README.md "$dir/"
             if [ "$os" = "windows" ]; then
-              (cd dist && zip -qr "gartograph-${VERSION}-${target}.zip" "gartograph-${VERSION}-${target}")
+              # zip은 dist 안에서 돌리므로 산출물은 한 단계 위(작업 루트)에 둔다.
+              (cd dist && zip -qr "../gartograph-${VERSION}-${target}.zip" "gartograph-${VERSION}-${target}")
             else
               tar -C dist -czf "gartograph-${VERSION}-${target}.tar.gz" "gartograph-${VERSION}-${target}"
             fi
