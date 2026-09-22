@@ -68,7 +68,13 @@ const (
 	EdgeImplements EdgeKind = "implements"
 	EdgeEmbeds     EdgeKind = "embeds"
 	EdgeReferences EdgeKind = "references"
-	EdgeContains   EdgeKind = "contains"
+	// EdgeSignature는 선언의 타입 표현식(파라미터·결과·타입 정의)이
+	// 참조하는 타입을 가리킨다. references의 부분집합이 아니라 별도 관계다 —
+	// "본문 의존은 허용, 공개 API 타입 누출은 금지" 규칙을 세우려면
+	// 시그니처만 따로 질의할 수 있어야 한다. 의존 관계이므로
+	// contains와 달리 전이에 포함된다.
+	EdgeSignature EdgeKind = "signature"
+	EdgeContains  EdgeKind = "contains"
 )
 
 // Position은 소스 위치다.
@@ -91,6 +97,10 @@ type Vertex struct {
 	Package  string     `json:"package,omitempty"`
 	Position *Position  `json:"position,omitempty"`
 	Exported bool       `json:"exported,omitempty"`
+	// Generated는 `// Code generated ... DO NOT EDIT.` 마커 파일 출신이다.
+	// 생성 코드를 그래프에서 숨기면 사실이 사라진다 — 표시만 하고
+	// 제외 여부는 소비자가 정한다.
+	Generated bool `json:"generated,omitempty"`
 }
 
 // Edge는 방향 있는 관계다.
