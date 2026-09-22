@@ -62,10 +62,10 @@ func TestView(t *testing.T) {
 	}
 }
 
-// TestViewUnknownLevel은 미구현·미지원 레벨 투영이 에러인지 확인한다.
+// TestViewUnknownLevel은 미지원 레벨 투영이 에러인지 확인한다.
 func TestViewUnknownLevel(t *testing.T) {
-	if _, err := viewDoc().View(LevelModule); err == nil {
-		t.Fatal("module view must be an error until implemented")
+	if _, err := viewDoc().View(Level("bogus")); err == nil {
+		t.Fatal("unknown level view must be an error")
 	}
 }
 

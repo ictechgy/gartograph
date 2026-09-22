@@ -10,9 +10,9 @@ dartograph(Dart/Flutter) · schemagraph(DB) · isthmus(언어 경계 조인).
 
 ## 상태
 
-동작하는 코어. 패키지/타입/심볼 세 레벨 그래프와 `graph`·`cycles`·`dead`·
-`rules`·`query` 명령, 영속 그래프 문서(`--out`/`--graph`).
-모듈 레벨·검증 스크립트·CI·배포는 로드맵 — [HANDOFF.md](HANDOFF.md) 참고.
+동작하는 코어. 모듈/패키지/타입/심볼 네 레벨 그래프와 `graph`·`cycles`·
+`dead`·`rules`·`query` 명령, 영속 그래프 문서(`--out`/`--graph`),
+커버리지 게이트와 CI. 배포는 로드맵 — [HANDOFF.md](HANDOFF.md) 참고.
 
 ## 설치
 

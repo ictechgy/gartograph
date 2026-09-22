@@ -4,8 +4,9 @@
 
 ## 현재 상태 (2026-09-22)
 
-**심볼/타입 레벨 + dead + rules + 영속 문서까지 완성.** 브랜치 `feature/symbol-type-level`.
-`go vet`·`go test ./...` 전부 통과, 자기 분석(rules/cycles×2/dead) 정상.
+**네 레벨(module/package/type/symbol) + dead + rules + 영속 문서 + 검증 체계 완성.**
+브랜치 `feature/symbol-type-level`. `go vet`·`go test ./...` 통과,
+커버리지 90.1%(게이트 90), 자기 분석(rules/cycles×2/dead) 정상.
 
 - `graph` — 순수 도메인. `Document` v1 + `Module`·`Roots`, `Level`(module/package/
   type/symbol), `Vertex`(kind/name/package/position/exported)·`Edge`,
@@ -15,6 +16,7 @@
   call/references까지. `symbols.go`가 수확기: `objectID`(`pkg.Name`/
   `pkg.(Recv).Name`), 인터페이스 호출은 CHA 팬아웃, 승격 메서드는 선언 타입
   아래로 귀속. reflect/linkname/외부참조/무타입 패키지를 실측 limitation으로.
+  `module.go`는 패키지의 `Module` 소속을 모아 모듈 정점+크로스 모듈 간선.
 - `analysis` — `Cycles`(Tarjan), `Query`(양방향 BFS), `Dead`/`RetentionRoots`/
   `Reachable`/`Explain`(도달성 — state+reason, 삭제 판정 아님),
   `CheckRules`(컴포넌트 규칙, unmapped 보고).
@@ -33,26 +35,24 @@
 - 심볼 레벨: 156 정점/670 간선, 루트 `cmd/gartograph.main` 인식.
 - `dead`가 `flag.Value`·`error` 만족 메서드를 unreachable로 보고 — 외부
   인터페이스 디스패치는 그래프의 blind spot. 보고에 limitation으로 명시됨.
-- `KindModule`, `quote`는 진짜 미사용(미래 모듈 레벨 예약/호출자 없음) —
-  도구가 실제 사실을 잡았다.
+- `KindModule`은 미래 예약 상수로 unreachable이었는데 모듈 레벨 구현으로
+  실제 사용처가 생겼다 — dead 보고가 구현 진척을 따라 움직인다.
 - `rules --strict` 0 위반 — 계층이 파일로 강제되기 시작했다.
 
 ## 알려진 한계
 
-- 모듈 레벨 미구현(`LevelModule`은 선언만).
 - 인터페이스 디스패치는 모듈 내부만 추적 — 외부 인터페이스 만족 메서드는
   unreachable로 보고될 수 있다(limitation으로 명시).
 - 외부 심볼 참조는 개수만 센다 — 외부 정점을 만들지 않는다는 계약.
-- 커버리지 게이트·CI·릴리스 경로 아직 없음.
+- 모듈 레벨은 단일 모듈 저장소에서 정점 하나가 정상 결과다 — go.work
+  워크스페이스나 `--deps`에서만 간선이 생긴다.
 
 ## 다음 할 일 (우선순위 순)
 
-1. **검증 스크립트** — `Scripts/coverage.sh`(계열 기준 90%),
-   `Scripts/verify-cli-contract.sh`(종료 코드 0/1/2 계약 검증).
-2. **CI** — GitHub Actions로 build/vet/test + 자기 분석(rules/cycles/dead).
-3. **모듈 레벨** — go.work/다중 모듈 정점. `KindModule`이 그때 살아난다.
-4. **배포** — `go install` 검증, Homebrew tap(계열 저장소 방식 참고).
-5. **isthmus 조인** — cgo/gomobile 브리지가 생기면 bridge facts producer.
+1. **배포** — `go install` 경로 검증, Homebrew tap(계열 저장소 방식 참고).
+2. **isthmus 조인** — cgo/gomobile 브리지가 생기면 bridge facts producer.
+3. **정밀도** — RTA/포인터 분석으로 CHA 오탐을 좁히는 것은 필요해질 때.
+   dead의 "살아 있다" 편향이 계약이라 급하지 않다.
 
 ## 결정 기록
 

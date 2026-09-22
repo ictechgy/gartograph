@@ -13,10 +13,10 @@ isthmus (cross-language joins).
 
 ## Status
 
-Working core. Three graph levels (package/type/symbol) with `graph`,
-`cycles`, `dead`, `rules`, and `query` commands, plus persisted graph
-documents (`--out`/`--graph`). Module level, verification scripts, CI, and
-distribution are on the roadmap — see [HANDOFF.md](HANDOFF.md).
+Working core. Four graph levels (module/package/type/symbol) with `graph`,
+`cycles`, `dead`, `rules`, and `query` commands, persisted graph documents
+(`--out`/`--graph`), a coverage gate, and CI. Distribution is on the
+roadmap — see [HANDOFF.md](HANDOFF.md).
 
 ## Install
 
@@ -38,6 +38,7 @@ go build -o gartograph ./cmd/gartograph
 # Emit the dependency graph (deterministic JSON)
 gartograph graph                          # package level
 gartograph graph --level symbol           # symbols: call/implements/embeds/references
+gartograph graph --level module           # modules (go.work workspaces)
 gartograph graph --level type --format mermaid
 gartograph graph --level symbol --out .gartograph/graph.json
 
@@ -145,9 +146,9 @@ go/packages ──> source ──> graph.Document ──> analysis ──> expor
 
 - ~~Symbol/type level harvest~~ — done via `go/packages` + `go/types` + AST
 - ~~`dead`, `rules`, persisted `graph.json`~~ — done
-- Module-level graph (workspace modules)
-- Verification scripts — `Scripts/coverage.sh`, `Scripts/verify-cli-contract.sh`
-- CI + Homebrew tap
+- ~~Module-level graph~~ — done (go.work workspaces; `--deps` adds dependency modules)
+- ~~Verification scripts + CI~~ — `Scripts/coverage.sh` (90% gate), `Scripts/verify-cli-contract.sh`
+- Homebrew tap / `go install` verification
 - isthmus bridge-facts producer (cgo/gomobile boundary — open question)
 
 ## License

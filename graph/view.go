@@ -5,6 +5,7 @@ import "sort"
 // vertexKindsForLevel는 레벨별 정점 집합이다.
 // symbol은 가장 세밀한 레벨이라 type을 포함한다.
 var vertexKindsForLevel = map[Level]map[VertexKind]bool{
+	LevelModule:  {KindModule: true},
 	LevelPackage: {KindPackage: true},
 	LevelType:    {KindType: true},
 	LevelSymbol: {
@@ -16,6 +17,7 @@ var vertexKindsForLevel = map[Level]map[VertexKind]bool{
 // edgeKindsForLevel는 레벨별 의존 간선 집합이다.
 // 패키지 순환은 컴파일러가 막으므로 실전 순환 검사는 type·symbol 레벨이다.
 var edgeKindsForLevel = map[Level][]EdgeKind{
+	LevelModule:  {EdgeImport},
 	LevelPackage: {EdgeImport},
 	LevelType:    {EdgeEmbeds, EdgeImplements, EdgeReferences},
 	LevelSymbol:  {EdgeCall, EdgeImplements, EdgeEmbeds, EdgeReferences},
@@ -40,7 +42,6 @@ func (l Level) Rank() int {
 // View는 Document를 레벨별 부분 그래프로 투영한다.
 // 정점은 레벨의 종류 집합으로, 간선은 양 끝이 살아 있고 레벨의 간선 종류에
 // 해당하는 것만 남긴다 — 소유(contains) 간선은 어느 레벨에서도 의존이 아니다.
-// LevelModule은 아직 수확되지 않아 에러를 돌린다.
 func (d *Document) View(l Level) (*Document, error) {
 	vk, ok := vertexKindsForLevel[l]
 	if !ok {

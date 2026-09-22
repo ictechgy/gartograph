@@ -35,14 +35,14 @@ type Options struct {
 // package는 import 간선만, type은 타입 정점과 embeds/implements/references,
 // symbol은 함수·변수·상수 정점과 call/references까지 담는다.
 func Load(opts Options) (*graph.Document, error) {
-	if opts.Level == graph.LevelModule {
-		return nil, fmt.Errorf("level module is not implemented yet")
-	}
 	pkgs, err := load(opts)
 	if err != nil {
 		return nil, err
 	}
 	reachable := walkImports(pkgs)
+	if opts.Level == graph.LevelModule {
+		return buildModuleDocument(opts.Dir, reachable, opts.IncludeDeps), nil
+	}
 	doc, kept := buildDocument(opts.Dir, reachable, opts.IncludeDeps)
 	if opts.Level.Rank() >= graph.LevelType.Rank() {
 		internal := internalPackages(pkgs, kept)
