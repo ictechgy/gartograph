@@ -5,14 +5,20 @@ Go 의존성 그래프 도구 — Go 모듈을 읽어 의존성 그래프를 만
 
 설계는 한 문장입니다. **그래프가 산출물이고, 나머지는 전부 그 위의 질의입니다.**
 
-자매 프로젝트: cartograph(Swift) · kartograph(Kotlin/Android) ·
-dartograph(Dart/Flutter) · schemagraph(DB) · isthmus(언어 경계 조인).
+> 이 파일은 [README.md](README.md)의 한국어 참조입니다. 정본은 영어판입니다.
 
-## 상태
+자매 프로젝트: [cartograph](https://github.com/ictechgy/cartograph)(Swift) ·
+kartograph(Kotlin/Android) · dartograph(Dart/Flutter) ·
+[schemagraph](https://github.com/ictechgy/schemagraph)(DB) ·
+isthmus(언어 경계 조인).
 
-동작하는 코어. 모듈/패키지/타입/심볼 네 레벨 그래프와 `graph`·`cycles`·
-`dead`·`rules`·`query` 명령, 영속 그래프 문서(`--out`/`--graph`),
-커버리지 게이트와 CI. 배포는 로드맵 — [HANDOFF.md](HANDOFF.md) 참고.
+## 왜
+
+Go에는 이미 `deadcode`, `goda`, `go-arch-lint`, `go-callvis`가 있지만 각자
+한 종류의 질문에 제각각의 출력으로 답합니다. gartograph는 대신 네 레벨
+(모듈/패키지/타입/심볼)의 **버전ed 그래프 하나**를 만들고 모든 분석을
+그 위의 질의로 표현합니다 — 코딩 에이전트를 위한 결정적 JSON 계약으로,
+삭제 판정 없이 사실과 근거만 담습니다.
 
 ## 설치
 
@@ -24,7 +30,8 @@ go install github.com/ictechgy/gartograph/cmd/gartograph@latest
 
 ```bash
 gartograph graph                              # 패키지 그래프(JSON, 결정적)
-gartograph graph --level symbol               # 심볼: call/implements/embeds/references
+gartograph graph --level symbol               # call/implements/embeds/references
+gartograph graph --level module               # 모듈(go.work 워크스페이스)
 gartograph graph --level type --format mermaid
 gartograph graph --level symbol --out .gartograph/graph.json
 
@@ -32,6 +39,7 @@ gartograph cycles --level symbol --strict     # 순환 검사 — 패키지 순�
                                               # 실전 검사는 type/symbol 레벨
 gartograph dead                               # main·init에서 도달 불가 심볼 보고
 gartograph dead --retain-public               # 라이브러리: 공개 API 보존
+gartograph dead --root my/pkg.Setup           # 추가 보존 루트
 gartograph dead --explain my/pkg.F            # 왜 살아 있나 — 도달 경로 출력
 gartograph rules --strict                     # .gartograph.yml 레이어 규칙 검사
 
@@ -48,7 +56,8 @@ gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 `gartograph rules`는 모듈 루트의 `.gartograph.yml`을 읽습니다. `components`는
 모듈 상대 패키지 경로를 매핑하고, `deps`는 **허용 목록**입니다 — 항목이 없는
 컴포넌트는 자기 자신 외에 아무것도 의존할 수 없습니다. 어느 컴포넌트에도
-속하지 않은 패키지는 `unmapped`로 보고됩니다.
+속하지 않은 패키지는 `unmapped`로 보고됩니다 — 매핑 구멍은 "규칙 무관"이
+아니라 "규칙이 모르는 영역"입니다.
 
 ```yaml
 components:
@@ -60,6 +69,8 @@ deps:
   analysis: ["core"]
   core:     []
 ```
+
+패턴: 정확 일치, `x/**` 재귀 접두사, `*` 세그먼트 글롭.
 
 ## 출력 계약(에이전트용)
 
@@ -78,6 +89,14 @@ deps:
 메서드는 `pkg/path.(Recv).Name`. 인터페이스 호출은 CHA 팬아웃으로
 인터페이스 메서드와 모든 구현 메서드에 간선을 긋습니다 — 과대 근사는
 "살아 있다" 쪽으로만 기울어 `dead`가 도달 가능 코드를 오판하지 않습니다.
+
+## 개발
+
+```bash
+go test ./...                    # 테스트
+Scripts/coverage.sh              # 테스트 + 커버리지 게이트 90%
+Scripts/verify-cli-contract.sh   # fixture 모듈에서 종료 코드 계약 검증
+```
 
 ## 라이선스
 
