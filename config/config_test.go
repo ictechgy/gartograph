@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -99,6 +100,128 @@ func TestAllowed(t *testing.T) {
 	}
 	if f.Allowed("ghost", "db") {
 		t.Fatal("component without deps entry may depend on nothing")
+	}
+}
+
+// TestDenyEntryForms는 deny 항목의 스칼라/맵 두 형태를 확인한다.
+func TestDenyEntryForms(t *testing.T) {
+	f, err := Load(writeRules(t, `components:
+  web: ["web"]
+  db: ["db"]
+deny:
+  web:
+    - db
+    - {to: other, reason: "use db instead"}
+`))
+	// other가 정의되지 않았으므로 참조 검사에서 걸려야 한다 — 먼저 추가한다.
+	if err == nil {
+		t.Fatal("undefined deny target must fail")
+	}
+	f, err = Load(writeRules(t, `components:
+  web: ["web"]
+  db: ["db"]
+  other: ["other"]
+deny:
+  web:
+    - db
+    - {to: other, reason: "use db instead"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Deny["web"]) != 2 {
+		t.Fatalf("deny entries: %+v", f.Deny)
+	}
+	if f.Deny["web"][0].To != "db" || f.Deny["web"][0].Reason != "" {
+		t.Fatalf("scalar deny entry: %+v", f.Deny["web"][0])
+	}
+	if f.Deny["web"][1].To != "other" || f.Deny["web"][1].Reason != "use db instead" {
+		t.Fatalf("map deny entry: %+v", f.Deny["web"][1])
+	}
+	if reason, denied := f.Denied("web", "other"); !denied || reason != "use db instead" {
+		t.Fatalf("Denied must carry the reason: %q %v", reason, denied)
+	}
+}
+
+// TestCheckRefs는 정의되지 않은 컴포넌트 참조가 Load 오류인지 확인한다.
+// 죽은 규칙을 허용하면 "규칙이 있다"는 착각을 만든다.
+func TestCheckRefs(t *testing.T) {
+	cases := []string{
+		"components: {a: [a]}\ndeps: {ghost: []}\n",
+		"components: {a: [a]}\ndeps: {a: [ghost]}\n",
+		"components: {a: [a]}\nvisibleTo: {a: [ghost]}\n",
+		"components: {a: [a]}\ncommon: [ghost]\n",
+		"components: {a: [a]}\nforbidden: [{from: a, to: ghost}]\n",
+		"components: {a: [a]}\nforbidden: [{from: a, to: a}]\n", // 자기 자신 금지는 무의미
+	}
+	for _, c := range cases {
+		if _, err := Load(writeRules(t, c)); err == nil {
+			t.Fatalf("must reject dead reference:\n%s", c)
+		}
+	}
+}
+
+// TestVisibleTo는 공급자 측 허용 목록 의미론을 확인한다.
+func TestVisibleTo(t *testing.T) {
+	f := &File{VisibleTo: map[string][]string{"db": {"api"}}}
+	if !f.Visible("api", "db") || f.Visible("web", "db") {
+		t.Fatal("visibleTo must restrict consumers to the list")
+	}
+	if !f.Visible("db", "db") {
+		t.Fatal("self visibility is always allowed")
+	}
+	if !f.Visible("web", "core") {
+		t.Fatal("no visibleTo entry means unrestricted")
+	}
+	// 빈 목록은 아무도 못 본다 — deps의 빈 허용 목록과 같은 의미론이다.
+	f.VisibleTo["sealed"] = []string{}
+	if f.Visible("web", "sealed") {
+		t.Fatal("empty visibleTo list seals the component")
+	}
+}
+
+// TestSignatureAllowed는 시그니처 규칙의 의미론을 확인한다 —
+// 키가 없으면 검사하지 않고, 있으면 목록만 통과한다.
+func TestSignatureAllowed(t *testing.T) {
+	f := &File{Signature: map[string][]string{"api": {"core"}}}
+	if !f.SignatureAllowed("web", "db") {
+		t.Fatal("no signature entry means not checked")
+	}
+	if !f.SignatureAllowed("api", "core") || f.SignatureAllowed("api", "db") {
+		t.Fatal("signature list must be an allowlist")
+	}
+	if !f.SignatureAllowed("api", "api") {
+		t.Fatal("self reference is always allowed")
+	}
+}
+
+// TestRender는 init 출력이 결정적이고 다시 읽히는지 확인한다.
+func TestRender(t *testing.T) {
+	f := &File{
+		Components: map[string][]string{"b": {"b/**"}, "a": {"a/**"}},
+		Deps:       map[string][]string{"a": {"b"}, "b": {}},
+	}
+	data, err := Render(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 맵 키는 정렬되어 나와야 한다 — 결정적 출력 계약.
+	s := string(data)
+	ia, ib := strings.Index(s, "  a:"), strings.Index(s, "  b:")
+	if ia < 0 || ib < 0 || ia > ib {
+		t.Fatalf("components must be sorted:\n%s", s)
+	}
+	// 렌더된 파일이 Load를 통과하는지 — 생성→검사 라운드트립.
+	path := filepath.Join(t.TempDir(), ".gartograph.yml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load(path)
+	if err != nil {
+		t.Fatalf("rendered file must load: %v", err)
+	}
+	if len(back.Components) != 2 || len(back.Deps["a"]) != 1 {
+		t.Fatalf("round-trip mismatch: %+v", back)
 	}
 }
 

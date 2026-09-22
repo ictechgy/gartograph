@@ -91,10 +91,13 @@ func TestRelPath(t *testing.T) {
 func TestCheckRulesDeny(t *testing.T) {
 	cfg := rulesCfg()
 	cfg.Deps["web"] = []string{"db"}
-	cfg.Deny = map[string][]string{"web": {"db"}}
+	cfg.Deny = map[string][]config.DenyEntry{"web": {{To: "db", Reason: "use core instead"}}}
 	violations := CheckRules(rulesDoc(), cfg).Violations
 	if len(violations) != 1 || violations[0].Rule != "deny" {
 		t.Fatalf("deny must win over allow, got %+v", violations)
+	}
+	if violations[0].Reason != "use core instead" {
+		t.Fatalf("deny reason must reach the violation, got %+v", violations[0])
 	}
 }
 
@@ -211,5 +214,82 @@ func TestCheckRulesSelfDep(t *testing.T) {
 	violations, unmapped := rep.Violations, rep.Unmapped
 	if len(violations) != 0 || len(unmapped) != 0 {
 		t.Fatalf("self-component dep: violations=%v unmapped=%v", violations, unmapped)
+	}
+}
+
+// TestCheckRulesCommon은 common 컴포넌트가 모든 deps에 적지 않아도
+// 허용되는지 확인한다 — 공통 부품을 매 deps에 반복 적는 boilerplate를 없앤다.
+func TestCheckRulesCommon(t *testing.T) {
+	cfg := rulesCfg()
+	cfg.Common = []string{"db"}
+	violations := CheckRules(rulesDoc(), cfg).Violations
+	if len(violations) != 0 {
+		t.Fatalf("common dep must be allowed everywhere: %+v", violations)
+	}
+}
+
+// TestCheckRulesVisibleTo는 공급자 측 규칙을 확인한다 —
+// deps가 허용해도 공급자가 닫아 두면 위반이다.
+func TestCheckRulesVisibleTo(t *testing.T) {
+	cfg := rulesCfg()
+	cfg.Deps["web"] = []string{"db"}           // 소비자는 허용하고
+	cfg.VisibleTo = map[string][]string{"db": {"api"}} // 공급자는 api만 받는다
+	violations := CheckRules(rulesDoc(), cfg).Violations
+	if len(violations) != 1 || violations[0].Rule != "visibleTo" {
+		t.Fatalf("visibleTo must block an otherwise-allowed dep: %+v", violations)
+	}
+	// 공급자가 소비자를 열어 주면 통과다.
+	cfg.VisibleTo["db"] = []string{"web"}
+	if v := CheckRules(rulesDoc(), cfg).Violations; len(v) != 0 {
+		t.Fatalf("listed consumer must pass visibleTo: %+v", v)
+	}
+}
+
+// TestCheckRulesForbidden은 간접 도달 금지를 확인한다 —
+// deps가 직접 간선만 보는 것과 달리 중간 컴포넌트를 경유한 도달도 위반이다.
+func TestCheckRulesForbidden(t *testing.T) {
+	d := &graph.Document{
+		Module: "example.com/m",
+		Vertices: []graph.Vertex{
+			{ID: "example.com/m/api", Kind: graph.KindPackage},
+			{ID: "example.com/m/svc", Kind: graph.KindPackage},
+			{ID: "example.com/m/db", Kind: graph.KindPackage},
+		},
+		Edges: []graph.Edge{
+			// api가 db를 직접 import하지 않는다 — svc를 경유해 도달할 뿐이다.
+			{From: "example.com/m/api", To: "example.com/m/svc", Kind: graph.EdgeImport},
+			{From: "example.com/m/svc", To: "example.com/m/db", Kind: graph.EdgeImport},
+		},
+	}
+	cfg := &config.File{
+		Components: map[string][]string{
+			"api": {"api"}, "svc": {"svc"}, "db": {"db"},
+		},
+		Deps:      map[string][]string{"api": {"svc"}, "svc": {"db"}},
+		Forbidden: []config.ForbiddenRule{{From: "api", To: "db"}},
+	}
+	violations := CheckRules(d, cfg).Violations
+	if len(violations) != 1 {
+		t.Fatalf("indirect reachability must violate forbidden: %+v", violations)
+	}
+	v := violations[0]
+	if v.Rule != "forbidden" || v.FromComponent != "api" || v.ToComponent != "db" {
+		t.Fatalf("unexpected forbidden violation: %+v", v)
+	}
+	// 목격 경로가 api→svc→db여야 에이전트가 사슬을 바로 본다.
+	want := []string{"example.com/m/api", "example.com/m/svc", "example.com/m/db"}
+	if len(v.Path) != len(want) {
+		t.Fatalf("expected witness path %v, got %v", want, v.Path)
+	}
+	for i := range want {
+		if v.Path[i] != want[i] {
+			t.Fatalf("expected witness path %v, got %v", want, v.Path)
+		}
+	}
+	// 계약을 빼면 직접 간선은 전부 deps에 있으므로 위반이 없다 —
+	// forbidden만이 간접 도달을 잡는다는 것을 함께 확인한다.
+	cfg.Forbidden = nil
+	if v := CheckRules(d, cfg).Violations; len(v) != 0 {
+		t.Fatalf("without forbidden the chain is legal: %+v", v)
 	}
 }

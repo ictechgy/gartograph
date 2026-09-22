@@ -17,8 +17,11 @@ import (
 //
 //	components: 컴포넌트명 → 모듈 상대 경로 패턴들
 //	deps: 컴포넌트명 → 의존해도 되는 컴포넌트명들
-//	deny: 컴포넌트명 → 절대 의존하면 안 되는 컴포넌트명들
+//	deny: 컴포넌트명 → 절대 의존하면 안 되는 대상들(스칼라 또는 {to, reason})
 //	signature: 컴포넌트명 → 공개 API 시그니처가 참조해도 되는 컴포넌트명들
+//	common: 모든 컴포넌트가 deps에 적지 않아도 의존할 수 있는 컴포넌트명들
+//	visibleTo: 컴포넌트명 → 그 컴포넌트를 의존해도 되는 컴포넌트명들
+//	forbidden: 간접 경로까지 금지하는 {from, to} 컴포넌트 쌍 목록
 //
 // components 패턴은 --deps로 수확된 외부 패키지의 전체 import 경로에도
 // 매칭된다 — `aws: ["github.com/aws/**"]`를 컴포넌트로 두면 deps/deny가
@@ -30,12 +33,48 @@ import (
 // "보통 허용하지만 이 조합은 금지"를 표현하기 위함이다.
 // signature는 deps보다 좁은 규칙이다 — 본문 의존은 허용하되 공개 API의
 // 타입 누출만 막을 때 쓴다. 키가 없으면 시그니처 검사는 하지 않는다.
+// visibleTo는 공급자 측 규칙이다 — deps가 "내가 무엇을 쓸 수 있나"라면
+// visibleTo는 "누가 나를 쓸 수 있나"다. 둘 다 허용 목록이라 visibleTo는
+// deps를 좁힐 뿐 풀지 않는다. 키가 없으면 제한이 없고, 빈 목록이면
+// 자기 자신 외 누구도 의존할 수 없다.
+// forbidden은 deps/deny와 달리 간접 도달까지 검사한다 — from 컴포넌트의
+// 정점이 의존 간선을 몇 홉이든 타고 to 컴포넌트에 닿으면 위반이다.
+// 직접 간선만 보는 deps로는 "A가 C에 도달하면 안 됨"을 표현할 수 없다.
 type File struct {
-	Version    int                 `yaml:"version"`
-	Components map[string][]string `yaml:"components"`
-	Deps       map[string][]string `yaml:"deps"`
-	Deny       map[string][]string `yaml:"deny"`
-	Signature  map[string][]string `yaml:"signature"`
+	Version    int                    `yaml:"version"`
+	Components map[string][]string    `yaml:"components"`
+	Deps       map[string][]string    `yaml:"deps"`
+	Deny       map[string][]DenyEntry `yaml:"deny"`
+	Signature  map[string][]string    `yaml:"signature"`
+	Common     []string               `yaml:"common"`
+	VisibleTo  map[string][]string    `yaml:"visibleTo"`
+	Forbidden  []ForbiddenRule        `yaml:"forbidden"`
+}
+
+// DenyEntry는 deny 목록의 한 항목이다.
+// 스칼라("cli")와 맵({to: cli, reason: "use X instead"}) 두 형태를 받는다 —
+// reason은 왜 금지인지·대신 무엇을 쓰는지를 위반 보고에 싣는 필드다.
+type DenyEntry struct {
+	To     string `yaml:"to"`
+	Reason string `yaml:"reason,omitempty"`
+}
+
+// UnmarshalYAML은 스칼라 항목을 {to: 스칼라}로 승격한다.
+// 두 형태를 섞어 쓸 수 있어야 기존 설정이 깨지지 않는다.
+func (e *DenyEntry) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		e.To = value.Value
+		return nil
+	}
+	type plain DenyEntry
+	return value.Decode((*plain)(e))
+}
+
+// ForbiddenRule은 from 컴포넌트가 to 컴포넌트에 간접적으로도
+// 도달하면 안 된다는 계약이다 — import-linter의 forbidden 계약과 같다.
+type ForbiddenRule struct {
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
 }
 
 // 파일 후보 이름 — 두 확장자를 다 받는다.
@@ -66,7 +105,102 @@ func Load(path string) (*File, error) {
 	if len(f.Components) == 0 {
 		return nil, fmt.Errorf("%s: no components defined — rules need at least one", path)
 	}
+	if err := f.checkRefs(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return &f, nil
+}
+
+// checkRefs는 규칙이 참조하는 컴포넌트명이 components에 정의됐는지 확인한다.
+// 정의되지 않은 이름은 영원히 매칭되지 않는 죽은 규칙이다 — 오타를 조용히
+// 삼키면 "규칙이 있다"는 착각을 만든다. 정의됐지만 정점에 매칭 안 되는
+// 컴포넌트는 여기서가 아니라 unmatchedComponents로 보고된다.
+func (f *File) checkRefs() error {
+	defined := func(name string) bool { _, ok := f.Components[name]; return ok }
+	check := func(section, side, name string) error {
+		if name != "" && !defined(name) {
+			return fmt.Errorf("%s: %s %q is not a defined component",
+				section, side, name)
+		}
+		return nil
+	}
+	for from, tos := range f.Deps {
+		if err := check("deps", "key", from); err != nil {
+			return err
+		}
+		for _, to := range tos {
+			if err := check("deps", "target", to); err != nil {
+				return err
+			}
+		}
+	}
+	for from, entries := range f.Deny {
+		if err := check("deny", "key", from); err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := check("deny", "target", e.To); err != nil {
+				return err
+			}
+		}
+	}
+	for from, tos := range f.Signature {
+		if err := check("signature", "key", from); err != nil {
+			return err
+		}
+		for _, to := range tos {
+			if err := check("signature", "target", to); err != nil {
+				return err
+			}
+		}
+	}
+	for from, tos := range f.VisibleTo {
+		if err := check("visibleTo", "key", from); err != nil {
+			return err
+		}
+		for _, to := range tos {
+			if err := check("visibleTo", "target", to); err != nil {
+				return err
+			}
+		}
+	}
+	for _, c := range f.Common {
+		if !defined(c) {
+			return fmt.Errorf("common: %q is not a defined component", c)
+		}
+	}
+	for _, r := range f.Forbidden {
+		if r.From == r.To {
+			return fmt.Errorf("forbidden: %q -> %q is meaningless (same component)", r.From, r.To)
+		}
+		if err := check("forbidden", "from", r.From); err != nil {
+			return err
+		}
+		if err := check("forbidden", "to", r.To); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Render는 규칙 파일을 .gartograph.yml 텍스트로 만든다 — init 명령이 쓴다.
+// yaml.v3가 이 패키지 안에 있어야 해서 직렬화도 여기서 한다.
+// deps의 빈 항목도 `[]`로 적는다 — "관찰된 의존 없음"과 "규칙 누락"이
+// 파일에서 구분되어야 허용 목록 의미론이 성립한다.
+func Render(f *File) ([]byte, error) {
+	// 출력 키 순서를 고정하기 위해 맵이 아닌 구조체로 직렬화한다.
+	doc := struct {
+		Components map[string][]string `yaml:"components"`
+		Deps       map[string][]string `yaml:"deps"`
+	}{Components: f.Components, Deps: f.Deps}
+	body, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("encoding rules: %w", err)
+	}
+	header := `# .gartograph.yml — generated by gartograph init
+# deps mirrors observed imports — tighten it as boundaries firm up.
+`
+	return append([]byte(header), body...), nil
 }
 
 // ComponentOf는 모듈 상대 경로를 컴포넌트로 해석한다.
@@ -88,7 +222,8 @@ func (f *File) ComponentOf(relPath string) (string, bool) {
 }
 
 // Allowed는 from 컴포넌트가 to 컴포넌트에 의존할 수 있는지 본다.
-// 자기 자신으로의 의존은 항상 허용된다 — 컴포넌트 내부 import는 규칙 밖이다.
+// 자기 자신으로의 의존과 common 컴포넌트로의 의존은 항상 허용된다 —
+// 컴포넌트 내부 import와 모두가 쓰는 공통 부품은 규칙 밖이다.
 func (f *File) Allowed(from, to string) bool {
 	if from == to {
 		return true
@@ -98,21 +233,44 @@ func (f *File) Allowed(from, to string) bool {
 			return true
 		}
 	}
-	return false
-}
-
-// Denied는 from→to 의존이 명시적으로 금지됐는지 본다.
-// deny는 허용 목록보다 먼저 적용된다 — deps에 있어도 deny가 이긴다.
-func (f *File) Denied(from, to string) bool {
-	if from == to {
-		return false
-	}
-	for _, d := range f.Deny[from] {
-		if d == to {
+	for _, c := range f.Common {
+		if c == to {
 			return true
 		}
 	}
 	return false
+}
+
+// Visible은 from 컴포넌트가 to 컴포넌트를 의존해도 되는지 공급자 측에서 본다.
+// visibleTo에 항목이 없는 컴포넌트는 제한이 없고, 있는 컴포넌트는
+// 목록(과 자기 자신)만이 의존할 수 있다 — deps와 같은 허용 목록 의미론이다.
+func (f *File) Visible(from, to string) bool {
+	allowed, declared := f.VisibleTo[to]
+	if !declared || from == to {
+		return true
+	}
+	for _, c := range allowed {
+		if c == from {
+			return true
+		}
+	}
+	return false
+}
+
+// Denied는 from→to 의존이 명시적으로 금지됐는지 본다.
+// 금지됐으면 설정된 사유(reason)를 함께 돌려준다 — "왜/대신 무엇"은
+// 위반을 읽는 에이전트가 다음 행동을 정하는 데 필요한 정보다.
+// deny는 허용 목록보다 먼저 적용된다 — deps에 있어도 deny가 이긴다.
+func (f *File) Denied(from, to string) (reason string, denied bool) {
+	if from == to {
+		return "", false
+	}
+	for _, e := range f.Deny[from] {
+		if e.To == to {
+			return e.Reason, true
+		}
+	}
+	return "", false
 }
 
 // SignatureAllowed는 from 컴포넌트의 공개 API 시그니처가 to 컴포넌트의

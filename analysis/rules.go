@@ -11,14 +11,21 @@ import (
 
 // Violation은 규칙 위반 하나다 — 실제 간선이 evidence다.
 // Rule은 어긴 규칙 종류다: "allow"(허용 목록에 없음), "deny"(명시 금지),
-// "signature"(공개 API 타입 누출).
+// "signature"(공개 API 타입 누출), "visibleTo"(공급자가 닫은 컴포넌트),
+// "forbidden"(간접 도달 금지).
+// Reason은 deny 규칙에 설정된 사유다 — 에이전트가 다음 행동을 고를 정보다.
+// Path는 forbidden 위반의 목격 경로다 — 간선이 아니라 도달 사실을 어겼으므로
+// 어느 사슬로 닿았는지를 함께 준다. forbidden 위반은 단일 간선이 아니라
+// Kind가 비어 있다.
 type Violation struct {
 	From          string         `json:"from"`
 	To            string         `json:"to"`
 	FromComponent string         `json:"fromComponent"`
 	ToComponent   string         `json:"toComponent"`
-	Kind          graph.EdgeKind `json:"kind"`
+	Kind          graph.EdgeKind `json:"kind,omitempty"`
 	Rule          string         `json:"rule"`
+	Reason        string         `json:"reason,omitempty"`
+	Path          []string       `json:"path,omitempty"`
 }
 
 // RuleReport는 규칙 검사 결과다.
@@ -39,7 +46,7 @@ type RuleReport struct {
 // signature 규칙도 검사한다. 어떤 컴포넌트에도 매핑되지 않은 패키지는
 // unmapped로 돌려준다 — 매핑 구멍은 "규칙 무관"이 아니라 "규칙이 모르는 영역"이다.
 func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
-	comp, used := componentMap(d, cfg)
+	comp, _ := componentMap(d, cfg)
 	vmap := vertexMap(d)
 	rep := &RuleReport{}
 	for _, e := range d.Edges {
@@ -63,57 +70,124 @@ func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
 		if from == "" || to == "" {
 			continue
 		}
-		rule := ruleBroken(cfg, e.Kind, from, to)
+		rule, reason := ruleBroken(cfg, e.Kind, from, to)
 		if rule != "" {
 			rep.Violations = append(rep.Violations, Violation{
 				From: e.From, To: e.To,
 				FromComponent: from, ToComponent: to,
-				Kind: e.Kind, Rule: rule,
+				Kind: e.Kind, Rule: rule, Reason: reason,
 			})
 		}
 	}
-	for _, v := range d.Vertices {
-		if v.Kind != graph.KindPackage || comp[v.ID] != "" {
-			continue
-		}
-		if isExternalPackage(d, v.ID) {
-			rep.UnmappedExternal = append(rep.UnmappedExternal, v.ID)
-		} else {
-			rep.Unmapped = append(rep.Unmapped, v.ID)
-		}
-	}
-	for name := range cfg.Components {
-		if !used[name] {
-			rep.UnmatchedComponents = append(rep.UnmatchedComponents, name)
-		}
-	}
+	rep.Violations = append(rep.Violations, forbiddenViolations(d, cfg, comp)...)
+	mapping := MapComponents(d, cfg)
+	rep.Unmapped = mapping.Unmapped
+	rep.UnmappedExternal = mapping.UnmappedExternal
+	rep.UnmatchedComponents = mapping.UnmatchedComponents
 	sort.Slice(rep.Violations, func(i, j int) bool {
 		if rep.Violations[i].From != rep.Violations[j].From {
 			return rep.Violations[i].From < rep.Violations[j].From
 		}
 		return rep.Violations[i].To < rep.Violations[j].To
 	})
-	sort.Strings(rep.Unmapped)
-	sort.Strings(rep.UnmappedExternal)
-	sort.Strings(rep.UnmatchedComponents)
 	return rep
 }
 
-// ruleBroken은 간선이 어긴 규칙 이름을 돌려준다. 위반이 없으면 ""다.
+// ruleBroken은 간선이 어긴 규칙 이름과 사유를 돌려준다. 위반이 없으면 ""다.
 // deny가 가장 먼저다 — 명시 금지는 허용 목록보다 우선한다.
 // signature 간선은 시그니처 규칙과 허용 목록 둘 다를 통과해야 한다 —
 // 시그니처 참조도 의존이기 때문이다.
-func ruleBroken(cfg *config.File, kind graph.EdgeKind, from, to string) string {
-	if cfg.Denied(from, to) {
-		return "deny"
+// visibleTo는 허용 목록을 통과한 뒤에 본다 — 소비자가 deps로 허용했어도
+// 공급자가 닫아 두면 위반이다.
+func ruleBroken(cfg *config.File, kind graph.EdgeKind, from, to string) (string, string) {
+	if reason, denied := cfg.Denied(from, to); denied {
+		return "deny", reason
 	}
 	if kind == graph.EdgeSignature && !cfg.SignatureAllowed(from, to) {
-		return "signature"
+		return "signature", ""
 	}
 	if !cfg.Allowed(from, to) {
-		return "allow"
+		return "allow", ""
 	}
-	return ""
+	if !cfg.Visible(from, to) {
+		return "visibleTo", ""
+	}
+	return "", ""
+}
+
+// forbiddenViolations는 forbidden 계약을 검사한다 — from 컴포넌트의 정점이
+// 의존 간선을 따라(contains 제외) to 컴포넌트의 정점에 닿으면 위반이다.
+// 직접 간선만 보는 deps/deny로는 "A가 C에 도달하면 안 됨"을 잡을 수 없다.
+// 위반마다 목격 경로 하나를 실어 소비자가 사슬을 바로 볼 수 있게 한다.
+func forbiddenViolations(d *graph.Document, cfg *config.File,
+	comp map[string]string) []Violation {
+	if len(cfg.Forbidden) == 0 {
+		return nil
+	}
+	// 정점→컴포넌트 해석: 패키지 정점은 자기 ID로, 심볼·타입은 소속 패키지로.
+	vcomp := map[string]string{}
+	for _, v := range d.Vertices {
+		if v.Kind == graph.KindPackage {
+			vcomp[v.ID] = comp[v.ID]
+		} else {
+			vcomp[v.ID] = comp[v.Package]
+		}
+	}
+	adj := graph.Adjacency(d)
+	var out []Violation
+	for _, rule := range cfg.Forbidden {
+		if path := reachPath(adj, vcomp, rule.From, rule.To); path != nil {
+			out = append(out, Violation{
+				From: path[0], To: path[len(path)-1],
+				FromComponent: rule.From, ToComponent: rule.To,
+				Rule: "forbidden", Path: path,
+			})
+		}
+	}
+	return out
+}
+
+// reachPath는 from 컴포넌트의 어느 정점에서 to 컴포넌트의 어느 정점까지의
+// 최단 의존 경로를 BFS로 찾는다. 없으면 nil이다.
+// 시작점은 정렬해 둬야 실행마다 같은 목격 경로가 나온다.
+func reachPath(adj map[string][]string, vcomp map[string]string,
+	from, to string) []string {
+	var starts []string
+	for id, c := range vcomp {
+		if c == from {
+			starts = append(starts, id)
+		}
+	}
+	sort.Strings(starts)
+	parent := map[string]string{}
+	queue := append([]string(nil), starts...)
+	for _, s := range starts {
+		parent[s] = ""
+	}
+	var hit string
+	for len(queue) > 0 && hit == "" {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, next := range adj[cur] {
+			if _, seen := parent[next]; seen {
+				continue
+			}
+			parent[next] = cur
+			if vcomp[next] == to {
+				hit = next
+				break
+			}
+			queue = append(queue, next)
+		}
+	}
+	if hit == "" {
+		return nil
+	}
+	var path []string
+	for cur := hit; cur != ""; cur = parent[cur] {
+		path = append([]string{cur}, path...)
+	}
+	return path
 }
 
 // vertexMap은 정점 ID로 정점을 찾는 인덱스다.
@@ -144,6 +218,53 @@ func componentMap(d *graph.Document, cfg *config.File) (map[string]string, map[s
 		}
 	}
 	return out, used
+}
+
+// Mapping은 패키지 정점의 컴포넌트 해석 결과다 — 규칙이 각 패키지를
+// 어느 컴포넌트로 봤는지, 어느 패키지·컴포넌트가 해석 밖인지를 담는다.
+// "규칙이 왜 이 의존을 못 잡지"를 디버깅하는 mapping 명령의 산출물이다.
+type Mapping struct {
+	Components          map[string][]string `json:"components"`
+	Unmapped            []string            `json:"unmapped,omitempty"`
+	UnmappedExternal    []string            `json:"unmappedExternal,omitempty"`
+	UnmatchedComponents []string            `json:"unmatchedComponents,omitempty"`
+}
+
+// MapComponents는 컴포넌트 → 패키지 정점 역방향 매핑과 미매핑 목록을 만든다.
+// CheckRules와 같은 해석을 쓰되 보고 형태만 다르다 — 두 경로가 따로
+// 매핑을 만들면 결과가 어긋날 수 있다.
+func MapComponents(d *graph.Document, cfg *config.File) *Mapping {
+	comp, used := componentMap(d, cfg)
+	m := &Mapping{Components: map[string][]string{}}
+	for _, v := range d.Vertices {
+		if v.Kind != graph.KindPackage {
+			continue
+		}
+		c := comp[v.ID]
+		switch {
+		case c != "":
+			m.Components[c] = append(m.Components[c], v.ID)
+		case isExternalPackage(d, v.ID):
+			m.UnmappedExternal = append(m.UnmappedExternal, v.ID)
+		default:
+			m.Unmapped = append(m.Unmapped, v.ID)
+		}
+	}
+	for name := range cfg.Components {
+		if !used[name] {
+			m.UnmatchedComponents = append(m.UnmatchedComponents, name)
+		}
+		if _, ok := m.Components[name]; !ok {
+			m.Components[name] = nil
+		}
+	}
+	for _, pkgs := range m.Components {
+		sort.Strings(pkgs)
+	}
+	sort.Strings(m.Unmapped)
+	sort.Strings(m.UnmappedExternal)
+	sort.Strings(m.UnmatchedComponents)
+	return m
 }
 
 // isExternalPackage는 패키지 정점이 주 모듈 밖에 있는지 본다.

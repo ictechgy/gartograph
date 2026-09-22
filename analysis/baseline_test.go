@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -18,13 +19,13 @@ func TestSplitBaseline(t *testing.T) {
 	fresh, baselined, stale := SplitBaseline(
 		[]Violation{known, novel}, []Violation{known, fixed})
 
-	if len(fresh) != 1 || fresh[0] != novel {
+	if len(fresh) != 1 || !reflect.DeepEqual(fresh[0], novel) {
 		t.Fatalf("fresh: %+v", fresh)
 	}
-	if len(baselined) != 1 || baselined[0] != known {
+	if len(baselined) != 1 || !reflect.DeepEqual(baselined[0], known) {
 		t.Fatalf("baselined: %+v", baselined)
 	}
-	if len(stale) != 1 || stale[0] != fixed {
+	if len(stale) != 1 || !reflect.DeepEqual(stale[0], fixed) {
 		t.Fatalf("stale: %+v", stale)
 	}
 }

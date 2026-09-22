@@ -63,12 +63,15 @@ type sarifLogical struct {
 func rulesSARIF(violations []analysis.Violation) ([]byte, error) {
 	results := make([]sarifResult, 0, len(violations))
 	for _, v := range violations {
+		msg := fmt.Sprintf("%s may not depend on %s (%s rule: %s -> %s)",
+			v.From, v.To, v.Rule, v.FromComponent, v.ToComponent)
+		if v.Reason != "" {
+			msg += ": " + v.Reason
+		}
 		results = append(results, sarifResult{
-			RuleID: "layer-" + v.Rule,
-			Level:  "error",
-			Message: sarifMessage{Text: fmt.Sprintf(
-				"%s may not depend on %s (%s rule: %s -> %s)",
-				v.From, v.To, v.Rule, v.FromComponent, v.ToComponent)},
+			RuleID:  "layer-" + v.Rule,
+			Level:   "error",
+			Message: sarifMessage{Text: msg},
 			Locations: []sarifLocation{{
 				LogicalLocations: []sarifLogical{
 					{FullyQualifiedName: v.From, Kind: "module"},
@@ -92,6 +95,10 @@ func rulesSARIF(violations []analysis.Violation) ([]byte, error) {
 						Text: "explicitly denied dependency"}},
 					{ID: "layer-signature", ShortDescription: sarifMessage{
 						Text: "public API signature leaks a disallowed component type"}},
+					{ID: "layer-visibleTo", ShortDescription: sarifMessage{
+						Text: "dependency on a component that restricts its consumers"}},
+					{ID: "layer-forbidden", ShortDescription: sarifMessage{
+						Text: "component reaches a forbidden component, possibly indirectly"}},
 				},
 			}},
 			Results: results,
