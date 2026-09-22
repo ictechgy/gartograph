@@ -4,11 +4,13 @@
 
 ## 현재 상태 (2026-09-22)
 
-**v0.2.0 릴리스·Homebrew tap 배포 완료 + 패리티 격차 전부 main에 머지됨**
-(`feature/parity-gaps` → fast-forward `d10a928`). 현재 브랜치는
-`feature/graph-v2` — 남은 격차(스키마 v2·테스트 변형 dedup·independent·
-RTA)를 잡는 중. 공개 리포 https://github.com/ictechgy/gartograph.
-커버리지 90.3%(게이트 90), `Scripts/verify-cli-contract.sh` 통과.
+**v0.2.0 릴리스·Homebrew tap 배포 완료 + 비교 격차 전부 main에 머지됨**
+(`feature/parity-gaps` → `d10a928`, `feature/graph-v2` → fast-forward
+`87273b6`; origin에는 아직 push 안 함). 스키마 v2·테스트 변형 dedup·
+independent·RTA까지 모두 들어갔다. 공개 리포
+https://github.com/ictechgy/gartograph. 커버리지 90.7%(게이트 90),
+`Scripts/verify-cli-contract.sh` 통과, `cycles --strict`·`rules --strict`
+자기 분석 clean.
 
 feature/graph-v2 커밋:
 - `8cd1f1e` — 스키마 v2. `Edge.Positions`가 그 관계의 모든 사용 지점을
@@ -21,11 +23,12 @@ feature/graph-v2 커밋:
   것을 PkgPath dedup으로 수정. 변형 import는 원 패키지 간선에 합친다.
 - `ecec419` — `independent: [a, b]` 계약 — 목록 내 쌍의 양방향 전이
   도달을 금지. rule:"independence", 위반에 목격 경로.
-- 미커밋 — `dead --algo cha|rta`. rta는 SSA 기반(x/tools callgraph/rta,
+- `87273b6` — `dead --algo cha|rta`. rta는 SSA 기반(x/tools callgraph/rta,
   InstantiateGenerics)으로 호출 도달성을 좁힌다: 이 레포 실측 CHA 10건 →
   RTA 3건. `rta`는 소스 수확이 필요해 `--graph`와 공존 시 종료코드 2.
   리포트에 `algorithm` 필드, RTA finding은 `ReasonRTA`, 과소근사 limitation.
   func/method는 RTA로, var/const/type은 그래프 도달성으로 판정.
+  `--explain`은 항상 수확 그래프(CHA) 경로를 보여준다고 도움말에 명시.
 
 feature/parity-gaps가 추가한 것(비교 대상: goda·go-arch-lint·deadcode·
 depguard·dependency-cruiser·import-linter·apidiff):
@@ -127,8 +130,8 @@ v0.2.0이 추가한 것(타 도구 비교 패스, PR #6·#7):
 
 1. ~~배포~~ — v0.2.0 릴리스 + tap formula 배포 완료. 다음 릴리스 전에
    `HOMEBREW_TAP_TOKEN`을 리포 시크릿에 넣으면 탭 갱신이 자동화된다.
-2. **feature/graph-v2 마무리 + 머지 + v0.3.0** — RTA 커밋 후 전체 검증,
-   main 머지. 새 명령·플래그·스키마 v2가 들어갔으므로 minor 범프 대상.
+2. **v0.3.0 릴리스** — main이 origin보다 15 커밋 ahead. 새 명령·플래그·
+   스키마 v2가 들어갔으므로 minor 범프 대상. push + 태그로 배포.
 3. **isthmus 조인** — cgo/gomobile 브리지가 생기면 bridge facts producer.
    isthmus의 GRAPH-EXCHANGE producer 목록에 Go가 아직 없으므로 계약 확장이
    선행 과제다 — 스키마 v2의 Edge.positions가 그 기초 자료.
