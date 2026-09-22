@@ -4,17 +4,26 @@
 
 ## 현재 상태 (2026-09-22)
 
-**네 레벨(module/package/type/symbol) + dead + rules + 영속 문서 + 검증 체계 완성,**
-**v0.1.0 릴리스·Homebrew tap 배포까지 완료.** 공개 리포
+**v0.2.0 릴리스·Homebrew tap 배포까지 완료.** 공개 리포
 https://github.com/ictechgy/gartograph. `go vet`·`go test ./...` 통과,
-커버리지 90.1%(게이트 90), `Scripts/verify-cli-contract.sh` 통과.
-`brew install ictechgy/tap/gartograph`로 설치한 바이너리가
-`gartograph 0.1.0`을 보고하고 `brew test`까지 통과했다.
+커버리지 90.5%(게이트 90), `Scripts/verify-cli-contract.sh` 통과.
+`brew upgrade`로 0.1.0→0.2.0 실측, `gartograph 0.2.0` 보고,
+`brew test` 통과.
+
+v0.2.0이 추가한 것(타 도구 비교 패스, PR #6·#7):
+- `impact <id>` 역방향 전이 클로저, `rules --format sarif` (SARIF 2.1.0),
+  `mcp` MCP stdio 서버(도구 6종, 기동 시 문서 1회 수확).
+- rules에 `deny`(deps보다 우선)·`signature`(exported 시그니처의 타입 누출 —
+  `signature` 간선 수확) 규칙, 위반에 `rule` 필드.
+- `--tags` 빌드 태그 + 제약으로 빠진 파일 limitations 계수,
+  `// Code generated` 정점에 `generated: true`.
+- fix: `objectID`가 `Pkg()==nil`인 universe 객체에서 패닉하던 것,
+  `--tests`가 Test/Benchmark/Example/Fuzz 진입점을 보존 루트로 안 잡던 것.
 
 릴리스는 `vX.Y.Z` 태그 push → `.github/workflows/release.yml`이 5개 타깃을
 크로스컴파일해 릴리스를 만들고, `HOMEBREW_TAP_TOKEN` 시크릿이 있으면
-`ictechgy/homebrew-tap`까지 갱신한다(현재 미설정 — 0.1.0 탭 갱신은 수동으로
-했다. formula 원본은 `Formula/gartograph.rb`). 릴리스 워크플로우의
+`ictechgy/homebrew-tap`까지 갱신한다(현재 미설정 — 0.1.0·0.2.0 탭 갱신 모두
+수동. formula 원본은 `Formula/gartograph.rb`). 릴리스 워크플로우의
 교훈 두 개: `run:` 블록 스칼라 안의 heredoc은 열 0에 쓰면 YAML이 파싱
 실패하고, `(cd dist && zip)`의 산출물은 dist 안에 생기니 `../`로 빼야 한다.
 
@@ -27,16 +36,19 @@ https://github.com/ictechgy/gartograph. `go vet`·`go test ./...` 통과,
   `pkg.(Recv).Name`), 인터페이스 호출은 CHA 팬아웃, 승격 메서드는 선언 타입
   아래로 귀속. reflect/linkname/외부참조/무타입 패키지를 실측 limitation으로.
   `module.go`는 패키지의 `Module` 소속을 모아 모듈 정점+크로스 모듈 간선.
-- `analysis` — `Cycles`(Tarjan), `Query`(양방향 BFS), `Dead`/`RetentionRoots`/
-  `Reachable`/`Explain`(도달성 — state+reason, 삭제 판정 아님),
-  `CheckRules`(컴포넌트 규칙, unmapped 보고).
+- `analysis` — `Cycles`(Tarjan), `Query`(양방향 BFS), `Impact`(역방향 BFS),
+  `Dead`/`RetentionRoots`/`Reachable`/`Explain`(도달성 — state+reason,
+  삭제 판정 아님), `CheckRules`(allow/deny/signature 규칙, unmapped 보고).
 - `config` — 유일한 yaml.v3 소비자. `.gartograph.yml` 읽기, 컴포넌트 패턴
-  매칭(exact/`x/**`/세그먼트 글롭, 긴 패턴 우선), `deps` 허용 목록.
+  매칭(exact/`x/**`/세그먼트 글롭, 긴 패턴 우선), `deps` 허용 목록,
+  `deny` 금지 목록, `signature` API 누출 규칙.
 - `export` — `JSON`/`Mermaid` + `SaveFile`/`LoadFile`(버전ed 영속 문서,
   미래 버전 거부).
-- `cli` — `graph`/`cycles`/`dead`/`rules`/`query`/`version`. `--level`,
-  `--graph`(저장 문서 입력), `--out`, `--retain-public`, `--root`,
-  `--explain`, `--config`, `--strict`. 종료 코드 0/1/2.
+- `cli` — `graph`/`cycles`/`dead`/`rules`/`query`/`impact`/`mcp`/`version`.
+  `--level`, `--graph`, `--out`, `--retain-public`, `--root`, `--explain`,
+  `--config`, `--strict`, `--tags`, `rules --format sarif`. `sarif.go`가
+  SARIF 2.1.0 직렬화, `mcp.go`가 stdio NDJSON JSON-RPC 서버.
+  종료 코드 0/1/2.
 - 이 저장소 자체의 `.gartograph.yml`이 계층 규칙 정본
   (cmd→cli→{analysis,source,config,export}→graph).
 
@@ -59,7 +71,7 @@ https://github.com/ictechgy/gartograph. `go vet`·`go test ./...` 통과,
 
 ## 다음 할 일 (우선순위 순)
 
-1. ~~배포~~ — v0.1.0 릴리스 + tap formula 배포 완료. 다음 릴리스 전에
+1. ~~배포~~ — v0.2.0 릴리스 + tap formula 배포 완료. 다음 릴리스 전에
    `HOMEBREW_TAP_TOKEN`을 리포 시크릿에 넣으면 탭 갱신이 자동화된다.
 2. **isthmus 조인** — cgo/gomobile 브리지가 생기면 bridge facts producer.
 3. **정밀도** — RTA/포인터 분석으로 CHA 오탐을 좁히는 것은 필요해질 때.
