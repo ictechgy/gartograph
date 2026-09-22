@@ -76,6 +76,67 @@ func TestImportEdgePositions(t *testing.T) {
 	}
 }
 
+// TestTestVariantMerge는 --tests 수확에서 _test.go의 import가 원 패키지의
+// 간선으로 합쳐지는지 확인한다 — 변형을 통째로 버리면 테스트만의 내부
+// 의존이 그래프에서 사라진다.
+func TestTestVariantMerge(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"lib/lib.go": `package lib
+
+func Add() {}
+`,
+		"lib/lib_test.go": `package lib
+
+import (
+	"example.com/fixture/util"
+	"testing"
+)
+
+func TestAdd(t *testing.T) { util.Shout(); Add() }
+`,
+		"util/util.go": `package util
+
+func Shout() {}
+`,
+	})
+	doc, err := LoadPackageGraph(Options{Dir: dir, Tests: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 변형 정점은 생기지 않는다 — 정점은 PkgPath 하나다.
+	if doc.HasVertex("example.com/fixture/lib [example.com/fixture/lib.test]") {
+		t.Fatal("test variant leaked as a vertex")
+	}
+	kinds := graph.EdgeKinds(doc, "example.com/fixture/lib", "example.com/fixture/util")
+	if len(kinds) != 1 || kinds[0] != graph.EdgeImport {
+		t.Fatalf("_test.go import must merge into the base package: %+v", doc.Edges)
+	}
+	// 사용 지점은 _test.go 파일을 가리켜야 한다 — 어느 파일이 이
+	// 의존을 만드는지가 파일 스코프 판단의 재료다.
+	var merged bool
+	for _, e := range doc.Edges {
+		if e.From == "example.com/fixture/lib" && e.To == "example.com/fixture/util" {
+			for _, p := range e.Positions {
+				if strings.HasSuffix(p.File, "lib_test.go") {
+					merged = true
+				}
+			}
+		}
+	}
+	if !merged {
+		t.Fatal("merged edge must carry the _test.go site")
+	}
+	var noted bool
+	for _, l := range doc.Limitations {
+		if strings.Contains(l, "test-variant") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Fatalf("variant merge must be noted: %v", doc.Limitations)
+	}
+}
+
 // TestLoadPackageGraphDeps는 --deps가 외부 패키지를 정점으로 담는지 확인한다.
 func TestLoadPackageGraphDeps(t *testing.T) {
 	doc, err := LoadPackageGraph(Options{Dir: fixture(t), IncludeDeps: true})

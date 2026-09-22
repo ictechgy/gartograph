@@ -122,8 +122,9 @@ func buildDocument(root string, reachable []*packages.Package,
 
 	// 먼저 정점을 확정한다 — 간선은 양쪽 정점이 살아 있어야 만든다.
 	// 끝이 없는 간선은 유령 정점이 되어 소비자를 헷갈리게 한다.
+	// 테스트 변형은 PkgPath가 원 패키지와 같으므로 정점은 하나다.
 	for _, p := range reachable {
-		if !keep(p, includeDeps) {
+		if !keep(p, includeDeps) || kept[p.PkgPath] != nil {
 			continue
 		}
 		kept[p.PkgPath] = p
@@ -141,8 +142,29 @@ func buildDocument(root string, reachable []*packages.Package,
 		}
 	}
 
+	var merged int
 	for _, p := range reachable {
 		if kept[p.PkgPath] == nil {
+			continue
+		}
+		errCount += len(p.Errors)
+		if p.ID != p.PkgPath {
+			// 테스트 변형("p [p.test]")은 PkgPath가 원 패키지와 같아
+			// 정점이 합쳐진다 — 변형의 import는 _test.go의 의존이므로
+			// 원 패키지의 간선으로 합치지 않으면 그 의존이 그래프에서
+			// 통째로 빠진다.
+			sites := importSites(p)
+			for _, imp := range p.Imports {
+				if kept[imp.PkgPath] != nil {
+					doc.Edges = append(doc.Edges, graph.Edge{
+						From: p.PkgPath, To: imp.PkgPath, Kind: graph.EdgeImport,
+						Positions: sites[imp.PkgPath],
+					})
+				} else {
+					extImports++
+				}
+			}
+			merged++
 			continue
 		}
 		// import 간선의 사용 지점은 import 선언이다 — 파일 스코프 규칙과
@@ -158,7 +180,6 @@ func buildDocument(root string, reachable []*packages.Package,
 				extImports++
 			}
 		}
-		errCount += len(p.Errors)
 	}
 
 	// limitation은 실제로 세어서 만든다 — 알릴 것이 없으면 붙이지 않는다.
@@ -173,6 +194,12 @@ func buildDocument(root string, reachable []*packages.Package,
 	if errCount > 0 {
 		doc.Limitation(fmt.Sprintf(
 			"%d packages reported load errors; their import edges may be incomplete", errCount))
+	}
+	if merged > 0 {
+		// _test.go 의존이 원 패키지로 귀속된다는 사실을 남긴다 —
+		// 테스트만의 의존이 프로덕션 의존처럼 읽히는 것을 막는다.
+		doc.Limitation(fmt.Sprintf(
+			"%d test-variant packages merged into their base package (edges from _test.go files are attributed to the base package)", merged))
 	}
 	doc.Sort()
 	return doc, kept
@@ -193,9 +220,12 @@ func internalPackages(pkgs []*packages.Package, kept map[string]*packages.Packag
 }
 
 // walkImports는 루트 패키지들에서 import 그래프를 BFS로 넓혀
-// 도달 가능한 모든 패키지를 중복 없이 돌려준다.
+// 도달 가능한 모든 패키지를 ID 중복 없이 돌려준다.
 // --deps 없이도 순회는 한다 — 모듈 내부 패키지가 루트 패턴 밖에 있어도
 // import로 도달되면 정점이 되어야 하기 때문이다.
+// 테스트 변형("p [p.test]")도 돌려준다 — 정점 dedup은 PkgPath를 보는
+// buildDocument의 일이고, 변형의 _test.go import를 순회에서 빼면
+// 테스트에서만 쓰는 내부 패키지가 도달 집합에서 통째로 빠진다.
 func walkImports(roots []*packages.Package) []*packages.Package {
 	seen := make(map[string]bool)
 	var out []*packages.Package
@@ -203,10 +233,10 @@ func walkImports(roots []*packages.Package) []*packages.Package {
 	for len(queue) > 0 {
 		p := queue[0]
 		queue = queue[1:]
-		if p == nil || p.PkgPath == "" || seen[p.PkgPath] {
+		if p == nil || p.PkgPath == "" || seen[p.ID] {
 			continue
 		}
-		seen[p.PkgPath] = true
+		seen[p.ID] = true
 		out = append(out, p)
 		for _, imp := range p.Imports {
 			queue = append(queue, imp)
