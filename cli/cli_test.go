@@ -195,6 +195,100 @@ deps: {}
 	}
 }
 
+// TestImpact는 역방향 전이 질의의 종료 코드와 내용을 확인한다.
+func TestImpact(t *testing.T) {
+	dir := fixture(t)
+	code, out, errb := run(t, "impact", "example.com/fixture/b", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("impact failed: %d %s", code, errb)
+	}
+	var res struct {
+		ID        string `json:"id"`
+		Dependers []struct {
+			ID    string `json:"id"`
+			Depth int    `json:"depth"`
+		} `json:"dependers"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("impact output is not JSON: %v", err)
+	}
+	if len(res.Dependers) != 1 || res.Dependers[0].ID != "example.com/fixture/a" ||
+		res.Dependers[0].Depth != 1 {
+		t.Fatalf("expected a as depth-1 depender of b: %s", out)
+	}
+	if code, _, _ := run(t, "impact", "example.com/missing", "--dir", dir); code != 2 {
+		t.Fatalf("impact on missing vertex: expected 2, got %d", code)
+	}
+	if code, _, _ := run(t, "impact", "--dir", dir); code != 2 {
+		t.Fatalf("impact without id: expected 2, got %d", code)
+	}
+}
+
+// TestRulesSarif는 SARIF 출력이 스키마를 갖춘 JSON인지 확인한다.
+func TestRulesSarif(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"web/web.go": `package web
+
+import _ "example.com/fixture/db"
+`,
+		"db/db.go": `package db
+`,
+		".gartograph.yml": `components:
+  web: ["web"]
+  db: ["db"]
+deps: {}
+`,
+	})
+	code, out, errb := run(t, "rules", "--dir", dir, "--format", "sarif")
+	if code != 0 {
+		t.Fatalf("rules --format sarif failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Version string `json:"version"`
+		Runs    []struct {
+			Results []struct {
+				RuleID string `json:"ruleId"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("sarif output is not JSON: %v", err)
+	}
+	if doc.Version != "2.1.0" || len(doc.Runs) != 1 {
+		t.Fatalf("not a SARIF 2.1.0 log: %s", out[:120])
+	}
+	if len(doc.Runs[0].Results) != 1 || doc.Runs[0].Results[0].RuleID != "layer-allow" {
+		t.Fatalf("expected one layer-allow result: %s", out)
+	}
+}
+
+// TestRulesDeny는 deny 규칙이 deps를 이기고 위반으로 보고되는지 확인한다.
+func TestRulesDeny(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"web/web.go": `package web
+
+import _ "example.com/fixture/db"
+`,
+		"db/db.go": `package db
+`,
+		".gartograph.yml": `components:
+  web: ["web"]
+  db: ["db"]
+deps:
+  web: ["db"]
+deny:
+  web: ["db"]
+`,
+	})
+	code, out, _ := run(t, "rules", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("rules failed: %d", code)
+	}
+	if !strings.Contains(out, "violation[deny]") {
+		t.Fatalf("deny must override deps: %s", out)
+	}
+}
+
 // TestRulesNoConfig는 설정 파일이 없으면 사용법 오류(2)인지 확인한다.
 // 규칙 없이 "위반 없음"을 뱉으면 소비자가 규칙이 검사됐다고 오해한다.
 func TestRulesNoConfig(t *testing.T) {

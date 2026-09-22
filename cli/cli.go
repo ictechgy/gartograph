@@ -19,7 +19,7 @@ import (
 
 // Version은 CLI가 스스로를 보고하는 버전 문자열이다. 릴리스는
 // -ldflags "-X .../cli.Version=<태그>"로 이 값을 덮어쓴다.
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 // Run은 인자를 해석해 명령을 실행하고 종료 코드를 돌려준다.
 // os.Exit 대신 반환값을 쓰는 것은 종료 코드 계약을 테스트하기 위함이다.
@@ -39,6 +39,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdRules(args[1:], stdout, stderr)
 	case "query":
 		return cmdQuery(args[1:], stdout, stderr)
+	case "impact":
+		return cmdImpact(args[1:], stdout, stderr)
+	case "mcp":
+		return cmdMcp(args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, "gartograph "+Version)
 		return 0
@@ -61,8 +65,10 @@ Usage:
   gartograph graph  [--level package|type|symbol] [--format json|mermaid] [--out FILE] [flags]
   gartograph cycles [--level package|type|symbol] [--strict] [--format text|json] [flags]
   gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--strict] [flags]
-  gartograph rules  [--config FILE] [--strict] [--format text|json] [flags]
+  gartograph rules  [--config FILE] [--strict] [--format text|json|sarif] [flags]
   gartograph query  <id> [--depth N] [--max N] [flags]
+  gartograph impact <id> [--depth N] [--max N] [flags]
+  gartograph mcp    serve the graph over MCP stdio [flags]
   gartograph version
 
 Harvest flags (graph, cycles, dead, rules, query):
@@ -84,6 +90,7 @@ func flagSet(name string, stderr io.Writer) (*flag.FlagSet, *source.Options, *st
 	fs.Var((*patterns)(&opts.Patterns), "pattern", "package pattern (repeatable)")
 	fs.BoolVar(&opts.Tests, "tests", false, "include test variant packages")
 	fs.BoolVar(&opts.IncludeDeps, "deps", false, "include dependencies outside the main module")
+	fs.StringVar(&opts.Tags, "tags", "", "build tags to pass to the loader (comma-separated)")
 	fs.StringVar(&graphPath, "graph", "", "read a saved graph document instead of harvesting")
 	return fs, &opts, &graphPath
 }
@@ -383,7 +390,7 @@ type rulesReport struct {
 func cmdRules(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("rules", stderr)
 	configPath := fs.String("config", "", "rules file (default: .gartograph.yml in --dir)")
-	format := fs.String("format", "text", "output format: text|json")
+	format := fs.String("format", "text", "output format: text|json|sarif")
 	strict := fs.Bool("strict", false, "exit 1 when violations exist")
 	if fs.Parse(args) != nil {
 		return 2
@@ -401,6 +408,11 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	// signature 규칙은 signature 간선이 있어야 검사된다 — 패키지 레벨로
+	// 수확하면 규칙이 조용히 통과하므로 수확 레벨을 올린다.
+	if len(cfg.Signature) > 0 && *graphPath == "" {
+		opts.Level = graph.LevelSymbol
+	}
 	doc, err := loadDoc(opts, *graphPath)
 	if err != nil {
 		return fail(stderr, err)
@@ -408,6 +420,10 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	violations, unmapped := analysis.CheckRules(doc, cfg)
 
 	limitations := append([]string(nil), doc.Limitations...)
+	if len(cfg.Signature) > 0 && doc.Level.Rank() < graph.LevelSymbol.Rank() {
+		limitations = append(limitations,
+			"signature rules configured but document is below symbol level; signature checks skipped")
+	}
 	if len(unmapped) > 0 {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d packages match no component; rules did not check them", len(unmapped)))
@@ -420,10 +436,16 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 			Violations: violations, Unmapped: unmapped, Limitations: limitations,
 		}, "", "  ")
 		fmt.Fprintln(stdout, string(out))
+	case "sarif":
+		out, err := rulesSARIF(violations)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintln(stdout, string(out))
 	case "text":
 		for _, v := range violations {
-			fmt.Fprintf(stdout, "violation: %s (%s) -> %s (%s)\n",
-				v.From, v.FromComponent, v.To, v.ToComponent)
+			fmt.Fprintf(stdout, "violation[%s]: %s (%s) -> %s (%s)\n",
+				v.Rule, v.From, v.FromComponent, v.To, v.ToComponent)
 		}
 		fmt.Fprintf(stdout, "%d violations (%d packages unmapped)\n",
 			len(violations), len(unmapped))
@@ -466,6 +488,33 @@ func cmdQuery(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	sortNeighborsJSON(res)
+	out, _ := json.MarshalIndent(res, "", "  ")
+	fmt.Fprintln(stdout, string(out))
+	return 0
+}
+
+// cmdImpact는 정점의 역방향 전이 클로저를 본다 — 이걸 바꾸면 무엇이 깨지는가.
+// query가 양방향 1~N홉 이웃을 보는 것과 달리 의존자 방향만, 거리를 싣고 모은다.
+func cmdImpact(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("impact", stderr)
+	depth := fs.Int("depth", 0, "max reverse-dependency depth (0 = full transitive closure)")
+	maxN := fs.Int("max", 0, "max dependers to report (0 = unlimited)")
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(positional) != 1 {
+		fmt.Fprintln(stderr, "usage: gartograph impact <vertex-id> [--depth N]")
+		return 2
+	}
+	doc, err := loadDoc(opts, *graphPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	res, err := analysis.FindImpact(doc, positional[0], *depth, *maxN)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	out, _ := json.MarshalIndent(res, "", "  ")
 	fmt.Fprintln(stdout, string(out))
 	return 0
