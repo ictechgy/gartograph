@@ -4,12 +4,19 @@
 
 ## 현재 상태 (2026-09-22)
 
-**네 레벨(module/package/type/symbol) + dead + rules + 영속 문서 + 검증 체계 완성.**
-브랜치 `feature/symbol-type-level`. `go vet`·`go test ./...` 통과,
-커버리지 90.1%(게이트 90), `Scripts/verify-cli-contract.sh` 통과,
-자기 분석(rules/cycles×2/dead) 정상. `go install ./cmd/gartograph`로
-설치된 바이너리까지 검증됨. 리모트가 없어 push·Homebrew tap·GitHub
-릴리스는 미착수 — 리모트 생성 후 가능.
+**네 레벨(module/package/type/symbol) + dead + rules + 영속 문서 + 검증 체계 완성,**
+**v0.1.0 릴리스·Homebrew tap 배포까지 완료.** 공개 리포
+https://github.com/ictechgy/gartograph. `go vet`·`go test ./...` 통과,
+커버리지 90.1%(게이트 90), `Scripts/verify-cli-contract.sh` 통과.
+`brew install ictechgy/tap/gartograph`로 설치한 바이너리가
+`gartograph 0.1.0`을 보고하고 `brew test`까지 통과했다.
+
+릴리스는 `vX.Y.Z` 태그 push → `.github/workflows/release.yml`이 5개 타깃을
+크로스컴파일해 릴리스를 만들고, `HOMEBREW_TAP_TOKEN` 시크릿이 있으면
+`ictechgy/homebrew-tap`까지 갱신한다(현재 미설정 — 0.1.0 탭 갱신은 수동으로
+했다. formula 원본은 `Formula/gartograph.rb`). 릴리스 워크플로우의
+교훈 두 개: `run:` 블록 스칼라 안의 heredoc은 열 0에 쓰면 YAML이 파싱
+실패하고, `(cd dist && zip)`의 산출물은 dist 안에 생기니 `../`로 빼야 한다.
 
 - `graph` — 순수 도메인. `Document` v1 + `Module`·`Roots`, `Level`(module/package/
   type/symbol), `Vertex`(kind/name/package/position/exported)·`Edge`,
@@ -52,7 +59,8 @@
 
 ## 다음 할 일 (우선순위 순)
 
-1. **배포** — `go install` 경로 검증, Homebrew tap(계열 저장소 방식 참고).
+1. ~~배포~~ — v0.1.0 릴리스 + tap formula 배포 완료. 다음 릴리스 전에
+   `HOMEBREW_TAP_TOKEN`을 리포 시크릿에 넣으면 탭 갱신이 자동화된다.
 2. **isthmus 조인** — cgo/gomobile 브리지가 생기면 bridge facts producer.
 3. **정밀도** — RTA/포인터 분석으로 CHA 오탐을 좁히는 것은 필요해질 때.
    dead의 "살아 있다" 편향이 계약이라 급하지 않다.
