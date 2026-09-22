@@ -8,7 +8,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/ictechgy/gartograph/analysis"
 	"github.com/ictechgy/gartograph/config"
@@ -45,6 +48,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdPath(args[1:], stdout, stderr)
 	case "diff":
 		return cmdDiff(args[1:], stdout, stderr)
+	case "metrics":
+		return cmdMetrics(args[1:], stdout, stderr)
+	case "mapping":
+		return cmdMapping(args[1:], stdout, stderr)
+	case "init":
+		return cmdInit(args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMcp(args[1:], stdout, stderr)
 	case "version":
@@ -76,6 +85,9 @@ Usage:
   gartograph impact --since <git-rev>|--files F... [--depth N] [flags]
   gartograph path   <from-id> <to-id> [flags]
   gartograph diff   <old.json> <new.json> [--strict] [--format text|json]
+  gartograph metrics [--config FILE] [--format text|json] [flags]
+  gartograph mapping [--config FILE] [--format text|json] [flags]
+  gartograph init   [--dir PATH]  scaffold .gartograph.yml from observed imports
   gartograph mcp    serve the graph over MCP stdio [flags]
   gartograph version
 
@@ -504,6 +516,12 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 		for _, v := range violations {
 			fmt.Fprintf(stdout, "violation[%s]: %s (%s) -> %s (%s)\n",
 				v.Rule, v.From, v.FromComponent, v.To, v.ToComponent)
+			if v.Reason != "" {
+				fmt.Fprintf(stdout, "  reason: %s\n", v.Reason)
+			}
+			if len(v.Path) > 0 {
+				fmt.Fprintf(stdout, "  path: %s\n", strings.Join(v.Path, " -> "))
+			}
 		}
 		fmt.Fprintf(stdout, "%d violations (%d baselined, %d packages unmapped, %d external unmapped)\n",
 			len(violations), len(baselined), len(unmapped), len(rep.UnmappedExternal))
@@ -721,4 +739,170 @@ func sortNeighborsJSON(res *analysis.Neighbors) {
 	sort.Slice(res.DependedBy, func(i, j int) bool {
 		return res.DependedBy[i].ID < res.DependedBy[j].ID
 	})
+}
+
+// cmdMetrics는 컴포넌트(설정 없으면 패키지) 단위의 결합도를 보고한다.
+// --strict는 없다 — Ca/Ce는 판정이 아니라 사실이기 때문이다.
+func cmdMetrics(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("metrics", stderr)
+	configPath := fs.String("config", "", "rules file (default: .gartograph.yml in --dir)")
+	format := fs.String("format", "text", "output format: text|json")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	opts.Level = graph.LevelPackage
+	doc, err := loadDoc(opts, *graphPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	cfg, limitations, err := optionalConfig(opts.Dir, *configPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	rep := analysis.Metrics(doc, cfg)
+	limitations = append(limitations, doc.Limitations...)
+	switch *format {
+	case "json":
+		type metricsJSON struct {
+			*analysis.MetricsReport
+			Limitations []string `json:"limitations,omitempty"`
+		}
+		out, _ := json.MarshalIndent(metricsJSON{rep, limitations}, "", "  ")
+		fmt.Fprintln(stdout, string(out))
+	case "text":
+		for _, m := range rep.Components {
+			inst := "n/a"
+			if m.Instability != nil {
+				inst = fmt.Sprintf("%.3g", *m.Instability)
+			}
+			fmt.Fprintf(stdout, "%s: %d pkgs, Ca=%d Ce=%d I=%s\n",
+				m.Name, len(m.Packages), m.Afferent, m.Efferent, inst)
+		}
+		for _, o := range rep.Orphans {
+			fmt.Fprintf(stdout, "orphan: %s\n", o)
+		}
+		for _, u := range rep.Unmapped {
+			fmt.Fprintf(stdout, "unmapped: %s\n", u)
+		}
+		for _, l := range limitations {
+			fmt.Fprintf(stdout, "limitation: %s\n", l)
+		}
+	default:
+		fmt.Fprintf(stderr, "unknown format %q\n", *format)
+		return 2
+	}
+	return 0
+}
+
+// optionalConfig는 규칙 파일을 있으면 읽고 없으면 nil을 돌려준다.
+// metrics처럼 설정이 선택인 명령 전용 — rules는 설정이 없으면 오류다.
+// 파일이 존재하는데 깨졌으면 에러다 — 고장난 설정을 무시하고 패키지 단위로
+// 조용히 내려가면 소비자가 컴포넌트 메트릭인 줄 알고 잘못 읽는다.
+func optionalConfig(dir, explicit string) (*config.File, []string, error) {
+	path := explicit
+	if path == "" {
+		found, ok := config.Find(dir)
+		if !ok {
+			return nil, []string{
+				"no .gartograph.yml found; metrics computed per package"}, nil
+		}
+		path = found
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cfg, nil, nil
+}
+
+// cmdMapping은 규칙 파일이 각 패키지를 어느 컴포넌트로 해석하는지 보여준다.
+// "규칙이 왜 이 의존을 못 잡지"의 첫 진단 도구다.
+func cmdMapping(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("mapping", stderr)
+	configPath := fs.String("config", "", "rules file (default: .gartograph.yml in --dir)")
+	format := fs.String("format", "text", "output format: text|json")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	cfgPath := *configPath
+	if cfgPath == "" {
+		found, ok := config.Find(opts.Dir)
+		if !ok {
+			fmt.Fprintf(stderr, "error: no .gartograph.yml found in %s\n", opts.Dir)
+			return 2
+		}
+		cfgPath = found
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	opts.Level = graph.LevelPackage
+	doc, err := loadDoc(opts, *graphPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	m := analysis.MapComponents(doc, cfg)
+	switch *format {
+	case "json":
+		out, _ := json.MarshalIndent(m, "", "  ")
+		fmt.Fprintln(stdout, string(out))
+	case "text":
+		names := make([]string, 0, len(m.Components))
+		for n := range m.Components {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Fprintf(stdout, "%s:\n", n)
+			for _, p := range m.Components[n] {
+				fmt.Fprintf(stdout, "  %s\n", p)
+			}
+		}
+		for _, u := range m.Unmapped {
+			fmt.Fprintf(stdout, "unmapped: %s\n", u)
+		}
+		for _, u := range m.UnmappedExternal {
+			fmt.Fprintf(stdout, "unmapped external: %s\n", u)
+		}
+		for _, u := range m.UnmatchedComponents {
+			fmt.Fprintf(stdout, "unmatched component: %s\n", u)
+		}
+	default:
+		fmt.Fprintf(stderr, "unknown format %q\n", *format)
+		return 2
+	}
+	return 0
+}
+
+// cmdInit은 관찰된 import를 그대로 허용 목록으로 삼는 초기 규칙 파일을 만든다.
+// 첫 검사부터 통과하는 설정이어야 기존 레포 도입이 성립한다 — 조이는 것은
+// 사용자가 점진적으로 한다. 이미 파일이 있으면 덮어쓰지 않는다.
+func cmdInit(args []string, stdout, stderr io.Writer) int {
+	fs, opts, _ := flagSet("init", stderr)
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	if _, ok := config.Find(opts.Dir); ok {
+		fmt.Fprintf(stderr,
+			"error: .gartograph.yml already exists in %s — remove it to regenerate\n",
+			opts.Dir)
+		return 2
+	}
+	opts.Level = graph.LevelPackage
+	doc, err := source.Load(*opts)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	cfg := analysis.ScaffoldConfig(doc)
+	data, err := config.Render(cfg)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	path := filepath.Join(opts.Dir, ".gartograph.yml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fail(stderr, fmt.Errorf("writing %s: %w", path, err))
+	}
+	fmt.Fprintf(stdout, "wrote %s (%d components)\n", path, len(cfg.Components))
+	return 0
 }

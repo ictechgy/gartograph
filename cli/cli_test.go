@@ -650,6 +650,117 @@ func TestGraphDot(t *testing.T) {
 	}
 }
 
+// TestMetrics는 결합도 출력과 설정 없을 때의 패키지 단위 폴백을 확인한다.
+func TestMetrics(t *testing.T) {
+	dir := fixture(t)
+	// 설정이 없는 fixture — 패키지 단위로 계산되고 limitation에 남는다.
+	code, out, errb := run(t, "metrics", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("metrics failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "example.com/fixture/a") ||
+		!strings.Contains(out, "per package") {
+		t.Fatalf("expected per-package metrics + limitation: %s", out)
+	}
+	// 설정이 있으면 컴포넌트 단위다.
+	dir2 := rulesFixture(t)
+	code, out, _ = run(t, "metrics", "--dir", dir2)
+	if code != 0 {
+		t.Fatalf("metrics with config failed: %d", code)
+	}
+	if !strings.Contains(out, "web:") || !strings.Contains(out, "Ce=1") {
+		t.Fatalf("expected component metrics: %s", out)
+	}
+	// web→db가 있어 web Ce=1, db Ca=1. api는 고립 — orphan이어야 한다.
+	if !strings.Contains(out, "orphan: example.com/fixture/api") {
+		t.Fatalf("api has no importers — expected orphan: %s", out)
+	}
+	// JSON 형식도 파싱 가능해야 한다.
+	code, out, _ = run(t, "metrics", "--dir", dir2, "--format", "json")
+	if code != 0 {
+		t.Fatalf("metrics json failed: %d", code)
+	}
+	var rep struct {
+		Components []struct {
+			Name        string   `json:"name"`
+			Afferent    int      `json:"afferent"`
+			Efferent    int      `json:"efferent"`
+			Instability *float64 `json:"instability"`
+		} `json:"components"`
+		Orphans []string `json:"orphans"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("metrics output is not JSON: %v", err)
+	}
+	// web도 importer가 없는 최상위 소비자라 orphan으로 보고된다.
+	if len(rep.Components) != 3 || len(rep.Orphans) != 2 {
+		t.Fatalf("unexpected metrics report: %s", out)
+	}
+	// 깨진 설정 파일을 명시하면 조용한 폴백이 아니라 오류(2)다.
+	bad := filepath.Join(t.TempDir(), "bad.yml")
+	if err := os.WriteFile(bad, []byte("components: {a: [a]}\ndeps: {a: [ghost]}\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := run(t, "metrics", "--dir", dir2, "--config", bad); code != 2 {
+		t.Fatalf("broken --config must fail: got %d", code)
+	}
+}
+
+// TestMapping은 컴포넌트↔패키지 매핑 보고를 확인한다.
+func TestMapping(t *testing.T) {
+	dir := rulesFixture(t)
+	code, out, errb := run(t, "mapping", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("mapping failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "web:") ||
+		!strings.Contains(out, "example.com/fixture/web") {
+		t.Fatalf("expected component->package mapping: %s", out)
+	}
+	// 설정 없는 디렉터리는 mapping이 성립하지 않는다 — 2.
+	if code, _, _ := run(t, "mapping", "--dir", fixture(t)); code != 2 {
+		t.Fatalf("mapping without config: expected 2, got %d", code)
+	}
+	// JSON 형식은 컴포넌트→패키지 역방향 맵이다.
+	code, out, _ = run(t, "mapping", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("mapping json failed: %d", code)
+	}
+	var rep struct {
+		Components map[string][]string `json:"components"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("mapping output is not JSON: %v", err)
+	}
+	if len(rep.Components["web"]) != 1 ||
+		rep.Components["web"][0] != "example.com/fixture/web" {
+		t.Fatalf("unexpected mapping: %s", out)
+	}
+}
+
+// TestInit은 스캐폴드된 규칙 파일이 곧바로 rules를 통과하는지 확인한다.
+func TestInit(t *testing.T) {
+	dir := fixture(t)
+	code, out, errb := run(t, "init", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("init failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "wrote") {
+		t.Fatalf("expected wrote message: %s", out)
+	}
+	// 생성된 설정으로 rules --strict가 통과해야 한다 — 관찰된 현실을 기록했으므로.
+	code, out, errb = run(t, "rules", "--dir", dir, "--strict")
+	if code != 0 {
+		t.Fatalf("rules on scaffolded config must pass: %d %s %s", code, out, errb)
+	}
+	// 두 번째 init은 덮어쓰기를 거부한다.
+	code, _, errb = run(t, "init", "--dir", dir)
+	if code != 2 || !strings.Contains(errb, "already exists") {
+		t.Fatalf("init must refuse to overwrite: %d %s", code, errb)
+	}
+}
+
 // TestDiff는 두 저장 문서의 차이와 --strict의 breaking 계약을 확인한다.
 func TestDiff(t *testing.T) {
 	dir := deadFixture(t)
