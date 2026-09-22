@@ -96,7 +96,7 @@ signature:                # 공개 API 타입 누출 (심볼 레벨 필요)
 - `deny`는 `deps`를 이깁니다 — "보통 허용, 이 조합은 금지".
 - `signature`는 **exported** 심볼의 `signature` 간선을 검사합니다 — 본문 의존은
   허용하면서 공개 API의 타입 누출만 막을 때 씁니다. 위반은 `rule` 필드로
-  구분됩니다(`allow`/`deny`/`signature`/`visibleTo`/`forbidden`).
+  구분됩니다(`allow`/`deny`/`signature`/`visibleTo`/`forbidden`/`independence`).
 
 선택 섹션이 계약 어휘를 더 넓힙니다:
 
@@ -106,6 +106,7 @@ visibleTo:                # 공급자 측 규칙 — 누가 나를 의존할 수
   db: ["store"]           # store만 db를 import 가능
 forbidden:                # 전이 금지 — 직접이든 경유든 도달 자체가 위반
   - {from: api, to: db}   # api는 다른 컴포넌트를 경유해서도 db에 닿으면 안 됨
+independent: [web, cli]   # web과 cli는 어느 방향으로도 서로 도달 불가
 ```
 
 - `common`은 공통 부품을 매 deps에 반복 적는 boilerplate를 없앱니다.
@@ -114,6 +115,9 @@ forbidden:                # 전이 금지 — 직접이든 경유든 도달 자�
   좁힐 뿐 풀지 않습니다.
 - `forbidden`은 직접 간선이 아니라 도달성을 봅니다 — deps는 직접 import만
   봅니다. 위반에는 목격 경로 `path`가 실립니다.
+- `independent`는 목록 안 모든 쌍에 대한 양방향 `forbidden`입니다 —
+  "둘은 독립"이라는 의도가 이름으로 남습니다. 위반은 `rule: "independence"`로
+  보고됩니다.
 - 규칙이 참조하는 모든 이름은 정의된 컴포넌트여야 합니다 — `Load`가
   죽은 참조를 거부해 오타가 규칙인 척하지 못하게 합니다.
 

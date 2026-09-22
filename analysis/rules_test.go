@@ -293,3 +293,49 @@ func TestCheckRulesForbidden(t *testing.T) {
 		t.Fatalf("without forbidden the chain is legal: %+v", v)
 	}
 }
+
+// TestCheckRulesIndependent는 양방향 독립 계약을 확인한다 —
+// 어느 방향의 도달도 위반이고, 두 방향이 다 뚫리면 두 건이다.
+func TestCheckRulesIndependent(t *testing.T) {
+	d := &graph.Document{
+		Module: "example.com/m",
+		Vertices: []graph.Vertex{
+			{ID: "example.com/m/a", Kind: graph.KindPackage},
+			{ID: "example.com/m/b", Kind: graph.KindPackage},
+			{ID: "example.com/m/c", Kind: graph.KindPackage},
+		},
+		Edges: []graph.Edge{
+			{From: "example.com/m/a", To: "example.com/m/c", Kind: graph.EdgeImport},
+			{From: "example.com/m/c", To: "example.com/m/b", Kind: graph.EdgeImport},
+		},
+	}
+	cfg := &config.File{
+		Components: map[string][]string{
+			"a": {"a"}, "b": {"b"}, "c": {"c"},
+		},
+		Deps:        map[string][]string{"a": {"c"}, "c": {"b"}},
+		Independent: []string{"a", "b"},
+	}
+	// a→c→b 한 방향만 뚫려 있다 — 위반 하나.
+	violations := CheckRules(d, cfg).Violations
+	if len(violations) != 1 {
+		t.Fatalf("one-way reach must be one violation: %+v", violations)
+	}
+	v := violations[0]
+	if v.Rule != "independence" || v.FromComponent != "a" || v.ToComponent != "b" {
+		t.Fatalf("unexpected independence violation: %+v", v)
+	}
+	// 반대 방향도 뚫리면 양쪽 모두 보고한다 — 직접 간선은 deps가
+	// 허용하게 두어 independence 위반만 남긴다.
+	cfg.Deps["b"] = []string{"a"}
+	d.Edges = append(d.Edges, graph.Edge{
+		From: "example.com/m/b", To: "example.com/m/a", Kind: graph.EdgeImport})
+	if v := CheckRules(d, cfg).Violations; len(v) != 2 {
+		t.Fatalf("both directions must be reported: %+v", v)
+	}
+	// 독립 목록에서 빠지면 직접 간선만 남아 deps가 허용한다.
+	cfg.Independent = nil
+	if v := CheckRules(d, cfg).Violations; len(v) != 0 {
+		t.Fatalf("without independent the graph is legal: %+v", v)
+	}
+}

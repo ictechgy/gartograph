@@ -145,6 +145,7 @@ visibleTo:                # provider-side rule: who may depend on me
   db: ["store"]           # only the store component may import db
 forbidden:                # transitive bans — no path at all, direct or not
   - {from: api, to: db}   # api must not reach db even via other components
+independent: [web, cli]   # web and cli must not reach each other either way
 ```
 
 - `common` removes allowlist boilerplate for shared components.
@@ -153,6 +154,8 @@ forbidden:                # transitive bans — no path at all, direct or not
   only narrows, never widens. Violations carry `rule: "visibleTo"`.
 - `forbidden` checks reachability, not just direct edges — deps can only
   see direct imports. A violation reports one witness `path`.
+- `independent` is a bidirectional `forbidden` between every listed pair —
+  the name keeps the intent. Violations carry `rule: "independence"`.
 - `deny` entries accept a `reason` — it lands on the violation so the
   reader knows what to do instead.
 - Every name referenced by a rule must be a defined component — `Load`

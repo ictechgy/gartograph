@@ -54,8 +54,8 @@ type sarifMessage struct {
 }
 
 type sarifLocation struct {
-	LogicalLocations  []sarifLogical   `json:"logicalLocations"`
-	PhysicalLocation  *sarifPhysical   `json:"physicalLocation,omitempty"`
+	LogicalLocations []sarifLogical `json:"logicalLocations"`
+	PhysicalLocation *sarifPhysical `json:"physicalLocation,omitempty"`
 }
 
 type sarifPhysical struct {
@@ -136,6 +136,8 @@ func rulesSARIF(violations []analysis.Violation) ([]byte, error) {
 						Text: "dependency on a component that restricts its consumers"}},
 					{ID: "layer-forbidden", ShortDescription: sarifMessage{
 						Text: "component reaches a forbidden component, possibly indirectly"}},
+					{ID: "layer-independence", ShortDescription: sarifMessage{
+						Text: "components declared independent reach each other"}},
 				},
 			}},
 			Results: results,

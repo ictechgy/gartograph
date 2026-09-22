@@ -189,6 +189,8 @@ func TestCheckRefs(t *testing.T) {
 		"components: {a: [a]}\ndeps: {a: []}\ndeny: {a: [{reason: nope}]}\n",
 		"components: {a: [a]}\nforbidden: [{to: a}]\n",
 		"components: {a: [a]}\ndeps: {\"\": [a]}\n",
+		"components: {a: [a]}\nindependent: [a, ghost]\n",
+		"components: {a: [a]}\nindependent: [a, \"\"]\n",
 	}
 	for _, c := range cases {
 		if _, err := Load(writeRules(t, c)); err == nil {

@@ -23,6 +23,7 @@ import (
 //	common: 모든 컴포넌트가 deps에 적지 않아도 의존할 수 있는 컴포넌트명들
 //	visibleTo: 컴포넌트명 → 그 컴포넌트를 의존해도 되는 컴포넌트명들
 //	forbidden: 간접 경로까지 금지하는 {from, to} 컴포넌트 쌍 목록
+//	independent: 어느 방향으로도 서로 도달하면 안 되는 컴포넌트명들
 //
 // components 패턴은 --deps로 수확된 외부 패키지의 전체 import 경로에도
 // 매칭된다 — `aws: ["github.com/aws/**"]`를 컴포넌트로 두면 deps/deny가
@@ -41,15 +42,19 @@ import (
 // forbidden은 deps/deny와 달리 간접 도달까지 검사한다 — from 컴포넌트의
 // 정점이 의존 간선을 몇 홉이든 타고 to 컴포넌트에 닿으면 위반이다.
 // 직접 간선만 보는 deps로는 "A가 C에 도달하면 안 됨"을 표현할 수 없다.
+// independent는 forbidden을 양방향으로 든 계약이다 — import-linter의
+// independence와 같다. {from,to} 두 건을 나열해도 되지만 "둘은 독립"이라는
+// 의도가 이름으로 남는다.
 type File struct {
-	Version    int                    `yaml:"version"`
-	Components map[string][]string    `yaml:"components"`
-	Deps       map[string][]string    `yaml:"deps"`
-	Deny       map[string][]DenyEntry `yaml:"deny"`
-	Signature  map[string][]string    `yaml:"signature"`
-	Common     []string               `yaml:"common"`
-	VisibleTo  map[string][]string    `yaml:"visibleTo"`
-	Forbidden  []ForbiddenRule        `yaml:"forbidden"`
+	Version     int                    `yaml:"version"`
+	Components  map[string][]string    `yaml:"components"`
+	Deps        map[string][]string    `yaml:"deps"`
+	Deny        map[string][]DenyEntry `yaml:"deny"`
+	Signature   map[string][]string    `yaml:"signature"`
+	Common      []string               `yaml:"common"`
+	VisibleTo   map[string][]string    `yaml:"visibleTo"`
+	Forbidden   []ForbiddenRule        `yaml:"forbidden"`
+	Independent []string               `yaml:"independent"`
 }
 
 // DenyEntry는 deny 목록의 한 항목이다.
@@ -183,6 +188,11 @@ func (f *File) checkRefs() error {
 			return err
 		}
 		if err := check("forbidden", "to", r.To); err != nil {
+			return err
+		}
+	}
+	for _, c := range f.Independent {
+		if err := check("independent", "entry", c); err != nil {
 			return err
 		}
 	}

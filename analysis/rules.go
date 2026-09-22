@@ -87,11 +87,11 @@ func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
 				From: e.From, To: e.To,
 				FromComponent: from, ToComponent: to,
 				Kind: e.Kind, Rule: rule, Reason: reason,
-				Position:    firstPosition(e),
+				Position: firstPosition(e),
 			})
 		}
 	}
-	rep.Violations = append(rep.Violations, forbiddenViolations(d, cfg, comp)...)
+	rep.Violations = append(rep.Violations, reachViolations(d, cfg, comp)...)
 	rep.Unmapped = mapping.Unmapped
 	rep.UnmappedExternal = mapping.UnmappedExternal
 	rep.UnmatchedComponents = mapping.UnmatchedComponents
@@ -126,13 +126,13 @@ func ruleBroken(cfg *config.File, kind graph.EdgeKind, from, to string) (string,
 	return "", ""
 }
 
-// forbiddenViolations는 forbidden 계약을 검사한다 — from 컴포넌트의 정점이
-// 의존 간선을 따라(contains 제외) to 컴포넌트의 정점에 닿으면 위반이다.
-// 직접 간선만 보는 deps/deny로는 "A가 C에 도달하면 안 됨"을 잡을 수 없다.
+// reachViolations는 도달성 계약을 검사한다 — forbidden은 한 방향,
+// independent는 목록 안 모든 쌍의 양방향이다. 직접 간선만 보는
+// deps/deny로는 "A가 C에 도달하면 안 됨"을 잡을 수 없다.
 // 위반마다 목격 경로 하나를 실어 소비자가 사슬을 바로 볼 수 있게 한다.
-func forbiddenViolations(d *graph.Document, cfg *config.File,
+func reachViolations(d *graph.Document, cfg *config.File,
 	comp map[string]string) []Violation {
-	if len(cfg.Forbidden) == 0 {
+	if len(cfg.Forbidden) == 0 && len(cfg.Independent) == 0 {
 		return nil
 	}
 	// 정점→컴포넌트 해석: 패키지 정점은 자기 ID로, 심볼·타입은 소속 패키지로.
@@ -153,6 +153,27 @@ func forbiddenViolations(d *graph.Document, cfg *config.File,
 				FromComponent: rule.From, ToComponent: rule.To,
 				Rule: "forbidden", Path: path,
 			})
+		}
+	}
+	// independent는 순서 없는 쌍 계약이다 — 어느 쪽이 먼저 선언됐는지가
+	// 아니라 도달 방향이 위반을 만든다. 같은 쌍이 중복 선언돼도
+	// 위반은 한 번만 보고한다.
+	pairs := map[string]bool{}
+	for i, a := range cfg.Independent {
+		for _, b := range cfg.Independent[i+1:] {
+			if a == b || pairs[a+"\x00"+b] {
+				continue
+			}
+			pairs[a+"\x00"+b] = true
+			for _, dir := range [2][2]string{{a, b}, {b, a}} {
+				if path := reachPath(adj, vcomp, dir[0], dir[1]); path != nil {
+					out = append(out, Violation{
+						From: path[0], To: path[len(path)-1],
+						FromComponent: dir[0], ToComponent: dir[1],
+						Rule: "independence", Path: path,
+					})
+				}
+			}
 		}
 	}
 	return out
