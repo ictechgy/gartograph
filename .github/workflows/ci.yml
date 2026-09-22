@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: Scripts/coverage.sh
+
+      # 도그푸딩 — 이 도구로 이 저장소를 분석한다
+      - run: go run ./cmd/gartograph rules --strict
+      - run: go run ./cmd/gartograph cycles --level type --strict
+      - run: go run ./cmd/gartograph cycles --level symbol --strict
