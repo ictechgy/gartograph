@@ -1,0 +1,242 @@
+package source
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/ictechgy/gartograph/graph"
+	"github.com/ictechgy/gartograph/internal/testutil"
+)
+
+// symbolFixture는 인터페이스 구현·임베딩·호출·init·미사용 심볼이 있는 모듈이다.
+// 도달성·디스패치·구조 간선을 한 fixture에서 다 본다.
+func symbolFixture(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/symfix\n\ngo 1.27\n",
+		"main.go": `package main
+
+import "example.com/symfix/impl"
+
+func main() {
+	run()
+}
+
+func run() {
+	var d impl.Doer = impl.Worker{}
+	d.Do()
+}
+`,
+		"impl/impl.go": `package impl
+
+type Doer interface {
+	Do() string
+}
+
+type Base struct{}
+
+func (Base) Name() string { return "base" }
+
+type Worker struct {
+	Base
+}
+
+func (w Worker) Do() string {
+	return w.Name()
+}
+
+var Default = Worker{}
+
+const Kind = "worker"
+
+func init() { _ = Default }
+
+func Unused() {}
+
+func Spin() { Spin() }
+`,
+	})
+}
+
+// loadSymbol은 심볼 레벨 문서를 수확한다.
+func loadSymbol(t *testing.T, dir string) *graph.Document {
+	t.Helper()
+	doc, err := Load(Options{Dir: dir, Level: graph.LevelSymbol})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+// hasEdge는 (from,to,kind) 간선의 존재를 확인한다.
+func hasEdge(d *graph.Document, from, to string, kind graph.EdgeKind) bool {
+	for _, e := range d.Edges {
+		if e.From == from && e.To == to && e.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSymbolVertices는 심볼 레벨이 모든 선언 종류를 정점으로 담는지 확인한다.
+func TestSymbolVertices(t *testing.T) {
+	doc := loadSymbol(t, symbolFixture(t))
+	if doc.Level != graph.LevelSymbol {
+		t.Fatalf("expected symbol level, got %s", doc.Level)
+	}
+	want := map[string]graph.VertexKind{
+		"example.com/symfix":                  graph.KindPackage,
+		"example.com/symfix.main":             graph.KindFunc,
+		"example.com/symfix.run":              graph.KindFunc,
+		"example.com/symfix/impl":             graph.KindPackage,
+		"example.com/symfix/impl.init":        graph.KindFunc,
+		"example.com/symfix/impl.Unused":      graph.KindFunc,
+		"example.com/symfix/impl.Spin":        graph.KindFunc,
+		"example.com/symfix/impl.Doer":        graph.KindType,
+		"example.com/symfix/impl.Base":        graph.KindType,
+		"example.com/symfix/impl.Worker":      graph.KindType,
+		"example.com/symfix/impl.Default":     graph.KindVar,
+		"example.com/symfix/impl.Kind":        graph.KindConst,
+		"example.com/symfix/impl.(Doer).Do":   graph.KindMethod,
+		"example.com/symfix/impl.(Base).Name": graph.KindMethod,
+		"example.com/symfix/impl.(Worker).Do": graph.KindMethod,
+	}
+	for id, kind := range want {
+		v, ok := doc.VertexByID(id)
+		if !ok {
+			t.Fatalf("missing vertex %s", id)
+		}
+		if v.Kind != kind {
+			t.Fatalf("vertex %s: expected kind %s, got %s", id, kind, v.Kind)
+		}
+		// 패키지 정점은 한 지점이 없어 위치가 없다 — 심볼만 위치를 요구한다.
+		if kind != graph.KindPackage && v.Position == nil {
+			t.Fatalf("vertex %s has no position", id)
+		}
+	}
+	// 메서드 승격: Worker의 메서드 집합에 Name이 있어도 정점은 선언 타입 아래 하나뿐이다.
+	if doc.HasVertex("example.com/symfix/impl.(Worker).Name") {
+		t.Fatal("promoted method must not get a vertex under the embedding type")
+	}
+}
+
+// TestSymbolStructuralEdges는 contains·embeds·implements 간선을 확인한다.
+func TestSymbolStructuralEdges(t *testing.T) {
+	doc := loadSymbol(t, symbolFixture(t))
+	const impl = "example.com/symfix/impl"
+	if !hasEdge(doc, impl, impl+".Worker", graph.EdgeContains) {
+		t.Fatal("missing contains edge pkg→Worker")
+	}
+	if !hasEdge(doc, impl+".Worker", impl+".Base", graph.EdgeEmbeds) {
+		t.Fatal("missing embeds edge Worker→Base")
+	}
+	if !hasEdge(doc, impl+".Worker", impl+".Doer", graph.EdgeImplements) {
+		t.Fatal("missing implements edge Worker→Doer")
+	}
+}
+
+// TestSymbolCallEdges는 직접 호출과 인터페이스 디스패치의 CHA 팬아웃을 확인한다.
+// 인터페이스 메서드 호출은 인터페이스 메서드와 모든 구현 메서드로 간선이 가야
+// 도달성 분석이 구현체를 죽은 코드로 오판하지 않는다.
+func TestSymbolCallEdges(t *testing.T) {
+	doc := loadSymbol(t, symbolFixture(t))
+	const (
+		mainID = "example.com/symfix.main"
+		runID  = "example.com/symfix.run"
+		doerDo = "example.com/symfix/impl.(Doer).Do"
+		workDo = "example.com/symfix/impl.(Worker).Do"
+		name   = "example.com/symfix/impl.(Base).Name"
+	)
+	for _, to := range [][2]string{
+		{mainID, runID},
+		{runID, doerDo}, // d.Do()의 정적 대상
+		{runID, workDo}, // CHA 팬아웃 — 구현체 호출
+		{workDo, name},  // 승격 메서드 호출은 선언 타입의 메서드로 간다
+	} {
+		if !hasEdge(doc, to[0], to[1], graph.EdgeCall) {
+			t.Fatalf("missing call edge %s → %s", to[0], to[1])
+		}
+	}
+	// 자기 호출도 간선으로 남아야 한다 — 자기루프는 실제 순환이다.
+	if !hasEdge(doc, "example.com/symfix/impl.Spin",
+		"example.com/symfix/impl.Spin", graph.EdgeCall) {
+		t.Fatal("missing self-call edge Spin→Spin")
+	}
+}
+
+// TestSymbolReferenceEdges는 타입·값 참조가 references 간선으로 남는지 확인한다.
+func TestSymbolReferenceEdges(t *testing.T) {
+	doc := loadSymbol(t, symbolFixture(t))
+	const impl = "example.com/symfix/impl"
+	for _, e := range [][2]string{
+		{"example.com/symfix.run", impl + ".Doer"},   // var d impl.Doer
+		{"example.com/symfix.run", impl + ".Worker"}, // impl.Worker{}
+		{impl + ".init", impl + ".Default"},          // _ = Default
+	} {
+		if !hasEdge(doc, e[0], e[1], graph.EdgeReferences) {
+			t.Fatalf("missing references edge %s → %s", e[0], e[1])
+		}
+	}
+}
+
+// TestSymbolRoots는 main과 init이 보존 루트로 기록되는지 확인한다.
+func TestSymbolRoots(t *testing.T) {
+	doc := loadSymbol(t, symbolFixture(t))
+	var hasMain, hasInit bool
+	for _, r := range doc.Roots {
+		hasMain = hasMain || r == "example.com/symfix.main"
+		hasInit = hasInit || r == "example.com/symfix/impl.init"
+	}
+	if !hasMain || !hasInit {
+		t.Fatalf("expected main and init roots, got %v", doc.Roots)
+	}
+}
+
+// TestTypeLevel은 type 레벨이 타입과 구조 간선만 담는지 확인한다.
+// 함수 정점과 call 간선이 새어 들어오면 레벨 구분이 깨진 것이다.
+func TestTypeLevel(t *testing.T) {
+	doc, err := Load(Options{Dir: symbolFixture(t), Level: graph.LevelType})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Level != graph.LevelType {
+		t.Fatalf("expected type level, got %s", doc.Level)
+	}
+	if !doc.HasVertex("example.com/symfix/impl.Worker") {
+		t.Fatal("missing type vertex at type level")
+	}
+	if doc.HasVertex("example.com/symfix.main") {
+		t.Fatal("func vertex leaked into type level")
+	}
+	for _, e := range doc.Edges {
+		if e.Kind == graph.EdgeCall {
+			t.Fatalf("call edge leaked into type level: %+v", e)
+		}
+	}
+}
+
+// TestSymbolExternalRefs는 모듈 밖 참조가 유령 정점이 아니라
+// limitation 개수로 남는지 확인한다.
+func TestSymbolExternalRefs(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"a/a.go": `package a
+
+import "fmt"
+
+func F() { fmt.Println() }
+`,
+	})
+	doc := loadSymbol(t, dir)
+	if doc.HasVertex("fmt.Println") {
+		t.Fatal("external symbol leaked as vertex")
+	}
+	var found bool
+	for _, l := range doc.Limitations {
+		if strings.Contains(l, "outside the module") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected external-references limitation: %v", doc.Limitations)
+	}
+}
