@@ -1,5 +1,7 @@
 # gartograph
 
+<img src="icon.png" alt="gartograph's bird mascot" width="112" height="112" align="right">
+
 Go dependency graph tool — read a Go module, build its dependency graph,
 and run queries on top: cycles, reachability, symbol neighbors, layer rules.
 
