@@ -2,6 +2,7 @@
 package analysis
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -12,13 +13,18 @@ import (
 // Violation은 규칙 위반 하나다 — 실제 간선이 evidence다.
 // Rule은 어긴 규칙 종류다: "allow"(허용 목록에 없음), "deny"(명시 금지),
 // "signature"(공개 API 타입 누출), "visibleTo"(공급자가 닫은 컴포넌트),
-// "forbidden"(간접 도달 금지).
-// Reason은 deny 규칙에 설정된 사유다 — 에이전트가 다음 행동을 고를 정보다.
-// Path는 forbidden 위반의 목격 경로다 — 간선이 아니라 도달 사실을 어겼으므로
-// 어느 사슬로 닿았는지를 함께 준다. forbidden 위반은 단일 간선이 아니라
-// Kind가 비어 있다.
+// "forbidden"(간접 도달 금지), "independence"(독립 선언된 컴포넌트 간 도달),
+// "fileScope"(import 지점의 파일 패턴 위반).
+// Name은 fileScope 위반이 어긴 규칙의 이름이다 — 같은 to 컴포넌트를
+// 다른 파일 패턴으로 막는 규칙이 여럿일 때 구분자다.
+// Reason은 deny·fileRules 규칙에 설정된 사유다 — 에이전트가 다음 행동을
+// 고를 정보다.
+// Path는 forbidden·independence 위반의 목격 경로다 — 간선이 아니라 도달
+// 사실을 어겼으므로 어느 사슬로 닿았는지를 함께 준다. 그 위반들은 단일
+// 간선이 아니라 Kind가 비어 있다.
 // Position은 위반 간선의 첫 사용 지점이다 — "어디를 고치면 되나"에 답한다.
-// 지점이 없는 관계(forbidden 등)나 v1 문서에서는 비어 있다.
+// fileScope 위반은 실제로 매칭된 지점을 가리킨다. 지점이 없는 관계
+// (forbidden 등)나 v1 문서에서는 비어 있다.
 type Violation struct {
 	From          string          `json:"from"`
 	To            string          `json:"to"`
@@ -26,6 +32,7 @@ type Violation struct {
 	ToComponent   string          `json:"toComponent"`
 	Kind          graph.EdgeKind  `json:"kind,omitempty"`
 	Rule          string          `json:"rule"`
+	Name          string          `json:"name,omitempty"`
 	Reason        string          `json:"reason,omitempty"`
 	Path          []string        `json:"path,omitempty"`
 	Position      *graph.Position `json:"position,omitempty"`
@@ -38,11 +45,15 @@ type Violation struct {
 // "규칙이 굳이 매핑하지 않은 바깥"은 다른 사실이라 섞지 않는다.
 // UnmatchedComponents는 어떤 패키지 정점에도 매칭되지 않은 컴포넌트다 —
 // 오타·stale·"외부 패턴인데 --deps 없이 수확"의 신호다.
+// FileScopeUnchecked는 fileRules의 to 컴포넌트로 향하면서 사용 지점이
+// 없어 파일 스코프를 검사할 수 없는 import 간선 수다 — v1 문서나 위치를
+// 싣지 않는 수확의 신호로, limitation으로 승격된다.
 type RuleReport struct {
 	Violations          []Violation `json:"violations"`
 	Unmapped            []string    `json:"unmapped,omitempty"`
 	UnmappedExternal    []string    `json:"unmappedExternal,omitempty"`
 	UnmatchedComponents []string    `json:"unmatchedComponents,omitempty"`
+	FileScopeUnchecked  int         `json:"fileScopeUnchecked,omitempty"`
 }
 
 // CheckRules는 import 간선을 컴포넌트 규칙과 대조하고, 문서가 심볼 레벨이면
@@ -65,6 +76,11 @@ func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
 		switch e.Kind {
 		case graph.EdgeImport:
 			from, to = comp[e.From], comp[e.To]
+			// fileRules는 허용 목록과 별개의 축이다 — deps가 허용한 의존도
+			// import 지점의 파일이 규칙에 걸리면 위반이다.
+			fv, unchecked := fileViolations(d, cfg, e, from, to)
+			rep.Violations = append(rep.Violations, fv...)
+			rep.FileScopeUnchecked += unchecked
 		case graph.EdgeSignature:
 			// signature 규칙은 설정된 컴포넌트의 exported 심볼에서만 검사한다.
 			if len(cfg.Signature) == 0 {
@@ -124,6 +140,62 @@ func ruleBroken(cfg *config.File, kind graph.EdgeKind, from, to string) (string,
 		return "visibleTo", ""
 	}
 	return "", ""
+}
+
+// fileViolations는 import 간선 하나를 fileRules와 대조한다.
+// 간선의 사용 지점 파일이 규칙의 from 패턴에 맞으면 위반이다 — 지점마다
+// 별도 위반을 내서 "어느 파일을 고치면 되나"를 정확히 가리킨다.
+// 대상 컴포넌트로 향하는데 지점이 없는 간선은 검사 불가라 수를 세어
+// 돌려준다 — 조용히 통과하면 "규칙이 지켜졌다"는 착각을 만든다.
+func fileViolations(d *graph.Document, cfg *config.File, e graph.Edge,
+	fromComp, toComp string) (violations []Violation, unchecked int) {
+	if len(cfg.FileRules) == 0 || toComp == "" {
+		return nil, 0
+	}
+	var applies bool
+	for _, r := range cfg.FileRules {
+		if r.To == toComp {
+			applies = true
+			break
+		}
+	}
+	if !applies {
+		return nil, 0
+	}
+	if len(e.Positions) == 0 {
+		return nil, 1
+	}
+	for i := range e.Positions {
+		p := e.Positions[i]
+		rel := relFile(d, p.File)
+		for _, r := range cfg.FileRules {
+			if r.To != toComp || !config.MatchFile(r.From, rel) {
+				continue
+			}
+			pos := p
+			violations = append(violations, Violation{
+				From: e.From, To: e.To,
+				FromComponent: fromComp, ToComponent: toComp,
+				Kind: e.Kind, Rule: "fileScope",
+				Name: r.Name, Reason: r.Reason, Position: &pos,
+			})
+		}
+	}
+	return violations, 0
+}
+
+// relFile은 절대 파일 경로를 모듈 상대 경로로 바꾼다 — 설정의 파일 패턴이
+// 수확 머신의 절대 경로가 아니라 이식 가능한 경로에 맞도록.
+// ModuleDir이 없는 문서는 Root를 기준으로 한다.
+func relFile(d *graph.Document, abs string) string {
+	base := d.ModuleDir
+	if base == "" {
+		base = d.Root
+	}
+	if rel, err := filepath.Rel(base, abs); err == nil {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.ToSlash(abs)
 }
 
 // reachViolations는 도달성 계약을 검사한다 — forbidden은 한 방향,

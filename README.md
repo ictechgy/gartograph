@@ -80,6 +80,8 @@ gartograph impact --since origin/main...HEAD          # or --files cli/cli.go
 gartograph path github.com/ictechgy/gartograph/cmd/gartograph github.com/ictechgy/gartograph/graph
 
 # Compare two saved documents: structure drift and breaking signals
+# breaking = exported symbol removed/unexported, kind changed, signature
+# reference dropped, interface gained a method, struct field contract broken
 gartograph diff old.json new.json --strict
 
 # Coupling metrics (Ca/Ce/instability) + orphan packages
@@ -163,10 +165,24 @@ independent: [web, cli]   # web and cli must not reach each other either way
   see direct imports. A violation reports one witness `path`.
 - `independent` is a bidirectional `forbidden` between every listed pair —
   the name keeps the intent. Violations carry `rule: "independence"`.
+- `fileRules` scopes a ban to the *file* where the import happens —
+  dependency-cruiser's `not-to-dev-dep` contract. `from` is a glob matched
+  against the file basename, or the module-relative path when it contains
+  `/`; a leading `!` inverts it. Violations carry `rule: "fileScope"`, the
+  rule `name`, and the offending position. Edges without positions can't
+  be checked and are counted in `fileScopeUnchecked`.
 - `deny` entries accept a `reason` — it lands on the violation so the
   reader knows what to do instead.
 - Every name referenced by a rule must be a defined component — `Load`
   rejects dead references instead of letting a typo pretend to be a rule.
+
+```yaml
+fileRules:
+  - name: no-testdeps-in-prod       # production files may not import test helpers
+    from: "!*_test.go"              # files NOT matching the glob violate
+    to: testhelpers                 # a component
+    reason: "test helpers must not leak into production code"
+```
 
 **External/vendor rules.** Component patterns also match the full import
 paths of external packages harvested with `--deps`, so `deps`/`deny` can
@@ -187,11 +203,15 @@ packages matching no component are reported separately as
 `unmappedExternal`.
 
 **Baseline.** Adopting rules on an existing repo: record today's violations
-once, then only new violations fail `--strict`.
+once, then only new violations fail `--strict`. The same flags work on
+`cycles` and `dead` — each kind carries its own baseline file kind, so a
+file can't silently cross-apply.
 
 ```bash
-gartograph rules --write-baseline .gartograph-baseline.json
-gartograph rules --baseline .gartograph-baseline.json --strict
+gartograph rules  --write-baseline .gartograph-baseline.json
+gartograph rules  --baseline .gartograph-baseline.json --strict
+gartograph cycles --level symbol --write-baseline .cycles-baseline.json
+gartograph dead   --baseline .dead-baseline.json --strict
 ```
 
 Baselined violations are reported under `baselined`; entries that stop
@@ -202,7 +222,9 @@ Patterns: exact match, `x/**` recursive prefix, `*` segment glob. Packages
 matching no component are reported as `unmapped` — a mapping gap is "rules
 don't know this area", not "no rules apply".
 
-`rules --format sarif` emits SARIF 2.1.0 for CI code scanning.
+`rules`, `cycles`, and `dead` all accept `--format sarif` for CI code
+scanning — cycles report as `dependency-cycle` errors, unreachable symbols
+as `unreachable-symbol` warnings (a fact, not a deletion verdict).
 
 ## Output contract (for agents)
 
@@ -238,7 +260,10 @@ Vertex IDs: `pkg/path` for packages, `pkg/path.Name` for package-level
 symbols, `pkg/path.(Recv).Name` for methods. Vertex `kind`:
 `module`/`package`/`type`/`func`/`method`/`var`/`const`. Vertices carry
 `generated: true` when they come from files marked
-`// Code generated ... DO NOT EDIT.` — marked, never hidden. Edge `kind`:
+`// Code generated ... DO NOT EDIT.` — marked, never hidden. Type vertices
+also carry `interface: true` or `fields` (declared `"name:Type"` list) so
+`diff` can classify interface method additions and struct-field contract
+breaks as breaking. Edge `kind`:
 `import`/`contains`/`embeds`/`implements`/`references`/`call`/`signature`
 (signature = type references inside declaration signatures; a dependency
 edge, unlike `contains` which is ownership).
@@ -310,6 +335,8 @@ tool call answers over the same snapshot. Example client config:
   cgo observations are `unscanned-ffi-interop` limitations per the v1 contract
 - ~~RTA~~ — `dead --algo rta` (opt-in; Andersen pointer analysis deferred)
 - ~~Edge positions (schema v2)~~, ~~test-variant deduplication~~ — done
+- ~~`fileRules`, cycles/dead SARIF + baselines, deeper `diff` breaking
+  classification~~ — done
 
 ## License
 

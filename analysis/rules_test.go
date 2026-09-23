@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ictechgy/gartograph/config"
@@ -337,5 +338,63 @@ func TestCheckRulesIndependent(t *testing.T) {
 	cfg.Independent = nil
 	if v := CheckRules(d, cfg).Violations; len(v) != 0 {
 		t.Fatalf("without independent the graph is legal: %+v", v)
+	}
+}
+
+// TestFileRules는 import 지점의 파일 패턴으로 스코프가 좁혀지는지 확인한다.
+// dep-cruiser의 not-to-dev-dep 계약이다 — "!*_test.go"는 프로덕션
+// 파일에서의 import만 위반으로 잡아야 하고 _test.go 지점은 무사해야 한다.
+func TestFileRules(t *testing.T) {
+	doc := &graph.Document{
+		Module: "example.com/m", ModuleDir: "/m",
+		Vertices: []graph.Vertex{
+			{ID: "example.com/m/web", Kind: graph.KindPackage},
+			{ID: "example.com/m/testhelp", Kind: graph.KindPackage},
+		},
+		Edges: []graph.Edge{
+			{From: "example.com/m/web", To: "example.com/m/testhelp",
+				Kind: graph.EdgeImport, Positions: []graph.Position{
+					{File: "/m/web/web.go", Line: 3},
+					{File: "/m/web/web_test.go", Line: 3},
+				}},
+		},
+	}
+	cfg := &config.File{
+		Components: map[string][]string{
+			"web": {"web"}, "testhelp": {"testhelp"},
+		},
+		Deps: map[string][]string{"web": {"testhelp"}},
+		FileRules: []config.FileRule{
+			{Name: "no-testdeps-in-prod", From: "!*_test.go", To: "testhelp",
+				Reason: "keep test helpers out of production code"},
+		},
+	}
+	rep := CheckRules(doc, cfg)
+	if len(rep.Violations) != 1 {
+		t.Fatalf("expected exactly 1 fileScope violation (prod file only): %+v",
+			rep.Violations)
+	}
+	v := rep.Violations[0]
+	if v.Rule != "fileScope" || v.Name != "no-testdeps-in-prod" ||
+		v.Position == nil || !strings.HasSuffix(v.Position.File, "web/web.go") {
+		t.Fatalf("violation must point at the production file: %+v", v)
+	}
+	if v.Reason == "" {
+		t.Fatal("configured reason must ride the violation")
+	}
+}
+
+// TestFileRulesNoPositions는 지점이 없는 import 간선이 조용히 통과하지 않고
+// fileScopeUnchecked로 세어지는지 확인한다 — 검사 불가를 숨기면
+// "규칙이 지켜졌다"는 착각을 만든다.
+func TestFileRulesNoPositions(t *testing.T) {
+	doc := rulesDoc()
+	cfg := rulesCfg()
+	cfg.FileRules = []config.FileRule{
+		{Name: "r", From: "!*_test.go", To: "db"},
+	}
+	rep := CheckRules(doc, cfg)
+	if rep.FileScopeUnchecked != 1 {
+		t.Fatalf("positionless edge to a fileRules target must be counted: %+v", rep)
 	}
 }

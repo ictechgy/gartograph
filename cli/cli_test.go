@@ -1092,3 +1092,180 @@ func TestGraphLevel(t *testing.T) {
 		t.Fatal("symbol level missing func vertices")
 	}
 }
+
+// TestRulesFileScope는 fileRules가 프로덕션 파일의 import만 위반으로
+// 잡는지 종단으로 확인한다 — _test.go에서 온 지점은 위반이 아니다.
+func TestRulesFileScope(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"web/web.go": `package web
+
+import _ "example.com/fixture/testhelp"
+`,
+		"web/web_test.go": `package web
+
+import _ "example.com/fixture/testhelp"
+`,
+		"testhelp/t.go": `package testhelp
+`,
+		".gartograph.yml": `components:
+  web: ["web"]
+  testhelp: ["testhelp"]
+deps:
+  web: ["testhelp"]
+fileRules:
+  - name: no-testdeps-in-prod
+    from: "!*_test.go"
+    to: testhelp
+    reason: "keep test helpers out of production code"
+`,
+	})
+	// --tests를 켜도 테스트 변형이 실은 _test.go 지점은 위반이 아니다.
+	code, out, errb := run(t, "rules", "--dir", dir, "--tests")
+	if code != 0 {
+		t.Fatalf("rules failed: %d %s", code, errb)
+	}
+	if strings.Count(out, "violation[fileScope:no-testdeps-in-prod]") != 1 {
+		t.Fatalf("only the production file must violate: %s", out)
+	}
+	if !strings.Contains(out, "web.go") || strings.Contains(out, "web_test.go") {
+		t.Fatalf("violation must point at web.go only: %s", out)
+	}
+	if !strings.Contains(out, "keep test helpers") {
+		t.Fatalf("reason must be reported: %s", out)
+	}
+}
+
+// cycleFixture는 심볼 레벨 상호 재귀 순환을 가진 모듈을 만든다.
+func cycleFixture(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"a/a.go": `package a
+
+func A() { B() }
+func B() { A() }
+`,
+	})
+}
+
+// TestCyclesSarif는 순환이 SARIF 결과로 직렬화되는지 확인한다.
+func TestCyclesSarif(t *testing.T) {
+	dir := cycleFixture(t)
+	code, out, errb := run(t, "cycles", "--dir", dir,
+		"--level", "symbol", "--format", "sarif")
+	if code != 0 {
+		t.Fatalf("cycles sarif failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Version string `json:"version"`
+		Runs    []struct {
+			Results []struct {
+				RuleID string `json:"ruleId"`
+				Level  string `json:"level"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("sarif output is not JSON: %v", err)
+	}
+	if doc.Version != "2.1.0" || len(doc.Runs) != 1 ||
+		len(doc.Runs[0].Results) != 1 ||
+		doc.Runs[0].Results[0].RuleID != "dependency-cycle" {
+		t.Fatalf("expected one dependency-cycle result: %s", out)
+	}
+}
+
+// TestCyclesBaseline은 순환 baseline의 기록→비교→신규 검출 흐름을 확인한다.
+func TestCyclesBaseline(t *testing.T) {
+	dir := cycleFixture(t)
+	base := filepath.Join(t.TempDir(), "cycles.json")
+	if code, _, errb := run(t, "cycles", "--dir", dir,
+		"--level", "symbol", "--write-baseline", base); code != 0 {
+		t.Fatalf("--write-baseline failed: %d %s", code, errb)
+	}
+	// 알려진 순환은 strict를 통과한다.
+	code, out, _ := run(t, "cycles", "--dir", dir,
+		"--level", "symbol", "--baseline", base, "--strict")
+	if code != 0 {
+		t.Fatalf("baselined cycle must pass strict: %d %s", code, out)
+	}
+	if !strings.Contains(out, "0 cycles (1 baselined)") {
+		t.Fatalf("expected baselined cycle: %s", out)
+	}
+	// 새 순환은 baseline을 뚫는다.
+	if err := os.WriteFile(filepath.Join(dir, "a", "a.go"),
+		[]byte("package a\n\nfunc A() { B() }\nfunc B() { A() }\n"+
+			"func C() { D() }\nfunc D() { C() }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := run(t, "cycles", "--dir", dir,
+		"--level", "symbol", "--baseline", base, "--strict"); code != 1 {
+		t.Fatalf("new cycle past baseline must fail strict: %d %s", code, out)
+	}
+	// 다른 kind의 baseline 파일은 거부된다.
+	rulesBase := filepath.Join(t.TempDir(), "v.json")
+	if err := os.WriteFile(rulesBase, []byte(
+		`{"tool":"gartograph","kind":"violations-baseline","version":1,"violations":[]}`),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errb := run(t, "cycles", "--dir", dir,
+		"--baseline", rulesBase); code != 2 {
+		t.Fatalf("wrong-kind baseline must be rejected: %d %s", code, errb)
+	}
+}
+
+// TestDeadSarif는 unreachable 보고가 warning SARIF로 직렬화되는지 확인한다 —
+// 삭제 판정이 아니라 그래프 사실이므로 error가 아니다.
+func TestDeadSarif(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "sarif")
+	if code != 0 {
+		t.Fatalf("dead sarif failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Runs []struct {
+			Results []struct {
+				RuleID string `json:"ruleId"`
+				Level  string `json:"level"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("sarif output is not JSON: %v", err)
+	}
+	if len(doc.Runs) != 1 || len(doc.Runs[0].Results) == 0 {
+		t.Fatalf("expected unreachable-symbol results: %s", out)
+	}
+	for _, r := range doc.Runs[0].Results {
+		if r.RuleID != "unreachable-symbol" || r.Level != "warning" {
+			t.Fatalf("unreachable is a fact, not an error: %+v", r)
+		}
+	}
+}
+
+// TestDeadBaseline은 unreachable baseline의 기록→비교→신규 검출을 확인한다.
+func TestDeadBaseline(t *testing.T) {
+	dir := deadFixture(t)
+	base := filepath.Join(t.TempDir(), "dead.json")
+	code, _, errb := run(t, "dead", "--dir", dir, "--write-baseline", base)
+	if code != 0 {
+		t.Fatalf("--write-baseline failed: %d %s", code, errb)
+	}
+	code, out, _ := run(t, "dead", "--dir", dir, "--baseline", base, "--strict")
+	if code != 0 {
+		t.Fatalf("baselined findings must pass strict: %d %s", code, out)
+	}
+	// 새 unreachable 심볼은 baseline을 뚫는다.
+	if err := os.WriteFile(filepath.Join(dir, "lib", "lib.go"),
+		[]byte("package lib\n\nfunc Run() { helper() }\nfunc helper() {}\n"+
+			"func Unused() {}\nfunc unused2() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ = run(t, "dead", "--dir", dir, "--baseline", base, "--strict")
+	if code != 1 {
+		t.Fatalf("new finding past baseline must fail strict: %d %s", code, out)
+	}
+	if !strings.Contains(out, "baselined") {
+		t.Fatalf("baselined count must be reported: %s", out)
+	}
+}

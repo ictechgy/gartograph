@@ -107,6 +107,15 @@ type Vertex struct {
 	// 생성 코드를 그래프에서 숨기면 사실이 사라진다 — 표시만 하고
 	// 제외 여부는 소비자가 정한다.
 	Generated bool `json:"generated,omitempty"`
+	// Interface는 type 정점이 인터페이스 타입이라는 표시다 —
+	// implements 간선이 없어도(모듈 안 구현체가 없어도) 알 수 있어야
+	// "인터페이스에 메서드가 추가됐다"는 breaking 신호를 diff가 잡는다.
+	Interface bool `json:"interface,omitempty"`
+	// Fields는 struct 타입 정점의 필드 목록을 "name:Type" 형태로 선언
+	// 순서대로 담는다 — unkeyed composite literal의 컴파일 계약은 필드
+	// 목록·순서·타입이기 때문에 diff의 breaking 판정 재료다.
+	// struct가 아닌 타입이나 필드를 수확하지 않은 옛 문서는 nil이다.
+	Fields []string `json:"fields,omitempty"`
 }
 
 // Edge는 방향 있는 관계다.

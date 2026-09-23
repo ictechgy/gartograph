@@ -4,14 +4,37 @@
 
 ## 현재 상태 (2026-09-22)
 
-**v0.4.0 릴리스·Homebrew tap 배포 완료 + isthmus platform "go" 계약 머지됨**
-비교 격차 패스 + `bridges` 명령 전부 main·origin에 있다.
-스키마 v2·테스트 변형 dedup·independent·RTA·isthmus 생산자 포함.
-공개 리포 https://github.com/ictechgy/gartograph. 커버리지 90.3%
-(게이트 90), `Scripts/verify-cli-contract.sh` 통과,
-`cycles --strict`·`rules --strict` 자기 분석 clean.
-`brew upgrade`로 0.3.0→0.4.0 실측, `gartograph 0.4.0` 보고,
-`brew test` 통과. tap 갱신은 여전히 수동(HOMEBREW_TAP_TOKEN 미설정).
+**feature/file-scope-rules 진행 중 — 스키마 v2가 연 파일 스코프 패리티**
+v0.4.0은 배포 완료(`6a7492e` 태그, brew upgrade·test 실측 통과,
+tap은 HOMEBREW_TAP_TOKEN 부재로 수동 갱신).
+이 브랜치에 넣은 것:
+- `fileRules` — dep-cruiser not-to-dev-dep 계약. `{name, from, to, reason}`.
+  `from`은 `/` 없으면 파일명·있으면 모듈 상대 경로 글롭, `!` 접두사 반전
+  ("!*_test.go" = 프로덕션 파일의 import 금지). 위반은 `rule:"fileScope"`+
+  `name`+실제 지점. 지점 없는 대상 간선은 `fileScopeUnchecked`로 셈.
+  이 레포 자체에 `testutil-only-in-tests` 규칙으로 도그푸딩.
+- `cycles`/`dead`에 `--format sarif`와 `--baseline`/`--write-baseline`.
+  순환은 `dependency-cycle` error, unreachable은 `unreachable-symbol`
+  warning(사실이지 판정 아님). baseline 파일은 kind별 구분
+  (`cycles-baseline`/`dead-baseline` — 엇갈려 적용 불가).
+  `SplitBaseline`이 제네릭이 됐고 `ViolationBaselineKey`·`CycleBaselineKey`·
+  `FindingBaselineKey`가 동일성을 정의한다.
+- `cycles --format json`이 이제 봉투다 — `{cycles, baselined,
+  staleBaseline, limitations}`(기존 `[]Cycle` 대신 — 0.x 계약 변경).
+- `diff` 심화 — 공개 심볼 kind 변경·공개→비공개 전환·인터페이스 메서드
+  추가·struct 필드 계약 파괴를 breaking으로. 정점에 `interface`/`fields`
+  (선언 순서 "name:Type" 목록) 추가 — omitempty라 기존 문서 호환,
+  Version은 2 유지. 인터페이스 메서드 추가는 양쪽 문서에 있는 인터페이스에만
+  breaking(새 인터페이스는 신규 API). 필드 규칙은 apidiff 판정:
+  공개 필드 제거·재형 = 항상 breaking, 전원 공개 struct의 추가·순서 =
+  unkeyed literal 파괴로 breaking, 비공개 섞인 struct의 추가 = 호환.
+- baseline 버그 수정 — independence 위반을 forbidden처럼 컴포넌트 쌍으로
+  식별(목격 경로 끝점이 From/To라 경로가 바뀌면 새 위반으로 오인됐다).
+
+남은 격차(이번에 안 한 것): `shared` 질의, --goos/--goarch 조건부 그래프,
+RTA 경로 설명(--explain은 CHA 그래프 전용), exclude 패턴, 안정성 방향
+규칙(metrics→rule), go.mod 미사용 요구 탐지, 상수 값 변경(diff는 값을
+수확 안 함).
 
 isthmus 쪽: `platform "go"` 계약이 PR #108로 isthmus main에 머지됐다
 (`8ae3bb6`, GLM 리뷰 지적 반영 — go 문서는 target null만 허용,

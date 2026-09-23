@@ -30,41 +30,119 @@ type baselineFile struct {
 	Violations []analysis.Violation `json:"violations"`
 }
 
+// cyclesBaselineFile은 cycles --baseline이 읽는 파일 형식이다.
+// 순환의 동일성은 CycleBaselineKey의 멤버 튜플이다.
+type cyclesBaselineFile struct {
+	Tool    string           `json:"tool"`
+	Kind    string           `json:"kind"`
+	Version int              `json:"version"`
+	Cycles  []analysis.Cycle `json:"cycles"`
+}
+
+// deadBaselineFile은 dead --baseline이 읽는 파일 형식이다.
+// 항목의 동일성은 FindingBaselineKey의 (kind, id) 튜플이다.
+type deadBaselineFile struct {
+	Tool     string             `json:"tool"`
+	Kind     string             `json:"kind"`
+	Version  int                `json:"version"`
+	Findings []analysis.Finding `json:"findings"`
+}
+
 // loadBaseline은 baseline 파일을 읽는다.
 // 더 새로운 형식은 거부한다 — 모르는 필드를 버리면 "알려진 위반"이
 // 조용히 새 위반으로 둔갑한다.
 func loadBaseline(path string) (*baselineFile, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading baseline %s: %w", path, err)
-	}
 	var f baselineFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parsing baseline %s: %w", path, err)
-	}
-	// 봉투를 검증한다 — 그래프 JSON이나 빈 문서를 baseline으로 읽으면
-	// 모든 위반이 fresh로 보고돼 "알려진 위반" 계약이 깨진다.
-	if f.Tool != graph.Tool || f.Kind != baselineKind {
-		return nil, fmt.Errorf(
-			"baseline %s: not a gartograph violations baseline — "+
-				"generate one with rules --write-baseline", path)
-	}
-	if f.Version < 1 || f.Version > baselineVersion {
-		return nil, fmt.Errorf(
-			"baseline %s: version %d outside supported 1..%d — regenerate the baseline",
-			path, f.Version, baselineVersion)
+	if err := loadBaselineJSON(path, baselineKind, "rules --write-baseline", &f); err != nil {
+		return nil, err
 	}
 	return &f, nil
 }
 
+// loadCyclesBaseline은 cycles baseline을 읽는다.
+func loadCyclesBaseline(path string) (*cyclesBaselineFile, error) {
+	var f cyclesBaselineFile
+	if err := loadBaselineJSON(path, "cycles-baseline",
+		"cycles --write-baseline", &f); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// loadDeadBaseline은 dead baseline을 읽는다.
+func loadDeadBaseline(path string) (*deadBaselineFile, error) {
+	var f deadBaselineFile
+	if err := loadBaselineJSON(path, "dead-baseline",
+		"dead --write-baseline", &f); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// baselineEnvelope는 모든 baseline 파일이 공유하는 판별 헤더다.
+type baselineEnvelope struct {
+	Tool    string `json:"tool"`
+	Kind    string `json:"kind"`
+	Version int    `json:"version"`
+}
+
+// loadBaselineJSON은 baseline 파일을 읽어 봉투를 검증한 뒤 out에 디코드한다.
+// 봉투 검증이 본체다 — 그래프 JSON이나 다른 kind의 baseline을 읽으면
+// 모든 항목이 fresh로 보고돼 "알려진 항목" 계약이 깨진다.
+func loadBaselineJSON(path, wantKind, genHint string, out any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading baseline %s: %w", path, err)
+	}
+	var env baselineEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return fmt.Errorf("parsing baseline %s: %w", path, err)
+	}
+	if env.Tool != graph.Tool || env.Kind != wantKind {
+		return fmt.Errorf(
+			"baseline %s: not a gartograph %s — generate one with %s",
+			path, wantKind, genHint)
+	}
+	if env.Version < 1 || env.Version > baselineVersion {
+		return fmt.Errorf(
+			"baseline %s: version %d outside supported 1..%d — regenerate the baseline",
+			path, env.Version, baselineVersion)
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("parsing baseline %s: %w", path, err)
+	}
+	return nil
+}
+
 // saveBaseline은 현재 위반 전부를 baseline 파일로 쓴다.
-// 부분 쓰기가 남지 않게 임시 파일에 쓰고 rename한다 — export.SaveFile과
-// 같은 이유다.
 func saveBaseline(path string, violations []analysis.Violation) error {
-	data, err := json.MarshalIndent(baselineFile{
+	return saveBaselineJSON(path, baselineFile{
 		Tool: graph.Tool, Kind: baselineKind,
 		Version: baselineVersion, Violations: violations,
-	}, "", "  ")
+	})
+}
+
+// saveCyclesBaseline은 현재 순환 전부를 baseline 파일로 쓴다.
+func saveCyclesBaseline(path string, cycles []analysis.Cycle) error {
+	return saveBaselineJSON(path, cyclesBaselineFile{
+		Tool: graph.Tool, Kind: "cycles-baseline",
+		Version: baselineVersion, Cycles: cycles,
+	})
+}
+
+// saveDeadBaseline은 현재 unreachable 보고 전부를 baseline 파일로 쓴다.
+func saveDeadBaseline(path string, findings []analysis.Finding) error {
+	return saveBaselineJSON(path, deadBaselineFile{
+		Tool: graph.Tool, Kind: "dead-baseline",
+		Version: baselineVersion, Findings: findings,
+	})
+}
+
+// saveBaselineJSON은 baseline 파일을 원자적으로 쓴다.
+// 부분 쓰기가 남지 않게 임시 파일에 쓰고 rename한다 — export.SaveFile과
+// 같은 이유다.
+func saveBaselineJSON(path string, body any) error {
+	data, err := json.MarshalIndent(body, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding baseline: %w", err)
 	}

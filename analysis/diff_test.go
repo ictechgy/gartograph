@@ -118,3 +118,125 @@ func TestDiffBreakingOnlyOnRemoval(t *testing.T) {
 		t.Fatalf("pure additions must not be breaking: %+v", d)
 	}
 }
+
+// hasBreaking은 breaking 목록에 substr을 포함하는 항목이 있는지 본다.
+func hasBreaking(d *Diff, substr string) bool {
+	for _, b := range d.Breaking {
+		if strings.Contains(b, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDiffKindChangeBreaking은 공개 심볼의 kind 변경이 breaking인지 확인한다 —
+// `func F`가 `var F`로 바뀌면 이름은 같아도 호출부가 깨진다.
+func TestDiffKindChangeBreaking(t *testing.T) {
+	old := &graph.Document{Vertices: []graph.Vertex{
+		{ID: "m/a.F", Kind: graph.KindFunc, Exported: true},
+	}}
+	new := &graph.Document{Vertices: []graph.Vertex{
+		{ID: "m/a.F", Kind: graph.KindVar, Exported: true},
+	}}
+	d := DiffDocuments(old, new)
+	if !hasBreaking(d, "changed kind") {
+		t.Fatalf("kind change on exported symbol must be breaking: %+v", d.Breaking)
+	}
+}
+
+// TestDiffUnexportBreaking은 공개→비공개 전환이 breaking인지 확인한다.
+func TestDiffUnexportBreaking(t *testing.T) {
+	old := &graph.Document{Vertices: []graph.Vertex{
+		{ID: "m/a.F", Kind: graph.KindFunc, Exported: true},
+	}}
+	new := &graph.Document{Vertices: []graph.Vertex{
+		{ID: "m/a.F", Kind: graph.KindFunc},
+	}}
+	d := DiffDocuments(old, new)
+	if !hasBreaking(d, "became unexported") {
+		t.Fatalf("exported->unexported must be breaking: %+v", d.Breaking)
+	}
+	// 반대 방향(비공개→공개)은 새 API일 뿐 breaking이 아니다.
+	d2 := DiffDocuments(new, old)
+	if hasBreaking(d2, "became unexported") {
+		t.Fatalf("unexported->exported must not be breaking: %+v", d2.Breaking)
+	}
+}
+
+// TestDiffInterfaceGainedMethod는 인터페이스의 메서드 추가가 breaking인지
+// 확인한다 — 모듈 안에 구현체가 없어도 소비자의 구현체가 깨진다.
+// 새 인터페이스의 메서드는 신규 API이지 breaking이 아니어야 한다.
+func TestDiffInterfaceGainedMethod(t *testing.T) {
+	old := &graph.Document{
+		Vertices: []graph.Vertex{
+			{ID: "m/a.I", Kind: graph.KindType, Exported: true, Interface: true},
+			{ID: "m/a.(I).Do", Kind: graph.KindMethod, Package: "m/a", Exported: true},
+		},
+		Edges: []graph.Edge{
+			{From: "m/a.I", To: "m/a.(I).Do", Kind: graph.EdgeContains},
+		},
+	}
+	new := &graph.Document{
+		Vertices: []graph.Vertex{
+			{ID: "m/a.I", Kind: graph.KindType, Exported: true, Interface: true},
+			{ID: "m/a.(I).Do", Kind: graph.KindMethod, Package: "m/a", Exported: true},
+			{ID: "m/a.(I).Run", Kind: graph.KindMethod, Package: "m/a", Exported: true},
+			// 새 인터페이스 — 이것의 메서드는 breaking이 아니다.
+			{ID: "m/a.J", Kind: graph.KindType, Exported: true, Interface: true},
+			{ID: "m/a.(J).New", Kind: graph.KindMethod, Package: "m/a", Exported: true},
+		},
+		Edges: []graph.Edge{
+			{From: "m/a.I", To: "m/a.(I).Do", Kind: graph.EdgeContains},
+			{From: "m/a.I", To: "m/a.(I).Run", Kind: graph.EdgeContains},
+			{From: "m/a.J", To: "m/a.(J).New", Kind: graph.EdgeContains},
+		},
+	}
+	d := DiffDocuments(old, new)
+	if !hasBreaking(d, "gained method") {
+		t.Fatalf("interface method addition must be breaking: %+v", d.Breaking)
+	}
+	if hasBreaking(d, "m/a.J") {
+		t.Fatalf("a brand-new interface is new API, not breaking: %+v", d.Breaking)
+	}
+}
+
+// TestDiffStructFields는 struct 필드 계약의 breaking 분류를 확인한다 —
+// apidiff 규칙: 공개 필드 제거·재형은 항상 breaking, 모든 필드가 공개인
+// struct의 추가·순서 변경은 unkeyed literal을 깨므로 breaking,
+// 비공개 필드가 섞인 struct의 추가는 호환이다.
+func TestDiffStructFields(t *testing.T) {
+	mk := func(fields ...string) graph.Vertex {
+		return graph.Vertex{ID: "m/a.S", Kind: graph.KindType,
+			Exported: true, Fields: fields}
+	}
+	// 순수 추가, 모든 필드 공개 — unkeyed literal이 깨진다.
+	d := DiffDocuments(
+		&graph.Document{Vertices: []graph.Vertex{mk("A:int", "B:string")}},
+		&graph.Document{Vertices: []graph.Vertex{mk("A:int", "B:string", "C:bool")}})
+	if !hasBreaking(d, "unkeyed composite literals") || len(d.FieldChanges) != 1 {
+		t.Fatalf("all-exported field addition must be breaking: %+v", d)
+	}
+	// 비공개 필드가 있으면 unkeyed literal이 원래 불가 — 추가는 호환.
+	d = DiffDocuments(
+		&graph.Document{Vertices: []graph.Vertex{mk("A:int", "x:string")}},
+		&graph.Document{Vertices: []graph.Vertex{mk("A:int", "x:string", "C:bool")}})
+	if len(d.Breaking) != 0 || len(d.FieldChanges) != 1 {
+		t.Fatalf("addition to mixed struct must be compatible: %+v", d)
+	}
+	// 공개 필드 제거·재형은 비공개 필드가 있어도 breaking.
+	d = DiffDocuments(
+		&graph.Document{Vertices: []graph.Vertex{mk("A:int", "B:string", "x:bool")}},
+		&graph.Document{Vertices: []graph.Vertex{mk("A:int64", "x:bool")}})
+	if !hasBreaking(d, "changed type") || !hasBreaking(d, "was removed") {
+		t.Fatalf("retyped and removed exported fields must be breaking: %+v", d.Breaking)
+	}
+	// 옛 문서에 필드가 없으면(옛 형식 수확) "몰랐다"다 — 변경으로 울리지 않는다.
+	old := mk()
+	old.Fields = nil
+	d = DiffDocuments(
+		&graph.Document{Vertices: []graph.Vertex{old}},
+		&graph.Document{Vertices: []graph.Vertex{mk("A:int")}})
+	if len(d.FieldChanges) != 0 || len(d.Breaking) != 0 {
+		t.Fatalf("missing old fields must not be read as a change: %+v", d)
+	}
+}

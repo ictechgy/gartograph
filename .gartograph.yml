@@ -19,3 +19,10 @@ deps:
   export: ["core"]
   core: []
   testutil: []
+# testutil은 테스트 전용이다 — 프로덕션 파일의 import는 위반.
+# (fileRules의 자기 검증이기도 하다)
+fileRules:
+  - name: testutil-only-in-tests
+    from: "!*_test.go"
+    to: testutil
+    reason: "testutil provides test fixtures; production code must not import it"
