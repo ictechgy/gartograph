@@ -286,8 +286,9 @@ func tagColumn(raw string) string {
 	}
 	if value := structTagGet(tag, "gorm"); value != "" {
 		for _, part := range strings.Split(value, ";") {
-			if name, ok := strings.CutPrefix(strings.ToUpper(part), "COLUMN:"); ok {
-				return name
+			// 키 비교는 대소문자를 접되 이름은 원문 대소문자를 보존한다.
+			if len(part) > len("COLUMN:") && strings.EqualFold(part[:7], "COLUMN:") {
+				return part[7:]
 			}
 		}
 	}
@@ -578,17 +579,19 @@ var relationKeywords = map[string]bool{
 func sqlRelations(text string) []string {
 	tokens := lexSQL(text)
 	var out []string
+	seen := map[string]bool{} // TRUNCATE TABLE처럼 겹치는 키워드 창의 중복을 막는다
 	for i, tok := range tokens {
 		if tok.quoted || !relationKeywords[strings.ToLower(tok.text)] {
 			continue
 		}
 		j := i + 1
-		// ONLY·IF NOT EXISTS 같은 수식어는 건너뛴다.
+		// ONLY·IF NOT EXISTS·TRUNCATE TABLE 같은 수식어는 건너뛴다.
 		for j < len(tokens) && !tokens[j].quoted &&
 			(strings.EqualFold(tokens[j].text, "only") ||
 				strings.EqualFold(tokens[j].text, "if") ||
 				strings.EqualFold(tokens[j].text, "not") ||
-				strings.EqualFold(tokens[j].text, "exists")) {
+				strings.EqualFold(tokens[j].text, "exists") ||
+				strings.EqualFold(tokens[j].text, "table")) {
 			j++
 		}
 		// 쉼표로 이어지는 목록(`FROM a, b`)을 읽는다.
@@ -597,7 +600,10 @@ func sqlRelations(text string) []string {
 			if name == "" {
 				break
 			}
-			out = append(out, name)
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
 			if next < len(tokens) && tokens[next].text == "," {
 				j = next + 1
 				continue
@@ -648,15 +654,23 @@ func lexSQL(text string) []sqlToken {
 			}
 			i += 2
 		case c == '\'':
-			// 문자열 리터럴은 이름이 아니다.
+			// 문자열 리터럴은 이름이 아니다 — '' 와 \' 는 escape다.
 			i++
-			for i < len(text) && text[i] != '\'' {
-				if text[i] == '\\' || (i+1 < len(text) && text[i+1] == '\'') {
+			for i < len(text) {
+				if text[i] == '\\' {
+					i += 2
+					continue
+				}
+				if text[i] == '\'' {
+					if i+1 < len(text) && text[i+1] == '\'' {
+						i += 2
+						continue
+					}
 					i++
+					break
 				}
 				i++
 			}
-			i++
 		default:
 			if c == '.' || c == ',' || c == '(' || c == ')' {
 				tokens = append(tokens, sqlToken{text: string(c)})
