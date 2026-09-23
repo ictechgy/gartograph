@@ -24,6 +24,7 @@ import (
 //	visibleTo: 컴포넌트명 → 그 컴포넌트를 의존해도 되는 컴포넌트명들
 //	forbidden: 간접 경로까지 금지하는 {from, to} 컴포넌트 쌍 목록
 //	independent: 어느 방향으로도 서로 도달하면 안 되는 컴포넌트명들
+//	fileRules: import가 일어나는 파일 패턴으로 스코프를 좁히는 규칙들
 //
 // components 패턴은 --deps로 수확된 외부 패키지의 전체 import 경로에도
 // 매칭된다 — `aws: ["github.com/aws/**"]`를 컴포넌트로 두면 deps/deny가
@@ -45,6 +46,10 @@ import (
 // independent는 forbidden을 양방향으로 든 계약이다 — import-linter의
 // independence와 같다. {from,to} 두 건을 나열해도 되지만 "둘은 독립"이라는
 // 의도가 이름으로 남는다.
+// fileRules는 컴포넌트가 아니라 파일로 스코프를 좁힌다 — dependency-cruiser의
+// not-to-dev-dep과 같은 계약이다. import 간선의 사용 지점 파일이 from 패턴에
+// 맞으면(또는 `!` 접두사면 안 맞으면) to 컴포넌트 의존이 위반이다 —
+// "!*_test.go"는 "프로덕션 파일이 테스트 의존을 import하면 위반"이다.
 type File struct {
 	Version     int                    `yaml:"version"`
 	Components  map[string][]string    `yaml:"components"`
@@ -55,6 +60,7 @@ type File struct {
 	VisibleTo   map[string][]string    `yaml:"visibleTo"`
 	Forbidden   []ForbiddenRule        `yaml:"forbidden"`
 	Independent []string               `yaml:"independent"`
+	FileRules   []FileRule             `yaml:"fileRules"`
 }
 
 // DenyEntry는 deny 목록의 한 항목이다.
@@ -81,6 +87,19 @@ func (e *DenyEntry) UnmarshalYAML(value *yaml.Node) error {
 type ForbiddenRule struct {
 	From string `yaml:"from"`
 	To   string `yaml:"to"`
+}
+
+// FileRule은 import가 일어나는 소스 파일로 스코프를 좁히는 규칙이다.
+// Name은 보고와 baseline 동일성의 식별자다 — 이름이 같으면 같은 규칙이다.
+// From은 파일 글롭이다: `/`가 없으면 파일명에, 있으면 모듈 상대 경로에
+// 맞춘다. `!` 접두사는 반전이다 — "!*_test.go"는 테스트가 아닌 파일에서의
+// import를 위반으로 본다. To는 대상 컴포넌트다.
+// Reason은 왜 금지인지를 위반 보고에 싣는다.
+type FileRule struct {
+	Name   string `yaml:"name"`
+	From   string `yaml:"from"`
+	To     string `yaml:"to"`
+	Reason string `yaml:"reason,omitempty"`
 }
 
 // 파일 후보 이름 — 두 확장자를 다 받는다.
@@ -193,6 +212,22 @@ func (f *File) checkRefs() error {
 	}
 	for _, c := range f.Independent {
 		if err := check("independent", "entry", c); err != nil {
+			return err
+		}
+	}
+	names := map[string]bool{}
+	for _, r := range f.FileRules {
+		if r.Name == "" {
+			return fmt.Errorf("fileRules: empty rule name")
+		}
+		if names[r.Name] {
+			return fmt.Errorf("fileRules: duplicate rule name %q", r.Name)
+		}
+		names[r.Name] = true
+		if r.From == "" {
+			return fmt.Errorf("fileRules %q: empty from file pattern", r.Name)
+		}
+		if err := check("fileRules", "to", r.To); err != nil {
 			return err
 		}
 	}
@@ -316,6 +351,22 @@ func (f *File) SignatureAllowed(from, to string) bool {
 		}
 	}
 	return false
+}
+
+// MatchFile은 파일 규칙의 from 패턴을 실제 파일 경로와 맞춘다.
+// `!` 접두사는 반전이다. 패턴에 `/`가 없으면 파일명에, 있으면 relPath
+// (보통 모듈 상대 경로)에 맞춘다 — "_test.go" 접미사 규칙과
+// "internal/**" 경로 규칙을 한 장치로 표현하기 위함이다.
+func MatchFile(pattern, relPath string) bool {
+	neg := strings.HasPrefix(pattern, "!")
+	pat := strings.TrimPrefix(pattern, "!")
+	target := relPath
+	if !strings.Contains(pat, "/") {
+		if i := strings.LastIndex(relPath, "/"); i >= 0 {
+			target = relPath[i+1:]
+		}
+	}
+	return matchPath(pat, target) != neg
 }
 
 // matchPath는 패턴 하나와 경로를 맞춘다.

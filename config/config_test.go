@@ -277,3 +277,57 @@ func TestFind(t *testing.T) {
 		t.Fatalf("expected to find %s, got %s", path, got)
 	}
 }
+
+// TestMatchFile은 파일 규칙의 패턴 의미론을 확인한다 —
+// `/` 없는 패턴은 파일명에, 있는 패턴은 상대 경로에, `!`는 반전이다.
+func TestMatchFile(t *testing.T) {
+	cases := []struct {
+		pattern, rel string
+		want         bool
+	}{
+		{"*_test.go", "web/web_test.go", true},
+		{"*_test.go", "web/web.go", false},
+		{"!*_test.go", "web/web.go", true},
+		{"!*_test.go", "web/web_test.go", false},
+		{"web/**", "web/sub/x.go", true},
+		{"web/**", "db/x.go", false},
+		{"!internal/**", "api/x.go", true},
+	}
+	for _, c := range cases {
+		if got := MatchFile(c.pattern, c.rel); got != c.want {
+			t.Fatalf("MatchFile(%q, %q) = %v, want %v",
+				c.pattern, c.rel, got, c.want)
+		}
+	}
+}
+
+// TestFileRulesValidation은 fileRules의 참조·이름 검증을 확인한다.
+// 이름이 없거나 겹치면 baseline 동일성과 보고 식별이 무너진다.
+func TestFileRulesValidation(t *testing.T) {
+	bad := []string{
+		// 빈 규칙 이름
+		`components: {a: ["a"], b: ["b"]}
+fileRules: [{name: "", from: "!*_test.go", to: "b"}]`,
+		// 중복 이름
+		`components: {a: ["a"], b: ["b"]}
+fileRules:
+  - {name: r, from: "!*_test.go", to: "b"}
+  - {name: r, from: "gen/**", to: "b"}`,
+		// 미정의 to 컴포넌트
+		`components: {a: ["a"]}
+fileRules: [{name: r, from: "!*_test.go", to: "ghost"}]`,
+		// 빈 from 패턴
+		`components: {a: ["a"], b: ["b"]}
+fileRules: [{name: r, from: "", to: "b"}]`,
+	}
+	for _, c := range bad {
+		if _, err := Load(writeRules(t, c)); err == nil {
+			t.Fatalf("must reject: %s", c)
+		}
+	}
+	// 정상 설정은 통과한다.
+	if _, err := Load(writeRules(t, `components: {a: ["a"], b: ["b"]}
+fileRules: [{name: no-testdeps, from: "!*_test.go", to: "b", reason: "test only"}]`)); err != nil {
+		t.Fatalf("valid fileRules rejected: %v", err)
+	}
+}
