@@ -7,11 +7,14 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ictechgy/gartograph/graph"
 )
 
 // File은 .gartograph.yml의 형식이다.
@@ -25,6 +28,7 @@ import (
 //	forbidden: 간접 경로까지 금지하는 {from, to} 컴포넌트 쌍 목록
 //	independent: 어느 방향으로도 서로 도달하면 안 되는 컴포넌트명들
 //	fileRules: import가 일어나는 파일 패턴으로 스코프를 좁히는 규칙들
+//	exclude: 그래프에서 아예 빼는 모듈 상대 패키지 경로 패턴들
 //
 // components 패턴은 --deps로 수확된 외부 패키지의 전체 import 경로에도
 // 매칭된다 — `aws: ["github.com/aws/**"]`를 컴포넌트로 두면 deps/deny가
@@ -50,6 +54,15 @@ import (
 // not-to-dev-dep과 같은 계약이다. import 간선의 사용 지점 파일이 from 패턴에
 // 맞으면(또는 `!` 접두사면 안 맞으면) to 컴포넌트 의존이 위반이다 —
 // "!*_test.go"는 "프로덕션 파일이 테스트 의존을 import하면 위반"이다.
+// exclude는 수확 범위에서 패키지를 뺀다 — dependency-cruiser의 exclude와
+// 같은 계약이다. 패턴은 컴포넌트 패턴과 같은 의미론(정확 일치, `x/**`,
+// 세그먼트 글롭)으로 모듈 상대 경로에 맞춘다. 제외된 패키지는 정점이
+// 아니고, 그 패키지로 향하는 import는 "생략"으로 limitation에 센다 —
+// 조용히 빼면 "없는 것"과 "뺀 것"을 구분할 수 없다.
+// stability는 안정성 방향 계약이다 — dependency-cruiser의 moreUnstable과
+// 같은 규칙이다. 켜면 컴포넌트는 자기보다 불안정한(I = Ce/(Ca+Ce)가 더
+// 큰) 컴포넌트에 의존할 수 없다 — 의존은 안정된 쪽으로만 흘러야
+// 변화가 위로 번지지 않는다.
 type File struct {
 	Version     int                    `yaml:"version"`
 	Components  map[string][]string    `yaml:"components"`
@@ -61,6 +74,8 @@ type File struct {
 	Forbidden   []ForbiddenRule        `yaml:"forbidden"`
 	Independent []string               `yaml:"independent"`
 	FileRules   []FileRule             `yaml:"fileRules"`
+	Exclude     []string               `yaml:"exclude"`
+	Stability   bool                   `yaml:"stability"`
 }
 
 // DenyEntry는 deny 목록의 한 항목이다.
@@ -213,6 +228,16 @@ func (f *File) checkRefs() error {
 	for _, c := range f.Independent {
 		if err := check("independent", "entry", c); err != nil {
 			return err
+		}
+	}
+	for i, pat := range f.Exclude {
+		if strings.TrimSpace(pat) == "" {
+			return fmt.Errorf("exclude: entry %d is an empty pattern", i)
+		}
+		// 문법이 깨진 글롭은 영원히 아무것도 매칭하지 않는 죽은 설정이다 —
+		// checkRefs와 같은 이유로 로드 시점에 거부한다.
+		if _, err := path.Match(pat, "probe"); err != nil {
+			return fmt.Errorf("exclude: entry %d %q is not a valid glob", i, pat)
 		}
 	}
 	names := map[string]bool{}
@@ -369,47 +394,21 @@ func MatchFile(pattern, relPath string) bool {
 	return matchPath(pat, target) != neg
 }
 
-// matchPath는 패턴 하나와 경로를 맞춘다.
-func matchPath(pattern, path string) bool {
-	switch {
-	case pattern == path:
-		return true
-	case strings.HasSuffix(pattern, "/**"):
-		prefix := strings.TrimSuffix(pattern, "/**")
-		return path == prefix || strings.HasPrefix(path, prefix+"/")
-	case strings.ContainsAny(pattern, "*?"):
-		return matchGlob(pattern, path)
-	default:
-		return false
-	}
-}
-
-// matchGlob은 path.Match와 달리 `*`가 `/`를 넘지 않는 단순 글롭을 쓴다.
-// 세그먼트 단위로 비교해 `a/*`가 `a/b/c`를 맞지 않게 한다.
-func matchGlob(pattern, path string) bool {
-	pp, sp := strings.Split(pattern, "/"), strings.Split(path, "/")
-	if len(pp) != len(sp) {
-		return false
-	}
-	for i := range pp {
-		if !matchSegment(pp[i], sp[i]) {
-			return false
+// Excluded는 모듈 상대 경로(또는 --deps 외부 패키지의 전체 경로)가
+// exclude 패턴 중 하나에 맞는지 본다 — 수확 측이 이 패키지를 그래프에서
+// 뺄지 결정하는 단일 판정점이다.
+func (f *File) Excluded(relPath string) bool {
+	for _, pat := range f.Exclude {
+		if matchPath(pat, relPath) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
-// matchSegment는 `/` 없는 한 세그먼트의 `*` 글롭을 비교한다.
-func matchSegment(pattern, s string) bool {
-	if pattern == "*" {
-		return true
-	}
-	if !strings.Contains(pattern, "*") {
-		return pattern == s
-	}
-	// `*`를 최대 하나만 지원한다 — 설정 파일의 패턴은 이 정도면 충분하다.
-	i := strings.Index(pattern, "*")
-	return strings.HasPrefix(s, pattern[:i]) &&
-		strings.HasSuffix(s, pattern[i+1:]) &&
-		len(s) >= len(pattern)-1
+// matchPath는 패턴 하나와 경로를 맞춘다 — 의미론의 정본은
+// graph.MatchPath다. 컴포넌트·exclude·fileRules가 같은 "맞다"를
+// 공유해야 설정이 거짓말하지 않는다.
+func matchPath(pattern, path string) bool {
+	return graph.MatchPath(pattern, path)
 }

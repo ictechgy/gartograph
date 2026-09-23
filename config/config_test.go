@@ -331,3 +331,27 @@ fileRules: [{name: no-testdeps, from: "!*_test.go", to: "b", reason: "test only"
 		t.Fatalf("valid fileRules rejected: %v", err)
 	}
 }
+
+// TestExcluded는 exclude 패턴의 경로 의미론과 로드 시점 글롭 검증을
+// 확인한다 — 문법이 깨진 패턴은 영원히 아무것도 매칭하지 않는 죽은
+// 설정이라 Load가 거부해야 한다.
+func TestExcluded(t *testing.T) {
+	cfg := &File{Exclude: []string{"gen/**", "vendor", "internal/*/gen"}}
+	if !cfg.Excluded("gen/foo/bar") || !cfg.Excluded("vendor") ||
+		!cfg.Excluded("internal/x/gen") {
+		t.Fatal("exclude patterns must match their paths")
+	}
+	if cfg.Excluded("pkg/util") {
+		t.Fatal("unrelated path must not be excluded")
+	}
+	if _, err := Load(writeRules(t,
+		"components: {a: [a]}\nexclude: ['[']\n")); err == nil ||
+		!strings.Contains(err.Error(), "exclude") {
+		t.Fatal("invalid exclude glob must be rejected at Load")
+	}
+	// 빈 패턴도 같은 이유로 거부다.
+	if _, err := Load(writeRules(t,
+		"components: {a: [a]}\nexclude: ['']\n")); err == nil {
+		t.Fatal("empty exclude pattern must be rejected at Load")
+	}
+}
