@@ -34,10 +34,30 @@
 - baseline 버그 수정 — independence 위반을 forbidden처럼 컴포넌트 쌍으로
   식별(목격 경로 끝점이 From/To라 경로가 바뀌면 새 위반으로 오인됐다).
 
-남은 격차(이번에 안 한 것): `shared` 질의, --goos/--goarch 조건부 그래프,
-RTA 경로 설명(--explain은 CHA 그래프 전용), exclude 패턴, 안정성 방향
-규칙(metrics→rule), go.mod 미사용 요구 탐지, 상수 값 변경(diff는 값을
-수확 안 함).
+feature/backlog-round에서 잔여 격차를 전부 구현했다:
+- `shared <a> <b>` — 두 루트(이상)의 공통 도달 집합 교집합 + 루트별
+  고유분(`only`). 루트 자신도 only에 포함 — 도달성 의미론 그대로.
+  MCP 도구 `gartograph_shared`도 추가.
+- `--goos`/`--goarch` — 로더 환경을 덮어 다른 타깃의 조건부 파일을 수확.
+  덮어쓰면 limitations에 선택 사실이 남는다.
+- `exclude:` 설정 — 수확 시점 필터. 주 모듈은 상대 경로, 외부는 전체
+  경로로 매칭(graph.MatchPath 공용 의미론). 제외 패키지는 정점이 되지
+  않고 그쪽 import는 limitations에 셈. 잘못된 글롭·빈 패턴은 Load 거부.
+- `stability: true` — dep-cruiser moreUnstable 계약. I=Ce/(Ca+Ce)가
+  target > source인 import 간선을 `rule:"stability"`로 보고 — 사유에 두
+  불안정도 수치. metrics와 동일한 in/out 차수 의미론.
+- `unused-deps` — go.mod의 require 중 로드된 패키지(테스트 포함, tidy와
+  같은 기준)가 어느 모듈에도 속하지 않는 것을 보고. direct/indirect 분리,
+  strict는 direct 미사용에만 1. --graph는 거부(사실은 go.mod에서 온다).
+- RTA `--explain` — `--algo rta`와 함께면 RTA 콜그래프 인접 맵 위에서
+  경로를 설명한다("no path ... (rta call graph)"). `analysis.Explain`이
+  `ExplainAdjacency`로 일반화됐다 — 문서든 콜그래프든 경로 알고리즘은 하나.
+- 상수 값 — const 정점이 `value`(Go 리터럴 형태)를 싣고, diff가 공개
+  상수의 값 변경을 breaking으로 분류(상수는 소비자 코드에 인라인됨).
+  어느 쪽이든 값이 비어 있으면(옛 형식 문서) "몰랐다"로 건너뜀.
+
+남은 것: `HOMEBREW_TAP_TOKEN` 시크릿 등록(사용자 몫), 포인터 분석
+(RTA 정밀도가 부족해질 때까지 보류 — 기존 판단 유지).
 
 isthmus 쪽: `platform "go"` 계약이 PR #108로 isthmus main에 머지됐다
 (`8ae3bb6`, GLM 리뷰 지적 반영 — go 문서는 target null만 허용,

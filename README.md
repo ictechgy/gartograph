@@ -59,6 +59,7 @@ gartograph dead --retain-public           # libraries: keep exported API
 gartograph dead --root my/pkg.Setup       # extra retention root
 gartograph dead --explain my/pkg.F        # why alive? show a reachability path
 gartograph dead --algo rta                # RTA precision: needs source, not --graph
+gartograph dead --algo rta --explain my/pkg.F   # path on the RTA call graph itself
 
 # Emit an isthmus bridge-facts document (platform "go")
 # Go reports cgo via unscanned-ffi-interop limitations — no channel facts.
@@ -79,9 +80,16 @@ gartograph impact --since origin/main...HEAD          # or --files cli/cli.go
 # Shortest dependency path: why does 'from' reach 'to'
 gartograph path github.com/ictechgy/gartograph/cmd/gartograph github.com/ictechgy/gartograph/graph
 
+# Shared reachables: what do two roots both pull in (and each alone)
+gartograph shared example.com/a example.com/b
+
+# go.mod hygiene: requirements no package imports (test imports count)
+gartograph unused-deps --strict
+
 # Compare two saved documents: structure drift and breaking signals
 # breaking = exported symbol removed/unexported, kind changed, signature
-# reference dropped, interface gained a method, struct field contract broken
+# reference dropped, interface gained a method, struct field contract
+# broken, exported const value changed
 gartograph diff old.json new.json --strict
 
 # Coupling metrics (Ca/Ce/instability) + orphan packages
@@ -108,6 +116,7 @@ Harvest flags (all analysis commands):
 | `--tests` | off | include test variant packages (Test/Benchmark/Example/Fuzz become retention roots) |
 | `--deps` | off | include dependency packages/modules outside the main module |
 | `--tags` | — | build tags for the loader; files excluded by constraints are counted in `limitations` |
+| `--goos`/`--goarch` | host | harvest for another target platform; a `limitations` note records the choice |
 | `--graph` | — | read a saved graph document instead of harvesting |
 
 Exit codes: `0` ok · `1` `--strict` violation · `2` usage/analysis error.
@@ -165,6 +174,16 @@ independent: [web, cli]   # web and cli must not reach each other either way
   see direct imports. A violation reports one witness `path`.
 - `independent` is a bidirectional `forbidden` between every listed pair —
   the name keeps the intent. Violations carry `rule: "independence"`.
+- `stability: true` enforces the stable-dependencies direction —
+  dependency-cruiser's `moreUnstable`. A component may not depend on a
+  component with higher instability (I = Ce/(Ca+Ce), the same number
+  `metrics` reports). Violations carry `rule: "stability"` and both
+  instability values in the reason.
+- `exclude` is a harvest-time filter, not a rule: packages matching its
+  patterns (same glob semantics as components — module-relative for the
+  main module, full import path otherwise) never become vertices, and
+  imports to them are counted in `limitations`. Use it for generated or
+  vendored trees:
 - `fileRules` scopes a ban to the *file* where the import happens —
   dependency-cruiser's `not-to-dev-dep` contract. `from` is a glob matched
   against the file basename, or the module-relative path when it contains
@@ -182,6 +201,9 @@ fileRules:
     from: "!*_test.go"              # files NOT matching the glob violate
     to: testhelpers                 # a component
     reason: "test helpers must not leak into production code"
+
+stability: true                     # deps must point toward more stable components
+exclude: [gen/**, testdata/**]      # these packages are never harvested
 ```
 
 **External/vendor rules.** Component patterns also match the full import

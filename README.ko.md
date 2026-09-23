@@ -57,9 +57,11 @@ gartograph impact <정점ID> --depth 2           # 역방향 전이 — 바꾸�
 gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분석
                                               # (--files cli/cli.go도 가능)
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
+gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트별 고유분
+gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 # (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·
-#  인터페이스 메서드 추가·struct 필드 계약 파괴)
+#  인터페이스 메서드 추가·struct 필드 계약 파괴·공개 상수 값 변경)
 gartograph metrics                             # Ca/Ce/불안정성 + orphan 패키지
 gartograph mapping                             # 패키지→컴포넌트 매핑 보기
 gartograph init                                # .gartograph.yml 스캐폴딩
@@ -69,7 +71,8 @@ gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 
 공통 플래그: `--dir`(모듈 루트), `--pattern`(반복 가능), `--tests`(테스트
 진입점이 보존 루트가 됨), `--deps`, `--tags`(빌드 태그; 제약으로 빠진 파일은
-limitations에 셈), `--graph`(저장 문서 읽기).
+limitations에 셈), `--goos`/`--goarch`(다른 타깃 플랫폼으로 수확 — 선택 사실이
+limitations에 남음), `--graph`(저장 문서 읽기).
 종료 코드: `0` 정상 · `1` strict 위반 · `2` 사용법/분석 오류.
 
 ## 규칙 설정
@@ -127,6 +130,14 @@ independent: [web, cli]   # web과 cli는 어느 방향으로도 서로 도달 �
 - `independent`는 목록 안 모든 쌍에 대한 양방향 `forbidden`입니다 —
   "둘은 독립"이라는 의도가 이름으로 남습니다. 위반은 `rule: "independence"`로
   보고됩니다.
+- `stability: true`는 안정성 방향 계약입니다 — dependency-cruiser의
+  `moreUnstable`입니다. 컴포넌트는 자기보다 불안정한(I = Ce/(Ca+Ce),
+  `metrics`가 보고하는 같은 수치) 컴포넌트에 의존할 수 없습니다.
+  위반은 `rule: "stability"`와 사유에 두 불안정도 값을 싣습니다.
+- `exclude`는 규칙이 아니라 수확 필터입니다 — 패턴에 맞는 패키지
+  (컴포넌트와 같은 글롭 의미론 — 주 모듈은 상대 경로, 외부는 전체 경로)는
+  정점이 되지 않고, 그쪽으로의 import는 `limitations`에 셉니다.
+  생성 코드나 vendored 트리에 씁니다:
 - `fileRules`는 import가 일어나는 **파일**로 금지 범위를 좁힙니다 —
   dependency-cruiser의 `not-to-dev-dep` 계약입니다. `from`은 `/`가 없으면
   파일명에, 있으면 모듈 상대 경로에 맞는 글롭이고, `!` 접두사는 반전입니다.
@@ -141,6 +152,9 @@ fileRules:
     from: "!*_test.go"              # 글롭에 안 맞는 파일이 위반
     to: testhelpers                 # 컴포넌트
     reason: "테스트 헬퍼는 프로덕션에 새면 안 됨"
+
+stability: true                     # 의존은 더 안정된 컴포넌트 방향으로만
+exclude: [gen/**, testdata/**]      # 이 패키지들은 수확하지 않음
 ```
 
 **외부/vendor 규칙.** 컴포넌트 패턴은 `--deps`로 수확된 외부 패키지의 전체
