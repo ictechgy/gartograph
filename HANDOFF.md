@@ -4,14 +4,19 @@
 
 ## 현재 상태 (2026-09-22)
 
-**v0.3.0 릴리스·Homebrew tap 배포 완료** — 비교 격차 패스 전부 main에
-있고 origin에 push·태그 완료(`306e3af` + 버전 범프 `main` 최신).
-스키마 v2·테스트 변형 dedup·independent·RTA 포함. 공개 리포
-https://github.com/ictechgy/gartograph. 커버리지 90.7%(게이트 90),
-`Scripts/verify-cli-contract.sh` 통과, `cycles --strict`·`rules --strict`
-자기 분석 clean. `brew upgrade`로 0.2.0→0.3.0 실측,
-`gartograph 0.3.0` 보고, `brew test` 통과. tap 갱신은 여전히 수동
-(HOMEBREW_TAP_TOKEN 미설정 — 워크플로우가 체크섬만 출력).
+**v0.4.0 릴리스·Homebrew tap 배포 완료 + isthmus platform "go" 계약 머지됨**
+비교 격차 패스 + `bridges` 명령 전부 main·origin에 있다.
+스키마 v2·테스트 변형 dedup·independent·RTA·isthmus 생산자 포함.
+공개 리포 https://github.com/ictechgy/gartograph. 커버리지 90.3%
+(게이트 90), `Scripts/verify-cli-contract.sh` 통과,
+`cycles --strict`·`rules --strict` 자기 분석 clean.
+`brew upgrade`로 0.3.0→0.4.0 실측, `gartograph 0.4.0` 보고,
+`brew test` 통과. tap 갱신은 여전히 수동(HOMEBREW_TAP_TOKEN 미설정).
+
+isthmus 쪽: `platform "go"` 계약이 PR #108로 isthmus main에 머지됐다
+(`8ae3bb6`, GLM 리뷰 지적 반영 — go 문서는 target null만 허용,
+사실 종류 전면 거부, 구성 요건 미충족, 수신 공백 완화 미적용을
+테스트로 고정).
 
 feature/graph-v2 커밋:
 - `8cd1f1e` — 스키마 v2. `Edge.Positions`가 그 관계의 모든 사용 지점을
@@ -133,13 +138,9 @@ v0.2.0이 추가한 것(타 도구 비교 패스, PR #6·#7):
    `HOMEBREW_TAP_TOKEN`을 리포 시크릿에 넣으면 탭 갱신이 자동화된다.
 2. ~~v0.3.0 릴리스~~ — push + 태그 + tap 갱신 + brew upgrade 실측 완료.
    다음 릴리스 전 HOMEBREW_TAP_TOKEN 시크릿 등록하면 탭 자동화.
-3. ~~isthmus 조인~~ — 계약 확장 + 생산자 완료. isthmus
-   `feature/go-bridge-facts` 브랜치(`cfd648b`)에 platform "go" 추가 —
-   go 문서는 v1에서 facts를 비우고 cgo 관측을 `unscanned-ffi-interop`
-   limitation으로만 신고(호출/수신 구성 요건을 어느 쪽도 채우지 않음).
-   gartograph `bridges` 명령이 bridge-facts v1 문서를 낸다 —
-   dart+swift+go 삼중 문서로 isthmus `check` 왕복 실측 통과.
-   isthmus 쪽은 계약 변경이라 자매 합의·PR 경로로 머지 보류.
+3. ~~isthmus 조인~~ — 완료. `bridges` 명령이 bridge-facts v1 문서를
+   내고(platform "go", cgo는 unscanned-ffi-interop limitation),
+   isthmus 소비자 계약도 PR #108로 머지됐다.
 4. ~~정밀도~~ — `dead --algo rta` 구현됨(opt-in). 포인터 분석(Andersen)은
    RTA가 부족해질 때.
 
