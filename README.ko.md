@@ -1,5 +1,7 @@
 # gartograph
 
+<img src="icon.png" alt="gartograph의 새 마스코트" width="112" height="112" align="right">
+
 Go 의존성 그래프 도구 — Go 모듈을 읽어 의존성 그래프를 만들고, 그 위에서
 순환·도달성·심볼 이웃·레이어 규칙을 질의합니다.
 
