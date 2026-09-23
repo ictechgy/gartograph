@@ -11,6 +11,7 @@ package source
 
 import (
 	"fmt"
+	"sort"
 
 	"golang.org/x/tools/go/callgraph/rta"
 	"golang.org/x/tools/go/packages"
@@ -24,6 +25,70 @@ import (
 // var·const·type 정점은 호출 그래프의 노드가 아니므로 집합에 나타나지
 // 않는다 — 비호출 심볼의 판정은 그래프 도달성이 담당한다.
 func RTAReachable(opts Options, roots map[string]bool) (map[string]bool, error) {
+	res, err := analyzeRTA(opts, roots)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(res.Reachable))
+	for fn := range res.Reachable {
+		if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
+			out[objectID(obj)] = true
+		}
+	}
+	return out, nil
+}
+
+// RTAAdjacency는 RTA 호출 그래프의 정점 ID 인접 맵과 도달 집합을 돌려준다.
+// 도달성만으로는 "왜 살아 있다고 봤나"에 답할 수 없다 — dead --explain
+// --algo rta가 CHA 수확 그래프가 아니라 실제 판정을 내린 그래프 위의
+// 경로를 보여주기 위한 장치다.
+func RTAAdjacency(opts Options, roots map[string]bool) (map[string][]string, map[string]bool, error) {
+	res, err := analyzeRTA(opts, roots)
+	if err != nil {
+		return nil, nil, err
+	}
+	reach := make(map[string]bool, len(res.Reachable))
+	for fn := range res.Reachable {
+		if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
+			reach[objectID(obj)] = true
+		}
+	}
+	adj := map[string][]string{}
+	for fn, node := range res.CallGraph.Nodes {
+		if fn == nil || node == nil {
+			continue
+		}
+		fromObj := fn.Object()
+		if fromObj == nil || fromObj.Pkg() == nil {
+			continue
+		}
+		from := objectID(fromObj)
+		seen := map[string]bool{}
+		for _, e := range node.Out {
+			if e.Callee == nil || e.Callee.Func == nil {
+				continue
+			}
+			toObj := e.Callee.Func.Object()
+			if toObj == nil || toObj.Pkg() == nil {
+				continue
+			}
+			to := objectID(toObj)
+			if !seen[to] {
+				seen[to] = true
+				adj[from] = append(adj[from], to)
+			}
+		}
+	}
+	// 결정성 — 맵 순회에 출력 순서를 맡기면 같은 입력이 다른 경로를 낸다.
+	for _, l := range adj {
+		sort.Strings(l)
+	}
+	return adj, reach, nil
+}
+
+// analyzeRTA는 SSA를 만들고 주어진 루트에서 RTA를 실행한다.
+// 도달 집합과 인접 맵의 두 소비자가 같은 분석 결과를 나누기 위한 단위다.
+func analyzeRTA(opts Options, roots map[string]bool) (*rta.Result, error) {
 	pkgs, err := loadSSA(opts)
 	if err != nil {
 		return nil, err
@@ -46,14 +111,7 @@ func RTAReachable(opts Options, roots map[string]bool) (map[string]bool, error) 
 			}
 		}
 	}
-	res := rta.Analyze(rootFns, true)
-	out := make(map[string]bool, len(res.Reachable))
-	for fn := range res.Reachable {
-		if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
-			out[objectID(obj)] = true
-		}
-	}
-	return out, nil
+	return rta.Analyze(rootFns, true), nil
 }
 
 // loadSSA는 SSA 구축에 필요한 로드 모드로 패키지를 읽는다.
@@ -73,6 +131,7 @@ func loadSSA(opts Options) ([]*packages.Package, error) {
 	if opts.Tags != "" {
 		cfg.BuildFlags = []string{"-tags=" + opts.Tags}
 	}
+	cfg.Env = platformEnv(opts)
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
 		return nil, fmt.Errorf("loading packages for rta: %w — check go.mod and build tags", err)

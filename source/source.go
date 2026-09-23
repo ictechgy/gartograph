@@ -41,6 +41,18 @@ type Options struct {
 	// 태그가 없으면 제약에 걸린 파일이 조용히 빠진다 — 빠진 수는
 	// limitation으로 센다.
 	Tags string
+	// GOOS·GOARCH는 go/build의 타깃 플랫폼을 덮어쓴다 — 다른 OS의
+	// 조건부 파일(_linux.go 등)을 수확하려면 호스트 기본값을 바꿔야 한다.
+	// 빈 값은 호스트 기본값이다. 둘 다 지정되면 문서에 limitation으로
+	// 남긴다 — 같은 저장소가 어느 플랫폼으로 스캔됐는지 알아야 한다.
+	GOOS   string
+	GOARCH string
+	// Exclude는 그래프에서 뺄 패키지 경로 패턴 목록이다 — 컴포넌트
+	// 패턴과 같은 의미론(정확 일치, `x/**`, 세그먼트 글롭)으로
+	// 주 모듈 패키지는 모듈 상대 경로에, 외부 패키지는 전체 경로에 맞춘다.
+	// 제외된 패키지는 정점이 아니고, 그쪽으로의 import는 limitation으로
+	// 센다 — 조용히 빼면 "없는 것"과 "뺀 것"을 구분할 수 없다.
+	Exclude []string
 }
 
 // Load는 opts.Level에 맞는 가장 세밀한 그래프를 수확한다.
@@ -58,17 +70,77 @@ func Load(opts Options) (*graph.Document, error) {
 		return nil, fmt.Errorf("resolving --dir %s: %w", opts.Dir, err)
 	}
 	reachable := walkImports(pkgs)
+	// exclude는 정점을 만드는 단계 전에 걸러야 두 레벨 모두에서
+	// 같은 범위가 된다 — 패키지와 모듈 문서가 다른 저장소를 보는 걸 막는다.
+	reachable, excluded := dropExcluded(reachable, opts.Exclude)
 	if opts.Level == graph.LevelModule {
-		return buildModuleDocument(root, reachable, opts.IncludeDeps), nil
+		mod := buildModuleDocument(root, reachable, opts.IncludeDeps)
+		if len(excluded) > 0 {
+			mod.Limitation(fmt.Sprintf(
+				"%d packages matched exclude patterns; they have no vertices and their imports are not module edges",
+				len(excluded)))
+		}
+		if opts.GOOS != "" || opts.GOARCH != "" {
+			mod.Limitation(platformNote(opts))
+		}
+		mod.Sort()
+		return mod, nil
 	}
-	doc, kept := buildDocument(root, reachable, opts.IncludeDeps)
+	doc, kept := buildDocument(root, reachable, opts.IncludeDeps, excluded)
 	if opts.Level.Rank() >= graph.LevelType.Rank() {
 		internal := internalPackages(pkgs, kept)
 		harvestSymbols(doc, internal, opts.Level)
 	}
 	markGenerated(doc, kept)
+	if len(excluded) > 0 {
+		doc.Limitation(fmt.Sprintf(
+			"%d packages matched exclude patterns; they have no vertices", len(excluded)))
+	}
+	if opts.GOOS != "" || opts.GOARCH != "" {
+		doc.Limitation(platformNote(opts))
+	}
 	doc.Sort()
 	return doc, nil
+}
+
+// dropExcluded는 exclude 패턴에 맞는 패키지를 도달 집합에서 뺀다.
+// 반환하는 제외 집합은 "kept에 없는 것"과 "의도적으로 뺀 것"을 구분하는
+// 재료다 — 제외 패키지로 향하는 import는 외부 생략과 다른 사실이다.
+// 테스트 변형은 PkgPath가 원 패키지와 같아 함께 빠진다 — 같은 디렉터리다.
+func dropExcluded(pkgs []*packages.Package, patterns []string) ([]*packages.Package, map[string]bool) {
+	if len(patterns) == 0 {
+		return pkgs, nil
+	}
+	excluded := map[string]bool{}
+	var kept []*packages.Package
+	for _, p := range pkgs {
+		if excludeMatch(p, patterns) {
+			excluded[p.PkgPath] = true
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return kept, excluded
+}
+
+// excludeMatch는 패키지가 exclude 패턴 중 하나에 맞는지 본다.
+// 주 모듈 패키지는 모듈 상대 경로로 맞춘다 — 컴포넌트 패턴과 같은 기준이어야
+// 설정이 이식 가능하다. 외부·모듈 없는 패키지는 전체 경로로 맞춘다.
+func excludeMatch(p *packages.Package, patterns []string) bool {
+	rel := p.PkgPath
+	if p.Module != nil && p.Module.Main {
+		if p.PkgPath == p.Module.Path {
+			rel = "."
+		} else {
+			rel = strings.TrimPrefix(p.PkgPath, p.Module.Path+"/")
+		}
+	}
+	for _, pat := range patterns {
+		if graph.MatchPath(pat, rel) {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadPackageGraph는 패키지 레벨 의존 그래프를 수확한다.
@@ -98,6 +170,7 @@ func load(opts Options) ([]*packages.Package, error) {
 	if opts.Tags != "" {
 		cfg.BuildFlags = []string{"-tags=" + opts.Tags}
 	}
+	cfg.Env = platformEnv(opts)
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
 		return nil, fmt.Errorf("loading packages: %w — check go.mod and build tags", err)
@@ -105,12 +178,46 @@ func load(opts Options) ([]*packages.Package, error) {
 	return pkgs, nil
 }
 
+// platformEnv는 GOOS/GOARCH 덮어쓰기가 있으면 로더 환경에 주입한다.
+// packages.Config.Env가 nil이면 호스트 환경을 그대로 물려받는다 —
+// 덮어쓸 것이 없을 때는 nil을 돌려 그 기본 동작을 건드리지 않는다.
+func platformEnv(opts Options) []string {
+	if opts.GOOS == "" && opts.GOARCH == "" {
+		return nil
+	}
+	env := os.Environ()
+	if opts.GOOS != "" {
+		env = append(env, "GOOS="+opts.GOOS)
+	}
+	if opts.GOARCH != "" {
+		env = append(env, "GOARCH="+opts.GOARCH)
+	}
+	return env
+}
+
+// platformNote는 플랫폼 덮어쓰기를 limitation 문장으로 만든다.
+// 같은 저장소가 linux로 수확됐는지 darwin으로 수확됐는지가 결과를
+// 갈라서, 덮어쓴 사실은 문서에 남겨야 한다.
+func platformNote(opts Options) string {
+	var parts []string
+	if opts.GOOS != "" {
+		parts = append(parts, "GOOS="+opts.GOOS)
+	}
+	if opts.GOARCH != "" {
+		parts = append(parts, "GOARCH="+opts.GOARCH)
+	}
+	return "harvested with " + strings.Join(parts, " ") +
+		" — platform-conditional files for other targets were not loaded"
+}
+
 // buildDocument는 로드된 패키지 목록을 Document로 정규화한다.
 // 정점은 모듈 내부 패키지가 기본이고, 외부 의존은 IncludeDeps일 때만 담는다.
 // 패키지 목록은 패턴에 맞은 루트뿐이라, 정점 후보는 import 그래프를 BFS로 넓힌다.
+// excluded는 exclude 패턴으로 의도적으로 뺀 패키지 집합이다 — 그쪽으로의
+// import는 외부 생략이 아니라 "설정이 뺀 것"이라 따로 센다.
 // 두 번째 반환값은 그래프에 남은 패키지 — 심볼 수확이 순회할 범위다.
 func buildDocument(root string, reachable []*packages.Package,
-	includeDeps bool) (*graph.Document, map[string]*packages.Package) {
+	includeDeps bool, excluded map[string]bool) (*graph.Document, map[string]*packages.Package) {
 	doc := &graph.Document{
 		Version: graph.Version,
 		Tool:    graph.Tool,
@@ -118,7 +225,7 @@ func buildDocument(root string, reachable []*packages.Package,
 		Root:    root,
 	}
 	kept := make(map[string]*packages.Package)
-	var extImports, errCount int
+	var extImports, exclImports, errCount int
 
 	// 먼저 정점을 확정한다 — 간선은 양쪽 정점이 살아 있어야 만든다.
 	// 끝이 없는 간선은 유령 정점이 되어 소비자를 헷갈리게 한다.
@@ -160,6 +267,8 @@ func buildDocument(root string, reachable []*packages.Package,
 						From: p.PkgPath, To: imp.PkgPath, Kind: graph.EdgeImport,
 						Positions: sites[imp.PkgPath],
 					})
+				} else if excluded[imp.PkgPath] {
+					exclImports++
 				} else {
 					extImports++
 				}
@@ -176,6 +285,8 @@ func buildDocument(root string, reachable []*packages.Package,
 					From: p.PkgPath, To: imp.PkgPath, Kind: graph.EdgeImport,
 					Positions: sites[imp.PkgPath],
 				})
+			} else if excluded[imp.PkgPath] {
+				exclImports++
 			} else {
 				extImports++
 			}
@@ -190,6 +301,10 @@ func buildDocument(root string, reachable []*packages.Package,
 	if extImports > 0 {
 		doc.Limitation(fmt.Sprintf(
 			"%d imports of packages outside the module were omitted (use --deps to include)", extImports))
+	}
+	if exclImports > 0 {
+		doc.Limitation(fmt.Sprintf(
+			"%d imports to excluded packages were omitted (matched by exclude patterns)", exclImports))
 	}
 	if errCount > 0 {
 		doc.Limitation(fmt.Sprintf(

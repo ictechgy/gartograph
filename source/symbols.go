@@ -103,6 +103,9 @@ func (h *harvester) addSymbolVertices(internal []*packages.Package, wantSymbols 
 			if tn, isType := obj.(*types.TypeName); isType {
 				fillTypeShape(&v, tn)
 			}
+			if cn, isConst := obj.(*types.Const); isConst {
+				v.Value = cn.Val().ExactString()
+			}
 			h.vertex(v)
 			// contains는 소유 관계라 사용 지점이 없다 — 정점 자체의
 			// position이 그 사실을 이미 담는다.
