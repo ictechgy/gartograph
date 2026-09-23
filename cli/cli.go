@@ -78,8 +78,11 @@ func usage(w io.Writer) {
 
 Usage:
   gartograph graph  [--level package|type|symbol] [--format json|mermaid|dot] [--out FILE] [flags]
-  gartograph cycles [--level package|type|symbol] [--strict] [--format text|json] [flags]
-  gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--strict] [flags]
+  gartograph cycles [--level package|type|symbol] [--strict] [--format text|json|sarif]
+                    [--baseline FILE | --write-baseline FILE] [flags]
+  gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--strict]
+                    [--format text|json|sarif]
+                    [--baseline FILE | --write-baseline FILE] [flags]
   gartograph rules  [--config FILE] [--strict] [--format text|json|sarif]
                     [--baseline FILE | --write-baseline FILE] [flags]
   gartograph query  <id> [--depth N] [--max N] [flags]
@@ -240,15 +243,29 @@ func emit(doc *graph.Document, format string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// cyclesReport는 cycles 명령의 JSON 출력 형식이다.
+// Baselined는 baseline에 이미 있어 넘어간 순환, StaleBaseline은
+// 더 이상 발생하지 않아 baseline 재생성이 필요한 항목이다.
+type cyclesReport struct {
+	Cycles        []analysis.Cycle `json:"cycles"`
+	Baselined     []analysis.Cycle `json:"baselined,omitempty"`
+	StaleBaseline []analysis.Cycle `json:"staleBaseline,omitempty"`
+	Limitations   []string         `json:"limitations,omitempty"`
+}
+
 // cmdCycles는 순환 의존성을 찾는다.
 // --level은 문서를 어느 레벨로 투영할지 고른다 — 패키지 순환은 컴파일러가
 // 막으므로 실전 검사는 type·symbol 레벨이다.
 // --strict가 켜지면 순환이 있을 때 1을 돌려준다.
+// --baseline은 알려진 순환을 걸러 새 순환만 남기고,
+// --write-baseline은 현재 순환 전부를 새 baseline으로 저장한다.
 func cmdCycles(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("cycles", stderr)
 	strict := fs.Bool("strict", false, "exit 1 when cycles are found")
-	format := fs.String("format", "text", "output format: text|json")
+	format := fs.String("format", "text", "output format: text|json|sarif")
 	level := fs.String("level", string(graph.LevelPackage), "view level: package|type|symbol")
+	baselinePath := fs.String("baseline", "", "baseline file of known cycles")
+	writeBaseline := fs.String("write-baseline", "", "write all current cycles to FILE")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -270,13 +287,54 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	cycles := analysis.Cycles(view)
+
+	// baseline과의 비교는 보고 전에 — baselined는 strict·SARIF 어느 쪽으로도
+	// 새어 나가면 안 된다.
+	all := cycles
+	var baselined, stale []analysis.Cycle
+	if *baselinePath != "" {
+		base, err := loadCyclesBaseline(*baselinePath)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		cycles, baselined, stale = analysis.SplitBaseline(
+			cycles, base.Cycles, analysis.CycleBaselineKey)
+	}
+	if *writeBaseline != "" {
+		if err := saveCyclesBaseline(*writeBaseline, all); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	limitations := append([]string(nil), doc.Limitations...)
+	if len(stale) > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d baseline cycles no longer occur; regenerate the baseline", len(stale)))
+	}
+	sort.Strings(limitations)
+
 	switch *format {
 	case "json":
-		out, _ := json.MarshalIndent(cycles, "", "  ")
+		out, _ := json.MarshalIndent(cyclesReport{
+			Cycles: cycles, Baselined: baselined,
+			StaleBaseline: stale, Limitations: limitations,
+		}, "", "  ")
+		fmt.Fprintln(stdout, string(out))
+	case "sarif":
+		out, err := cyclesSARIF(cycles)
+		if err != nil {
+			return fail(stderr, err)
+		}
 		fmt.Fprintln(stdout, string(out))
 	case "text":
 		for _, c := range cycles {
 			fmt.Fprintf(stdout, "cycle: %v\n", c.Members)
+		}
+		fmt.Fprintf(stdout, "%d cycles (%d baselined)\n", len(cycles), len(baselined))
+		if len(limitations) > 0 {
+			fmt.Fprintln(stdout, "limitations:")
+			for _, l := range limitations {
+				fmt.Fprintf(stdout, "  - %s\n", l)
+			}
 		}
 	default:
 		fmt.Fprintf(stderr, "unknown format %q\n", *format)
@@ -291,15 +349,19 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 // deadReport는 dead 명령의 JSON 출력 형식이다.
 // 루트 목록을 함께 실어 "무엇에서 도달하지 못했나"를 소비자가 스스로 판단하게 한다.
 type deadReport struct {
-	Algorithm    string             `json:"algorithm"`
-	Roots        []string           `json:"roots"`
-	UnknownRoots []string           `json:"unknownRoots,omitempty"`
-	Unreachable  []analysis.Finding `json:"unreachable"`
-	Limitations  []string           `json:"limitations,omitempty"`
+	Algorithm     string             `json:"algorithm"`
+	Roots         []string           `json:"roots"`
+	UnknownRoots  []string           `json:"unknownRoots,omitempty"`
+	Unreachable   []analysis.Finding `json:"unreachable"`
+	Baselined     []analysis.Finding `json:"baselined,omitempty"`
+	StaleBaseline []analysis.Finding `json:"staleBaseline,omitempty"`
+	Limitations   []string           `json:"limitations,omitempty"`
 }
 
 // cmdDead는 보존 루트에서 도달 불가능한 심볼을 보고한다.
 // 도달성은 그래프 사실이고 삭제 판정은 어디에도 없다.
+// --baseline은 알려진 보고를 걸러 새 보고만 남기고,
+// --write-baseline은 현재 보고 전부를 새 baseline으로 저장한다.
 func cmdDead(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("dead", stderr)
 	retainPublic := fs.Bool("retain-public", false,
@@ -308,10 +370,12 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 	fs.Var(&extraRoots, "root", "additional retention root vertex ID (repeatable)")
 	explain := fs.String("explain", "",
 		"show a reachability path for vertex ID (over the harvested graph, regardless of --algo)")
-	format := fs.String("format", "text", "output format: text|json")
+	format := fs.String("format", "text", "output format: text|json|sarif")
 	strict := fs.Bool("strict", false, "exit 1 when unreachable symbols exist")
 	algo := fs.String("algo", "cha",
 		"reachability algorithm: cha (harvested graph) | rta (SSA-based, source only)")
+	baselinePath := fs.String("baseline", "", "baseline file of known unreachable findings")
+	writeBaseline := fs.String("write-baseline", "", "write all current findings to FILE")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -368,6 +432,28 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 			"methods may satisfy interfaces declared outside the module; "+
 				"dynamic dispatch from external packages is invisible to this graph")
 	}
+
+	// baseline과의 비교는 보고 전에 — baselined는 strict·SARIF 어느 쪽으로도
+	// 새어 나가면 안 된다.
+	all := findings
+	var baselined, stale []analysis.Finding
+	if *baselinePath != "" {
+		base, err := loadDeadBaseline(*baselinePath)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		findings, baselined, stale = analysis.SplitBaseline(
+			findings, base.Findings, analysis.FindingBaselineKey)
+	}
+	if *writeBaseline != "" {
+		if err := saveDeadBaseline(*writeBaseline, all); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	if len(stale) > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d baseline findings no longer occur; regenerate the baseline", len(stale)))
+	}
 	sort.Strings(limitations)
 
 	switch *format {
@@ -375,15 +461,22 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		out, _ := json.MarshalIndent(deadReport{
 			Algorithm: *algo,
 			Roots:     roots, UnknownRoots: unknown,
-			Unreachable: findings, Limitations: limitations,
+			Unreachable: findings, Baselined: baselined,
+			StaleBaseline: stale, Limitations: limitations,
 		}, "", "  ")
+		fmt.Fprintln(stdout, string(out))
+	case "sarif":
+		out, err := deadSARIF(findings)
+		if err != nil {
+			return fail(stderr, err)
+		}
 		fmt.Fprintln(stdout, string(out))
 	case "text":
 		for _, f := range findings {
 			fmt.Fprintf(stdout, "unreachable %s: %s\n", f.Kind, f.ID)
 		}
-		fmt.Fprintf(stdout, "%d unreachable symbols (%d retention roots)\n",
-			len(findings), len(roots))
+		fmt.Fprintf(stdout, "%d unreachable symbols (%d baselined, %d retention roots)\n",
+			len(findings), len(baselined), len(roots))
 		if len(limitations) > 0 {
 			fmt.Fprintln(stdout, "limitations:")
 			for _, l := range limitations {
@@ -503,7 +596,8 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
-		violations, baselined, stale = analysis.SplitBaseline(violations, base.Violations)
+		violations, baselined, stale = analysis.SplitBaseline(
+			violations, base.Violations, analysis.ViolationBaselineKey)
 	}
 	if *writeBaseline != "" {
 		// 새 baseline은 분할 전의 현재 위반 전부를 담는다.
@@ -531,6 +625,11 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 			"components %v matched no packages — typo, stale, or external pattern without --deps",
 			rep.UnmatchedComponents))
 	}
+	if rep.FileScopeUnchecked > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d import edges to fileRules targets carry no positions; file scope could not be checked (re-harvest for positions)",
+			rep.FileScopeUnchecked))
+	}
 	if len(stale) > 0 {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d baseline violations no longer occur; regenerate the baseline", len(stale)))
@@ -553,8 +652,16 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, string(out))
 	case "text":
 		for _, v := range violations {
+			label := v.Rule
+			if v.Name != "" {
+				label = v.Rule + ":" + v.Name
+			}
 			fmt.Fprintf(stdout, "violation[%s]: %s (%s) -> %s (%s)\n",
-				v.Rule, v.From, v.FromComponent, v.To, v.ToComponent)
+				label, v.From, v.FromComponent, v.To, v.ToComponent)
+			if v.Position != nil {
+				fmt.Fprintf(stdout, "  at: %s:%d:%d\n",
+					v.Position.File, v.Position.Line, v.Position.Column)
+			}
 			if v.Reason != "" {
 				fmt.Fprintf(stdout, "  reason: %s\n", v.Reason)
 			}

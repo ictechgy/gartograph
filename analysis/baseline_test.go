@@ -17,7 +17,7 @@ func TestSplitBaseline(t *testing.T) {
 	novel := Violation{From: "p", To: "q", Kind: graph.EdgeImport, Rule: "allow"}
 
 	fresh, baselined, stale := SplitBaseline(
-		[]Violation{known, novel}, []Violation{known, fixed})
+		[]Violation{known, novel}, []Violation{known, fixed}, ViolationBaselineKey)
 
 	if len(fresh) != 1 || !reflect.DeepEqual(fresh[0], novel) {
 		t.Fatalf("fresh: %+v", fresh)
@@ -39,7 +39,7 @@ func TestSplitBaselineForbidden(t *testing.T) {
 	// 같은 계약 위반인데 증인 경로가 다르다 — baselined여야 한다.
 	cur := Violation{Rule: "forbidden",
 		FromComponent: "api", ToComponent: "db", Path: []string{"a", "x", "b"}}
-	fresh, baselined, _ := SplitBaseline([]Violation{cur}, []Violation{old})
+	fresh, baselined, _ := SplitBaseline([]Violation{cur}, []Violation{old}, ViolationBaselineKey)
 	if len(baselined) != 1 || len(fresh) != 0 {
 		t.Fatalf("forbidden must key on the component pair, not the path: %+v %+v",
 			fresh, baselined)
@@ -49,8 +49,57 @@ func TestSplitBaselineForbidden(t *testing.T) {
 // TestSplitBaselineEmpty는 baseline이 없을 때 전부 fresh인지 확인한다.
 func TestSplitBaselineEmpty(t *testing.T) {
 	v := Violation{From: "a", To: "b", Kind: graph.EdgeImport}
-	fresh, baselined, stale := SplitBaseline([]Violation{v}, nil)
+	fresh, baselined, stale := SplitBaseline([]Violation{v}, nil, ViolationBaselineKey)
 	if len(fresh) != 1 || len(baselined) != 0 || len(stale) != 0 {
 		t.Fatalf("empty baseline: %+v %+v %+v", fresh, baselined, stale)
+	}
+}
+
+// TestSplitBaselineIndependence는 independence 위반이 forbidden처럼
+// 컴포넌트 쌍으로 식별되는지 확인한다 — 목격 경로의 끝점 정점이
+// 바뀌어도 같은 계약 위반이다.
+func TestSplitBaselineIndependence(t *testing.T) {
+	old := Violation{Rule: "independence", From: "m/x", To: "m/y",
+		FromComponent: "x", ToComponent: "y", Path: []string{"m/x", "m/y"}}
+	cur := Violation{Rule: "independence", From: "m/x2", To: "m/y2",
+		FromComponent: "x", ToComponent: "y", Path: []string{"m/x2", "m/z", "m/y2"}}
+	fresh, baselined, _ := SplitBaseline([]Violation{cur}, []Violation{old},
+		ViolationBaselineKey)
+	if len(baselined) != 1 || len(fresh) != 0 {
+		t.Fatalf("independence must key on the component pair: %+v %+v",
+			fresh, baselined)
+	}
+}
+
+// TestSplitBaselineFileScope는 fileScope 위반이 규칙 이름과 파일로
+// 식별되는지 확인한다 — 같은 간선의 다른 파일 위반은 별개 항목이고,
+// 줄 번호 이동은 같은 위반이다.
+func TestSplitBaselineFileScope(t *testing.T) {
+	old := Violation{Rule: "fileScope", Name: "r", From: "m/web", To: "m/th",
+		Position: &graph.Position{File: "/m/web/web.go", Line: 3}}
+	same := Violation{Rule: "fileScope", Name: "r", From: "m/web", To: "m/th",
+		Position: &graph.Position{File: "/m/web/web.go", Line: 40}}
+	other := Violation{Rule: "fileScope", Name: "r", From: "m/web", To: "m/th",
+		Position: &graph.Position{File: "/m/web/other.go", Line: 3}}
+	fresh, baselined, _ := SplitBaseline([]Violation{same, other},
+		[]Violation{old}, ViolationBaselineKey)
+	if len(baselined) != 1 || len(fresh) != 1 {
+		t.Fatalf("fileScope keys on rule name + file, not line: %+v %+v",
+			fresh, baselined)
+	}
+}
+
+// TestCycleFindingBaselineKey는 cycles·dead baseline의 동일성 키를 확인한다.
+func TestCycleFindingBaselineKey(t *testing.T) {
+	c1 := Cycle{Members: []string{"a", "b"}}
+	c2 := Cycle{Members: []string{"a", "b"}, Edges: []graph.Edge{
+		{From: "a", To: "b", Kind: graph.EdgeCall}}}
+	if CycleBaselineKey(c1) != CycleBaselineKey(c2) {
+		t.Fatal("same member set is the same cycle regardless of edge evidence")
+	}
+	f1 := Finding{ID: "m/a.f", Kind: graph.KindFunc, Reason: "cha"}
+	f2 := Finding{ID: "m/a.f", Kind: graph.KindFunc, Reason: "rta"}
+	if FindingBaselineKey(f1) != FindingBaselineKey(f2) {
+		t.Fatal("same symbol unreachable is the same fact across algos")
 	}
 }
