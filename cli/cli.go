@@ -46,6 +46,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdImpact(args[1:], stdout, stderr)
 	case "path":
 		return cmdPath(args[1:], stdout, stderr)
+	case "shared":
+		return cmdShared(args[1:], stdout, stderr)
 	case "diff":
 		return cmdDiff(args[1:], stdout, stderr)
 	case "metrics":
@@ -56,6 +58,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdInit(args[1:], stdout, stderr)
 	case "bridges":
 		return cmdBridges(args[1:], stdout, stderr)
+	case "unused-deps":
+		return cmdUnusedDeps(args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMcp(args[1:], stdout, stderr)
 	case "version":
@@ -89,11 +93,13 @@ Usage:
   gartograph impact <id> [--depth N] [--max N] [flags]
   gartograph impact --since <git-rev>|--files F... [--depth N] [flags]
   gartograph path   <from-id> <to-id> [flags]
+  gartograph shared <id> <id> [more ids...] [flags]
   gartograph diff   <old.json> <new.json> [--strict] [--format text|json]
   gartograph metrics [--config FILE] [--format text|json] [flags]
   gartograph mapping [--config FILE] [--format text|json] [flags]
   gartograph init   [--dir PATH]  scaffold .gartograph.yml from observed imports
   gartograph bridges [--dir PATH] [--out FILE]  isthmus bridge-facts (platform "go")
+  gartograph unused-deps [--strict] [--format text|json] [flags]
   gartograph mcp    serve the graph over MCP stdio [flags]
   gartograph version
 
@@ -102,6 +108,7 @@ Harvest flags (graph, cycles, dead, rules, query):
   --pattern P   package pattern, repeatable (default "./...")
   --tests       include test variant packages
   --deps        include dependencies outside the main module
+  --goos/--goarch  harvest for a different target platform (conditional files)
   --graph FILE  read a saved graph document instead of harvesting`)
 }
 
@@ -117,6 +124,8 @@ func flagSet(name string, stderr io.Writer) (*flag.FlagSet, *source.Options, *st
 	fs.BoolVar(&opts.Tests, "tests", false, "include test variant packages")
 	fs.BoolVar(&opts.IncludeDeps, "deps", false, "include dependencies outside the main module")
 	fs.StringVar(&opts.Tags, "tags", "", "build tags to pass to the loader (comma-separated)")
+	fs.StringVar(&opts.GOOS, "goos", "", "target GOOS for conditional files (default: host)")
+	fs.StringVar(&opts.GOARCH, "goarch", "", "target GOARCH for conditional files (default: host)")
 	fs.StringVar(&graphPath, "graph", "", "read a saved graph document instead of harvesting")
 	return fs, &opts, &graphPath
 }
@@ -167,11 +176,33 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 // loadDoc는 --graph가 있으면 파일에서, 없으면 수확해서 Document를 얻는다.
 // 저장 문서를 읽을 때 수확 플래그는 무시된다 — 두 입력 경로가 섞이면
 // 어느 쪽이 쓰였는지 불분명해진다.
+// 수확 경로에서는 .gartograph.yml의 exclude도 함께 적용한다 — 수확 범위를
+// 좁히는 설정이 명령마다 다르게 동작하면 같은 저장소가 다른 그래프가 된다.
 func loadDoc(opts *source.Options, graphPath string) (*graph.Document, error) {
 	if graphPath != "" {
 		return export.LoadFile(graphPath)
 	}
+	if err := applyConfigExclude(opts); err != nil {
+		return nil, err
+	}
 	return source.Load(*opts)
+}
+
+// applyConfigExclude는 .gartograph.yml이 있으면 그 exclude 패턴을 수확
+// 옵션에 싣는다. 파일이 없으면 아무것도 하지 않는다 — exclude는 선택
+// 설정이지 필수가 아니다. 있는데 깨진 파일은 에러다 — 제외 범위를 모른 채
+// 수확하면 소비자가 "없다"를 "뺐다"와 구분할 수 없다.
+func applyConfigExclude(opts *source.Options) error {
+	path, ok := config.Find(opts.Dir)
+	if !ok {
+		return nil
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	opts.Exclude = append(opts.Exclude, cfg.Exclude...)
+	return nil
 }
 
 // requireLevel은 문서가 want 레벨 이상을 담았는지 확인한다.
@@ -208,7 +239,9 @@ func cmdGraph(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	opts.Level = lvl
-	doc, err := source.Load(*opts)
+	// 수확 경로는 loadDoc 하나다 — exclude 같은 설정 적용이 명령마다
+	// 다르면 같은 저장소가 다른 그래프를 낸다.
+	doc, err := loadDoc(opts, "")
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -369,7 +402,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 	var extraRoots stringsFlag
 	fs.Var(&extraRoots, "root", "additional retention root vertex ID (repeatable)")
 	explain := fs.String("explain", "",
-		"show a reachability path for vertex ID (over the harvested graph, regardless of --algo)")
+		"show a reachability path for vertex ID (on the RTA call graph when --algo rta)")
 	format := fs.String("format", "text", "output format: text|json|sarif")
 	strict := fs.Bool("strict", false, "exit 1 when unreachable symbols exist")
 	algo := fs.String("algo", "cha",
@@ -400,7 +433,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 	roots, unknown := analysis.RetentionRoots(doc, *retainPublic, extraRoots)
 
 	if *explain != "" {
-		return explainDead(doc, *explain, roots, stdout, stderr)
+		return explainDead(doc, *explain, roots, *algo, *opts, stdout, stderr)
 	}
 
 	limitations := append([]string(nil), doc.Limitations...)
@@ -505,8 +538,37 @@ func hasMethodFinding(findings []analysis.Finding) bool {
 }
 
 // explainDead는 한 정점이 왜 살아 있는지(또는 왜 못 찾았는지) 보여준다.
-func explainDead(doc *graph.Document, id string, roots []string,
-	stdout, stderr io.Writer) int {
+// --algo rta면 RTA 호출 그래프 위에서 설명한다 — CHA 수확 그래프의 경로를
+// 보여주면 "RTA가 왜 죽였다/살렸다"의 답이 아니라 다른 알고리즘의 말이 된다.
+func explainDead(doc *graph.Document, id string, roots []string, algo string,
+	opts source.Options, stdout, stderr io.Writer) int {
+	if algo == "rta" {
+		rootSet := make(map[string]bool, len(roots))
+		for _, r := range roots {
+			rootSet[r] = true
+		}
+		adj, _, err := source.RTAAdjacency(opts, rootSet)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if !doc.HasVertex(id) {
+			return fail(stderr, fmt.Errorf("%w: %s", analysis.ErrNotFound, id))
+		}
+		path, found := analysis.ExplainAdjacency(adj, id, roots)
+		if !found {
+			fmt.Fprintf(stdout,
+				"no path from %d retention roots to %s (rta call graph)\n", len(roots), id)
+			return 0
+		}
+		for i, p := range path {
+			if i == 0 {
+				fmt.Fprintf(stdout, "root: %s\n", p)
+			} else {
+				fmt.Fprintf(stdout, "  -> %s\n", p)
+			}
+		}
+		return 0
+	}
 	path, found, err := analysis.Explain(doc, id, roots)
 	if err != nil {
 		return fail(stderr, err)
@@ -796,6 +858,33 @@ func cmdPath(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	res, err := analysis.Path(doc, positional[0], positional[1])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if err := emitJSON(stdout, res); err != nil {
+		return fail(stderr, err)
+	}
+	return 0
+}
+
+// cmdShared는 여러 루트의 공통 도달 집합을 보고한다.
+// "이 두 진입점이 같이 끌어오는 것" — 공유 부품의 경계를 보는 질의다.
+// 출력은 JSON만이다 — 집합 목록은 에이전트 소비가 상정이다.
+func cmdShared(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("shared", stderr)
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(positional) < 2 {
+		fmt.Fprintln(stderr, "usage: gartograph shared <id> <id> [more ids...]")
+		return 2
+	}
+	doc, err := loadDoc(opts, *graphPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	res, err := analysis.Shared(doc, positional)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -1110,6 +1199,50 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("closing %s: %w", path, err))
 	}
 	fmt.Fprintf(stdout, "wrote %s (%d components)\n", path, len(cfg.Components))
+	return 0
+}
+
+// cmdUnusedDeps는 go.mod의 require 중 어느 패키지도 import하지 않는
+// 모듈을 보고한다 — `go mod tidy`가 지울 대상을 읽기 전용으로 미리 본다.
+// --graph는 없다 — require 목록은 그래프가 아니라 go.mod에서 온다.
+// --strict는 미사용 require가 있을 때 1을 돌려준다.
+func cmdUnusedDeps(args []string, stdout, stderr io.Writer) int {
+	fs, opts, graphPath := flagSet("unused-deps", stderr)
+	format := fs.String("format", "text", "output format: text|json")
+	strict := fs.Bool("strict", false, "exit 1 when unused requires exist")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	if *graphPath != "" {
+		fmt.Fprintln(stderr,
+			"--graph is meaningless for unused-deps; requires live in go.mod, not the graph")
+		return 2
+	}
+	rep, err := source.UnusedRequires(*opts)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	switch *format {
+	case "json":
+		if err := emitJSON(stdout, rep); err != nil {
+			return fail(stderr, err)
+		}
+	case "text":
+		for _, m := range rep.Unused {
+			fmt.Fprintf(stdout, "unused require: %s\n", m)
+		}
+		for _, m := range rep.UnusedIndirect {
+			fmt.Fprintf(stdout, "unused indirect require: %s\n", m)
+		}
+		fmt.Fprintf(stdout, "%d unused requires (%d indirect, %d used)\n",
+			len(rep.Unused), len(rep.UnusedIndirect), rep.UsedRequires)
+	default:
+		fmt.Fprintf(stderr, "unknown format %q\n", *format)
+		return 2
+	}
+	if *strict && len(rep.Unused) > 0 {
+		return 1
+	}
 	return 0
 }
 

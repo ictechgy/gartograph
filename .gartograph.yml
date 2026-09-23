@@ -15,7 +15,7 @@ deps:
   cli: ["analysis", "harvest", "config", "export", "core"]
   analysis: ["core", "config"]
   harvest: ["core"]
-  config: []
+  config: ["core"]
   export: ["core"]
   core: []
   testutil: []

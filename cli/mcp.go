@@ -233,6 +233,18 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 			return "", err
 		}
 		return marshal(res)
+	case "gartograph_shared":
+		var a struct {
+			Roots []string `json:"roots"`
+		}
+		if err := json.Unmarshal(args, &a); err != nil || len(a.Roots) < 2 {
+			return "", fmt.Errorf("shared needs at least two \"roots\" vertex IDs")
+		}
+		res, err := analysis.Shared(s.doc, a.Roots)
+		if err != nil {
+			return "", err
+		}
+		return marshal(res)
 	case "gartograph_cycles":
 		var a struct {
 			Level string `json:"level"`
@@ -355,6 +367,12 @@ func mcpTools() []map[string]any {
 			"inputSchema": obj(map[string]any{
 				"from": str("source vertex ID"), "to": str("target vertex ID"),
 			}, []string{"from", "to"})},
+		{"name": "gartograph_shared",
+			"description": "Reachable-set intersection of two or more roots — what they pull in together and what each pulls alone",
+			"inputSchema": obj(map[string]any{
+				"roots": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+					"description": "two or more vertex IDs (packages or symbols)"},
+			}, []string{"roots"})},
 		{"name": "gartograph_cycles",
 			"description": "Dependency cycles at a level (default: the document's level)",
 			"inputSchema": obj(map[string]any{

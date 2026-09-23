@@ -1269,3 +1269,462 @@ func TestDeadBaseline(t *testing.T) {
 		t.Fatalf("baselined count must be reported: %s", out)
 	}
 }
+
+// TestShared는 두 루트의 공통 도달 집합 명령의 JSON 계약을 확인한다.
+func TestShared(t *testing.T) {
+	dir := fixture(t)
+	code, out, _ := run(t, "shared",
+		"example.com/fixture/a", "example.com/fixture/b", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("shared failed: %d", code)
+	}
+	var res struct {
+		Shared []string            `json:"shared"`
+		Only   map[string][]string `json:"only"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("shared output is not JSON: %v", err)
+	}
+	// a→b라 b는 둘 다 도달 — shared는 b뿐이다.
+	if len(res.Shared) != 1 || res.Shared[0] != "example.com/fixture/b" {
+		t.Fatalf("shared must be the intersection: %s", out)
+	}
+	if len(res.Only["example.com/fixture/a"]) != 1 {
+		t.Fatalf("a alone reaches itself: %s", out)
+	}
+	if code, _, _ := run(t, "shared", "example.com/ghost",
+		"example.com/fixture/b", "--dir", dir); code != 2 {
+		t.Fatalf("missing root must exit 2, got %d", code)
+	}
+}
+
+// TestUnusedDeps는 어느 패키지도 import하지 않는 require의 보고와
+// strict 종료 코드를 확인한다.
+func TestUnusedDeps(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": `module example.com/fixture
+
+go 1.27
+
+require golang.org/x/mod v0.41.0
+`,
+		"main.go": `package main
+
+func main() {}
+`,
+	})
+	code, out, _ := run(t, "unused-deps", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("unused-deps failed: %d", code)
+	}
+	if !strings.Contains(out, "golang.org/x/mod") {
+		t.Fatalf("unimported require must be reported: %s", out)
+	}
+	// direct 미사용이 있으면 strict는 1이다.
+	if code, _, _ := run(t, "unused-deps", "--dir", dir,
+		"--strict"); code != 1 {
+		t.Fatalf("strict with unused direct require must exit 1, got %d", code)
+	}
+	// require가 없으면 strict도 0이다.
+	clean := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+func main() {}
+`,
+	})
+	if code, _, _ := run(t, "unused-deps", "--dir", clean,
+		"--strict"); code != 0 {
+		t.Fatalf("clean module must pass strict")
+	}
+	// JSON 계약.
+	code, out, _ = run(t, "unused-deps", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("unused-deps json failed: %d", code)
+	}
+	var rep struct {
+		Unused         []string `json:"unused"`
+		UnusedIndirect []string `json:"unusedIndirect"`
+		UsedRequires   int      `json:"usedRequires"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("unused-deps output is not JSON: %v", err)
+	}
+	if len(rep.Unused) != 1 || rep.Unused[0] != "golang.org/x/mod" ||
+		len(rep.UnusedIndirect) != 0 {
+		t.Fatalf("expected one direct unused require: %s", out)
+	}
+	// --graph는 이 명령의 사실이 아니다 — go.mod에서 오므로 거부한다.
+	if code, _, _ := run(t, "unused-deps", "--dir", dir,
+		"--graph", "x.json"); code != 2 {
+		t.Fatalf("--graph must be a usage error, got %d", code)
+	}
+}
+
+// TestDeadExplainRTA는 --explain이 --algo rta일 때 RTA 콜그래프 위의
+// 경로를 보여주는지 확인한다 — CHA 그래프의 경로는 다른 알고리즘의 말이다.
+func TestDeadExplainRTA(t *testing.T) {
+	dir := deadFixture(t)
+	code, out, errb := run(t, "dead", "--dir", dir,
+		"--algo", "rta", "--explain", "example.com/fixture/lib.helper")
+	if code != 0 {
+		t.Fatalf("dead --explain --algo rta failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "example.com/fixture.main") ||
+		!strings.Contains(out, "lib.Run") ||
+		!strings.Contains(out, "lib.helper") {
+		t.Fatalf("RTA explain must show the call-graph path: %s", out)
+	}
+	// RTA가 죽인 심볼은 RTA 그래프에 경로가 없다.
+	code, out, _ = run(t, "dead", "--dir", dir,
+		"--algo", "rta", "--explain", "example.com/fixture/lib.Unused")
+	if code != 0 {
+		t.Fatalf("rta explain for dead symbol: %d", code)
+	}
+	if !strings.Contains(out, "no path") || !strings.Contains(out, "rta") {
+		t.Fatalf("unreachable under rta must say so: %s", out)
+	}
+}
+
+// TestExcludeConfig는 .gartograph.yml의 exclude가 수확에서 패키지를
+// 빼는지 확인한다 — 설정과 수확이 같은 해석을 써야 한다.
+func TestExcludeConfig(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		".gartograph.yml": `components: {a: [a]}
+exclude: [gen/**]
+`,
+		"a/a.go": `package a
+
+import _ "example.com/fixture/gen"
+`,
+		"gen/gen.go": `package gen
+`,
+	})
+	code, out, _ := run(t, "graph", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("graph failed: %d", code)
+	}
+	var doc struct {
+		Vertices    []struct{ ID string } `json:"vertices"`
+		Limitations []string              `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("graph output is not JSON: %v", err)
+	}
+	for _, v := range doc.Vertices {
+		if strings.HasSuffix(v.ID, "/gen") {
+			t.Fatalf("excluded package must not be a vertex: %s", out)
+		}
+	}
+	var noted bool
+	for _, l := range doc.Limitations {
+		if strings.Contains(l, "exclude") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Fatalf("exclusion must be a limitation: %s", out)
+	}
+}
+
+// TestSharedUsage는 shared가 루트 하나만으로는 사용법 오류인지 확인한다 —
+// 교집합은 둘 이상의 루트가 있어야 의미가 있다.
+func TestSharedUsage(t *testing.T) {
+	dir := fixture(t)
+	if code, _, _ := run(t, "shared",
+		"example.com/fixture/a", "--dir", dir); code != 2 {
+		t.Fatalf("single root must be a usage error, got %d", code)
+	}
+}
+
+// TestUnusedDepsErrors는 go.mod가 없는 디렉터리와 손상된 go.mod의
+// 에러 경로를 확인한다 — require 목록은 그래프가 아니라 파일에서 온다.
+func TestUnusedDepsErrors(t *testing.T) {
+	// go.mod 없는 디렉터리 — 주 모듈을 찾을 수 없어 에러.
+	empty := t.TempDir()
+	if code, _, errb := run(t, "unused-deps", "--dir", empty); code != 2 ||
+		!strings.Contains(errb, "go.mod") {
+		t.Fatalf("missing module must exit 2: %d %s", code, errb)
+	}
+	// 손상된 go.mod.
+	bad := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module [invalid\n",
+		"main.go": `package main
+
+func main() {}
+`,
+	})
+	if code, _, _ := run(t, "unused-deps", "--dir", bad); code != 2 {
+		t.Fatalf("broken go.mod must exit 2, got %d", code)
+	}
+	// 지원하지 않는 형식.
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+func main() {}
+`,
+	})
+	if code, _, _ := run(t, "unused-deps", "--dir", dir,
+		"--format", "yaml"); code != 2 {
+		t.Fatalf("unknown format must exit 2, got %d", code)
+	}
+}
+
+// TestUnusedDepsIndirect는 // indirect 표시 require가 direct와 분리되어
+// 보고되고 strict가 울리지 않는지 확인한다 — indirect는 다른 의존이
+// 끌어오는 핀이라 "지워도 된다"는 표명이 아니다.
+func TestUnusedDepsIndirect(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": `module example.com/fixture
+
+go 1.27
+
+require golang.org/x/sync v0.23.0 // indirect
+`,
+		"main.go": `package main
+
+func main() {}
+`,
+	})
+	code, out, _ := run(t, "unused-deps", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("unused-deps failed: %d", code)
+	}
+	var rep struct {
+		Unused         []string `json:"unused"`
+		UnusedIndirect []string `json:"unusedIndirect"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(rep.Unused) != 0 || len(rep.UnusedIndirect) != 1 ||
+		rep.UnusedIndirect[0] != "golang.org/x/sync" {
+		t.Fatalf("indirect require must be reported separately: %s", out)
+	}
+	if code, _, _ := run(t, "unused-deps", "--dir", dir,
+		"--strict"); code != 0 {
+		t.Fatal("indirect-only unused must not fail strict")
+	}
+}
+
+// TestCyclesSARIF는 cycles의 SARIF 출력이 유효한 봉투인지 확인한다 —
+// 저장 문서로 순환을 만들어 실제 경로를 돌린다.
+func TestCyclesSARIF(t *testing.T) {
+	docJSON := `{"version":2,"level":"package","vertices":[
+{"id":"m/a","kind":"package"},{"id":"m/b","kind":"package"}],
+"edges":[{"from":"m/a","to":"m/b","kind":"import",
+"positions":[{"file":"a/a.go","line":3,"column":1}]},
+{"from":"m/b","to":"m/a","kind":"import",
+"positions":[{"file":"b/b.go","line":3,"column":1}]}]}`
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.json")
+	if err := os.WriteFile(p, []byte(docJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ := run(t, "cycles", "--graph", p, "--format", "sarif")
+	if code != 0 {
+		t.Fatalf("cycles sarif failed: %d", code)
+	}
+	var sarif struct {
+		Version string `json:"version"`
+		Runs    []struct {
+			Results []struct {
+				RuleID string `json:"ruleId"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(out), &sarif); err != nil {
+		t.Fatalf("not SARIF JSON: %v", err)
+	}
+	if sarif.Version != "2.1.0" || len(sarif.Runs) != 1 ||
+		len(sarif.Runs[0].Results) != 1 ||
+		sarif.Runs[0].Results[0].RuleID != "dependency-cycle" {
+		t.Fatalf("unexpected SARIF: %s", out)
+	}
+	// baseline 왕복 — 쓰고 읽으면 같은 순환이 baselined로 간다.
+	bp := filepath.Join(dir, "b.json")
+	if code, _, _ := run(t, "cycles", "--graph", p,
+		"--write-baseline", bp); code != 0 {
+		t.Fatalf("write-baseline failed: %d", code)
+	}
+	code, out, _ = run(t, "cycles", "--graph", p, "--baseline", bp,
+		"--format", "json")
+	if code != 0 {
+		t.Fatalf("baseline read failed: %d", code)
+	}
+	var rep struct {
+		Cycles    []any `json:"cycles"`
+		Baselined []any `json:"baselined"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(rep.Cycles) != 0 || len(rep.Baselined) != 1 {
+		t.Fatalf("known cycle must be baselined: %s", out)
+	}
+}
+
+// TestDiffText는 diff의 텍스트 출력 계약을 확인한다.
+func TestDiffText(t *testing.T) {
+	dir := t.TempDir()
+	old := `{"version":2,"level":"symbol","vertices":[
+{"id":"m.F","kind":"func","exported":true}]}`
+	newD := `{"version":2,"level":"symbol","vertices":[]}`
+	po, pn := filepath.Join(dir, "old.json"), filepath.Join(dir, "new.json")
+	for p, c := range map[string]string{po: old, pn: newD} {
+		if err := os.WriteFile(p, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, out, _ := run(t, "diff", po, pn)
+	if code != 0 {
+		t.Fatalf("diff failed: %d", code)
+	}
+	if !strings.Contains(out, "breaking") || !strings.Contains(out, "m.F") {
+		t.Fatalf("text diff must report the breaking removal: %s", out)
+	}
+}
+
+// TestDeadBaselineRoundtrip은 dead의 baseline 쓰기·읽기 왕복을 확인한다.
+func TestDeadBaselineRoundtrip(t *testing.T) {
+	dir := deadFixture(t)
+	bp := filepath.Join(t.TempDir(), "dead-baseline.json")
+	if code, _, _ := run(t, "dead", "--dir", dir,
+		"--write-baseline", bp); code != 0 {
+		t.Fatalf("write-baseline failed: %d", code)
+	}
+	code, out, _ := run(t, "dead", "--dir", dir, "--baseline", bp,
+		"--format", "json")
+	if code != 0 {
+		t.Fatalf("baseline run failed: %d", code)
+	}
+	var rep struct {
+		Findings  []any `json:"findings"`
+		Baselined []any `json:"baselined"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(rep.Findings) != 0 || len(rep.Baselined) == 0 {
+		t.Fatalf("known finding must be baselined: %s", out)
+	}
+}
+
+// TestQueryNeighborSort는 이웃 목록이 실제로 정렬되어 나오는지 확인한다 —
+// 정렬 클로저는 원소가 둘 이상일 때만 실행되므로 두 임포터가 필요하다.
+func TestQueryNeighborSort(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"a/a.go": `package a
+
+import _ "example.com/fixture/b"
+`,
+		"c/c.go": `package c
+
+import _ "example.com/fixture/b"
+`,
+		"b/b.go": `package b
+`,
+	})
+	code, out, _ := run(t, "query", "example.com/fixture/b", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("query failed: %d", code)
+	}
+	var res struct {
+		DependedBy []struct{ ID string } `json:"dependedBy"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(res.DependedBy) != 2 ||
+		res.DependedBy[0].ID != "example.com/fixture/a" ||
+		res.DependedBy[1].ID != "example.com/fixture/c" {
+		t.Fatalf("dependents must be sorted: %s", out)
+	}
+}
+
+// TestUnusedDepsUsed는 실제로 import되는 require가 미사용으로 오보하지
+// 않는지 확인한다 — "쓰였다"의 판정은 패키지의 모듈 소속이다.
+// 로컬 replace로 진짜 의존을 만든다 — 원격 require는 go.sum이 필요하고
+// 테스트를 네트워크에 묶지 않기 위함이다.
+func TestUnusedDepsUsed(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": `module example.com/fixture
+
+go 1.27
+
+require example.com/dep v0.0.0
+
+replace example.com/dep => ./dep
+`,
+		"dep/go.mod": `module example.com/dep
+
+go 1.27
+`,
+		"dep/dep.go": `package dep
+
+func F() {}
+`,
+		"main.go": `package main
+
+import "example.com/dep"
+
+func main() { dep.F() }
+`,
+	})
+	code, out, _ := run(t, "unused-deps", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("unused-deps failed: %d", code)
+	}
+	var rep struct {
+		Unused       []string `json:"unused"`
+		UsedRequires int      `json:"usedRequires"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(rep.Unused) != 0 || rep.UsedRequires != 1 {
+		t.Fatalf("imported require must count as used: %s", out)
+	}
+}
+
+// TestRulesSARIFPosition은 rules SARIF가 위반의 물리 위치를 싣는지
+// 확인한다 — 수확 문서의 import 지점이 physicalLocation이 된다.
+func TestRulesSARIFPosition(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		".gartograph.yml": `components: {a: [a], b: [b]}
+deps: {a: [], b: []}
+deny: {a: [b]}
+`,
+		"a/a.go": `package a
+
+import _ "example.com/fixture/b"
+`,
+		"b/b.go": `package b
+`,
+	})
+	code, out, _ := run(t, "rules", "--dir", dir, "--format", "sarif")
+	if code != 0 {
+		t.Fatalf("rules sarif failed: %d", code)
+	}
+	var sarif struct {
+		Runs []struct {
+			Results []struct {
+				Locations []struct {
+					PhysicalLocation *struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(out), &sarif); err != nil {
+		t.Fatalf("not SARIF: %v", err)
+	}
+	locs := sarif.Runs[0].Results[0].Locations
+	if len(locs) == 0 || locs[0].PhysicalLocation == nil ||
+		!strings.HasSuffix(locs[0].PhysicalLocation.ArtifactLocation.URI,
+			"a/a.go") {
+		t.Fatalf("violation must carry its import site: %s", out)
+	}
+}

@@ -62,8 +62,8 @@ func TestMcpHandshake(t *testing.T) {
 		t.Fatalf("protocol echo failed: %v", init)
 	}
 	tools := res[1]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 9 {
-		t.Fatalf("expected 9 tools, got %v", tools)
+	if len(tools) != 10 {
+		t.Fatalf("expected 10 tools, got %v", tools)
 	}
 }
 
