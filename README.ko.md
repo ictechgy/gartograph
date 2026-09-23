@@ -56,6 +56,8 @@ gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분
                                               # (--files cli/cli.go도 가능)
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
+# (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·
+#  인터페이스 메서드 추가·struct 필드 계약 파괴)
 gartograph metrics                             # Ca/Ce/불안정성 + orphan 패키지
 gartograph mapping                             # 패키지→컴포넌트 매핑 보기
 gartograph init                                # .gartograph.yml 스캐폴딩
@@ -123,8 +125,21 @@ independent: [web, cli]   # web과 cli는 어느 방향으로도 서로 도달 �
 - `independent`는 목록 안 모든 쌍에 대한 양방향 `forbidden`입니다 —
   "둘은 독립"이라는 의도가 이름으로 남습니다. 위반은 `rule: "independence"`로
   보고됩니다.
+- `fileRules`는 import가 일어나는 **파일**로 금지 범위를 좁힙니다 —
+  dependency-cruiser의 `not-to-dev-dep` 계약입니다. `from`은 `/`가 없으면
+  파일명에, 있으면 모듈 상대 경로에 맞는 글롭이고, `!` 접두사는 반전입니다.
+  위반은 `rule: "fileScope"`, 규칙 `name`, 해당 지점을 싣습니다.
+  지점이 없는 간선은 검사할 수 없어 `fileScopeUnchecked`로 셉니다.
 - 규칙이 참조하는 모든 이름은 정의된 컴포넌트여야 합니다 — `Load`가
   죽은 참조를 거부해 오타가 규칙인 척하지 못하게 합니다.
+
+```yaml
+fileRules:
+  - name: no-testdeps-in-prod       # 프로덕션 파일의 테스트 헬퍼 import 금지
+    from: "!*_test.go"              # 글롭에 안 맞는 파일이 위반
+    to: testhelpers                 # 컴포넌트
+    reason: "테스트 헬퍼는 프로덕션에 새면 안 됨"
+```
 
 **외부/vendor 규칙.** 컴포넌트 패턴은 `--deps`로 수확된 외부 패키지의 전체
 import 경로에도 매칭됩니다 — `deps`/`deny`가 서드파티 모듈을 통제합니다:
@@ -143,11 +158,15 @@ deps:
 되지 않은 외부 패키지는 `unmappedExternal`로 따로 보고됩니다.
 
 **Baseline.** 기존 레포에 규칙을 도입할 때: 오늘의 위반을 한 번 기록하고,
-이후에는 새 위반만 `--strict`에서 실패합니다.
+이후에는 새 위반만 `--strict`에서 실패합니다. 같은 플래그가 `cycles`와
+`dead`에도 동작합니다 — 종류마다 다른 baseline 파일 kind를 쓰므로
+파일이 조용히 엇갈려 적용되지 않습니다.
 
 ```bash
-gartograph rules --write-baseline .gartograph-baseline.json
-gartograph rules --baseline .gartograph-baseline.json --strict
+gartograph rules  --write-baseline .gartograph-baseline.json
+gartograph rules  --baseline .gartograph-baseline.json --strict
+gartograph cycles --level symbol --write-baseline .cycles-baseline.json
+gartograph dead   --baseline .dead-baseline.json --strict
 ```
 
 기록된 위반은 `baselined`로 보고되고, 더 이상 발생하지 않는 항목은
@@ -155,7 +174,9 @@ gartograph rules --baseline .gartograph-baseline.json --strict
 새 위반만 봅니다.
 
 패턴: 정확 일치, `x/**` 재귀 접두사, `*` 세그먼트 글롭.
-`rules --format sarif`는 CI 코드 스캐닝용 SARIF 2.1.0을 냅니다.
+`rules`·`cycles`·`dead` 모두 `--format sarif`를 받습니다 — 순환은
+`dependency-cycle` error, unreachable은 `unreachable-symbol` warning
+(삭제 판정이 아니라 사실)으로 보고됩니다.
 
 ## 출력 계약(에이전트용)
 
@@ -173,6 +194,9 @@ gartograph rules --baseline .gartograph-baseline.json --strict
 정점 ID: 패키지는 `pkg/path`, 패키지 수준 심볼은 `pkg/path.Name`,
 메서드는 `pkg/path.(Recv).Name`. `// Code generated ... DO NOT EDIT.`
 마커 파일 출신 정점은 `generated: true`를 답니다 — 숨기지 않고 표시합니다.
+type 정점은 `interface: true` 또는 `fields`(선언 순서의 `"name:Type"` 목록)를
+답니다 — `diff`가 인터페이스 메서드 추가와 struct 필드 계약 파괴를
+breaking으로 분류하는 재료입니다.
 간선 종류: `import`/`contains`/`embeds`/`implements`/`references`/`call`/
 `signature`(선언 시그니처 안의 타입 참조 — `contains`와 달리 의존 관계).
 인터페이스 호출은 CHA 팬아웃으로 인터페이스 메서드와 모든 구현 메서드에
