@@ -4,10 +4,13 @@
 
 ## 현재 상태 (2026-09-22)
 
-**feature/file-scope-rules 진행 중 — 스키마 v2가 연 파일 스코프 패리티**
-v0.4.0은 배포 완료(`6a7492e` 태그, brew upgrade·test 실측 통과,
-tap은 HOMEBREW_TAP_TOKEN 부재로 수동 갱신).
-이 브랜치에 넣은 것:
+**v0.5.0 릴리스·Homebrew tap 배포 완료** — 스키마 v2가 연
+파일 스코프 패리티 묶음이 main(origin)에 있다.
+`brew upgrade` 0.4.0→0.5.0 실측, `gartograph 0.5.0` 보고,
+`brew test` 통과. tap은 여전히 수동 갱신(HOMEBREW_TAP_TOKEN 미설정,
+체크섬은 릴리스 checksums.txt와 대조 후 `81ba5b8`).
+
+이번 릴리스에 들어간 것:
 - `fileRules` — dep-cruiser not-to-dev-dep 계약. `{name, from, to, reason}`.
   `from`은 `/` 없으면 파일명·있으면 모듈 상대 경로 글롭, `!` 접두사 반전
   ("!*_test.go" = 프로덕션 파일의 import 금지). 위반은 `rule:"fileScope"`+
