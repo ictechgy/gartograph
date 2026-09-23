@@ -133,9 +133,13 @@ v0.2.0이 추가한 것(타 도구 비교 패스, PR #6·#7):
    `HOMEBREW_TAP_TOKEN`을 리포 시크릿에 넣으면 탭 갱신이 자동화된다.
 2. ~~v0.3.0 릴리스~~ — push + 태그 + tap 갱신 + brew upgrade 실측 완료.
    다음 릴리스 전 HOMEBREW_TAP_TOKEN 시크릿 등록하면 탭 자동화.
-3. **isthmus 조인** — cgo/gomobile 브리지가 생기면 bridge facts producer.
-   isthmus의 GRAPH-EXCHANGE producer 목록에 Go가 아직 없으므로 계약 확장이
-   선행 과제다 — 스키마 v2의 Edge.positions가 그 기초 자료.
+3. ~~isthmus 조인~~ — 계약 확장 + 생산자 완료. isthmus
+   `feature/go-bridge-facts` 브랜치(`cfd648b`)에 platform "go" 추가 —
+   go 문서는 v1에서 facts를 비우고 cgo 관측을 `unscanned-ffi-interop`
+   limitation으로만 신고(호출/수신 구성 요건을 어느 쪽도 채우지 않음).
+   gartograph `bridges` 명령이 bridge-facts v1 문서를 낸다 —
+   dart+swift+go 삼중 문서로 isthmus `check` 왕복 실측 통과.
+   isthmus 쪽은 계약 변경이라 자매 합의·PR 경로로 머지 보류.
 4. ~~정밀도~~ — `dead --algo rta` 구현됨(opt-in). 포인터 분석(Andersen)은
    RTA가 부족해질 때.
 

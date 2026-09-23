@@ -54,6 +54,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdMapping(args[1:], stdout, stderr)
 	case "init":
 		return cmdInit(args[1:], stdout, stderr)
+	case "bridges":
+		return cmdBridges(args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMcp(args[1:], stdout, stderr)
 	case "version":
@@ -88,6 +90,7 @@ Usage:
   gartograph metrics [--config FILE] [--format text|json] [flags]
   gartograph mapping [--config FILE] [--format text|json] [flags]
   gartograph init   [--dir PATH]  scaffold .gartograph.yml from observed imports
+  gartograph bridges [--dir PATH] [--out FILE]  isthmus bridge-facts (platform "go")
   gartograph mcp    serve the graph over MCP stdio [flags]
   gartograph version
 
@@ -1000,5 +1003,36 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("closing %s: %w", path, err))
 	}
 	fmt.Fprintf(stdout, "wrote %s (%d components)\n", path, len(cfg.Components))
+	return 0
+}
+
+// cmdBridges는 isthmus bridge-facts v1 문서를 낸다.
+// go 문서는 v1에서 사실을 담지 않는다 — cgo 관측은 unscanned-ffi-interop
+// limitation으로만 신고하는 게 계약이다(isthmus docs/GRAPH-EXCHANGE.md).
+// 수확 파이프라인을 타지 않고 소스 파일을 직접 스캔하므로 수확 플래그는
+// 받지 않는다.
+func cmdBridges(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("bridges", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dir := fs.String("dir", ".", "module root to scan")
+	out := fs.String("out", "", "write the document to FILE instead of stdout")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	doc, err := source.BridgeFacts(*dir, Version)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if *out != "" {
+		if err := os.WriteFile(*out, append(data, '\n'), 0o644); err != nil {
+			return fail(stderr, fmt.Errorf("writing %s: %w", *out, err))
+		}
+		return 0
+	}
+	fmt.Fprintln(stdout, string(data))
 	return 0
 }

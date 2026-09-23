@@ -44,6 +44,10 @@ gartograph dead --retain-public               # 라이브러리: 공개 API 보�
 gartograph dead --root my/pkg.Setup           # 추가 보존 루트
 gartograph dead --explain my/pkg.F            # 왜 살아 있나 — 도달 경로 출력
 gartograph dead --algo rta                    # RTA 정밀도 — 소스 필요, --graph와 불가
+
+# isthmus bridge-facts 문서 생성(platform "go")
+# Go는 cgo를 unscanned-ffi-interop limitation으로만 신고 — 채널 사실 없음.
+gartograph bridges --out go-facts.json
 gartograph rules --strict                     # .gartograph.yml 레이어 규칙 검사
 
 gartograph query <정점ID> --depth 2            # 이웃 되묻기(에이전트용 JSON)

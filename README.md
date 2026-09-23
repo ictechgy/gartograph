@@ -58,6 +58,10 @@ gartograph dead --root my/pkg.Setup       # extra retention root
 gartograph dead --explain my/pkg.F        # why alive? show a reachability path
 gartograph dead --algo rta                # RTA precision: needs source, not --graph
 
+# Emit an isthmus bridge-facts document (platform "go")
+# Go reports cgo via unscanned-ffi-interop limitations — no channel facts.
+gartograph bridges --out go-facts.json
+
 # Check layer rules from .gartograph.yml
 gartograph rules --strict
 
@@ -300,10 +304,10 @@ tool call answers over the same snapshot. Example client config:
   (vendor) rules, `--format dot`~~ — done
 - ~~`visibleTo`, `common`, transitive `forbidden`, deny reasons, `metrics`,
   `mapping`, `init`~~ — done
-- isthmus bridge-facts producer (cgo/gomobile boundary — open question)
-- RTA/pointer analysis to narrow CHA over-approximation (optional precision)
-- Edge positions in the document (schema v2 — enables file-scoped rules),
-  test-variant deduplication
+- ~~isthmus bridge-facts producer~~ — `bridges` emits platform `go` docs;
+  cgo observations are `unscanned-ffi-interop` limitations per the v1 contract
+- ~~RTA~~ — `dead --algo rta` (opt-in; Andersen pointer analysis deferred)
+- ~~Edge positions (schema v2)~~, ~~test-variant deduplication~~ — done
 
 ## License
 

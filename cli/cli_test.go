@@ -911,6 +911,103 @@ func TestInit(t *testing.T) {
 	}
 }
 
+// TestBridges는 isthmus bridge-facts v1 문서의 형태와 cgo 관측을 확인한다.
+// go 문서는 계약상 사실을 담지 않고 unscanned-ffi-interop limitation만 실는다.
+func TestBridges(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+func main() {}
+`,
+		"native/native.go": `package native
+
+/*
+#include <stdlib.h>
+*/
+import "C"
+
+//export Add
+func Add(a, b C.int) C.int { return a + b }
+`,
+		"native/more.go": `package native
+
+import "C"
+
+//export Mul
+func Mul(a, b C.int) C.int { return a * b }
+`,
+	})
+	code, out, errb := run(t, "bridges", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("bridges failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Format      string   `json:"format"`
+		Version     int      `json:"version"`
+		Platform    string   `json:"platform"`
+		Target      any      `json:"target"`
+		Project     string   `json:"project"`
+		Facts       []any    `json:"facts"`
+		Limitations []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if doc.Format != "bridge-facts" || doc.Version != 1 {
+		t.Fatalf("bad envelope: %s", out)
+	}
+	if doc.Platform != "go" || doc.Target != nil {
+		t.Fatalf("go documents must carry platform go and null target: %s", out)
+	}
+	if doc.Facts == nil || len(doc.Facts) != 0 {
+		t.Fatalf("go documents carry no facts in v1: %s", out)
+	}
+	// project는 realpath로 정규화된 절대 경로여야 다른 생산자 문서와 조인된다.
+	resolved, _ := filepath.EvalSymlinks(dir)
+	if doc.Project != resolved {
+		t.Fatalf("project must be the realpath of --dir: %q vs %q", doc.Project, resolved)
+	}
+	// cgo 파일 둘 + //export 둘을 세어야 한다.
+	var found bool
+	for _, l := range doc.Limitations {
+		if strings.HasPrefix(l, "unscanned-ffi-interop:") &&
+			strings.Contains(l, "2 Go source files") && strings.Contains(l, "2 //export") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("cgo observation must be reported as unscanned-ffi-interop: %v", doc.Limitations)
+	}
+	// --out으로 파일에 쓸 수 있다.
+	outPath := filepath.Join(t.TempDir(), "facts.json")
+	if code, _, errb := run(t, "bridges", "--dir", dir, "--out", outPath); code != 0 {
+		t.Fatalf("bridges --out failed: %d %s", code, errb)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("out file missing: %v", err)
+	}
+}
+
+// TestBridgesNoInterop은 cgo가 없는 프로젝트가 조용한 문서를 내는지 확인한다.
+func TestBridgesNoInterop(t *testing.T) {
+	dir := fixture(t)
+	code, out, errb := run(t, "bridges", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("bridges failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Limitations []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	for _, l := range doc.Limitations {
+		if strings.HasPrefix(l, "unscanned-ffi-interop:") {
+			t.Fatalf("no cgo means no interop limitation: %v", doc.Limitations)
+		}
+	}
+}
+
 // TestDiff는 두 저장 문서의 차이와 --strict의 breaking 계약을 확인한다.
 func TestDiff(t *testing.T) {
 	dir := deadFixture(t)
