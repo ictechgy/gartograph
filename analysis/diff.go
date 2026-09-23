@@ -140,6 +140,20 @@ func recordVertexChanges(d *Diff, id string, ov, nv *graph.Vertex) {
 	}
 	field("generated", ov.Generated, nv.Generated)
 	field("external", ov.External, nv.External)
+	// 상수 값 변경은 소비자 코드에 인라인된 계약의 변경이다 — 컴파일은
+	// 지나가도 이미 빌드된 바이너리가 다른 상수를 담고 있다는 뜻이다.
+	// apidiff가 값 변경을 breaking으로 보는 이유다.
+	// 어느 쪽이든 값이 비어 있으면 "몰랐다"다 — 값을 수확하기 전 형식의
+	// 문서와 비교할 때 모든 상수를 변경으로 울리면 안 된다.
+	if ov.Kind == graph.KindConst && ov.Value != "" && nv.Value != "" &&
+		ov.Value != nv.Value {
+		d.ChangedVertices = append(d.ChangedVertices, VertexChange{
+			ID: id, Field: "value", From: ov.Value, To: nv.Value})
+		if ov.Exported {
+			d.Breaking = append(d.Breaking, fmt.Sprintf(
+				"exported const %s changed value: %s -> %s", id, ov.Value, nv.Value))
+		}
+	}
 }
 
 // recordFieldChanges는 struct 타입의 필드 목록 차이를 적는다.

@@ -398,3 +398,68 @@ func TestFileRulesNoPositions(t *testing.T) {
 		t.Fatalf("positionless edge to a fileRules target must be counted: %+v", rep)
 	}
 }
+
+// TestStability는 안정성 방향 규칙 — 더 안정된 컴포넌트가 덜 안정된
+// 쪽을 향해 의존하면 위반인지 확인한다. dep-cruiser moreUnstable 패리티:
+// 불안정도 I = Ce/(Ca+Ce)가 target > source면 깨진다.
+func TestStability(t *testing.T) {
+	// I 값: a = 1/3(in 2, out 1), b = 1/2(in 1, out 1), c = 0,
+	// leaf1·leaf2 = 1. a→b만 0.5 > 0.33으로 위반이다.
+	doc := &graph.Document{
+		Module: "m",
+		Vertices: []graph.Vertex{
+			{ID: "m/a", Kind: graph.KindPackage},
+			{ID: "m/b", Kind: graph.KindPackage},
+			{ID: "m/c", Kind: graph.KindPackage},
+			{ID: "m/leaf1", Kind: graph.KindPackage},
+			{ID: "m/leaf2", Kind: graph.KindPackage},
+		},
+		Edges: []graph.Edge{
+			{From: "m/leaf1", To: "m/a", Kind: graph.EdgeImport},
+			{From: "m/leaf2", To: "m/a", Kind: graph.EdgeImport},
+			{From: "m/a", To: "m/b", Kind: graph.EdgeImport},
+			{From: "m/b", To: "m/c", Kind: graph.EdgeImport},
+		},
+	}
+	cfg := &config.File{
+		Components: map[string][]string{
+			"a": {"a"}, "b": {"b"}, "c": {"c"},
+			"leaf1": {"leaf1"}, "leaf2": {"leaf2"},
+		},
+		// 허용 목록을 채워 두어야 stability 위반만이 보인다 —
+		// allow 위반이 섞이면 방향 규칙의 검증이 아니게 된다.
+		Deps: map[string][]string{
+			"leaf1": {"a"}, "leaf2": {"a"},
+			"a": {"b"}, "b": {"c"},
+		},
+		Stability: true,
+	}
+	rep := CheckRules(doc, cfg)
+	var stab *Violation
+	for i := range rep.Violations {
+		if rep.Violations[i].Rule == "stability" {
+			stab = &rep.Violations[i]
+		}
+	}
+	if stab == nil {
+		t.Fatalf("a(I=1/3) depending on b(I=1/2) must violate: %+v",
+			rep.Violations)
+	}
+	if stab.FromComponent != "a" || stab.ToComponent != "b" {
+		t.Fatalf("violation must name the components: %+v", stab)
+	}
+	// leaf1(I=1) → a(I=1/3): 불안정한 쪽이 안정한 쪽을 향하는 건 허용.
+	for _, v := range rep.Violations {
+		if v.Rule == "stability" && v.FromComponent == "leaf1" {
+			t.Fatalf("unstable→stable direction is allowed: %+v", v)
+		}
+	}
+	// 끄면 조용해야 한다 — opt-in 규칙이다.
+	cfg.Stability = false
+	rep = CheckRules(doc, cfg)
+	for _, v := range rep.Violations {
+		if v.Rule == "stability" {
+			t.Fatal("stability must not fire when disabled")
+		}
+	}
+}

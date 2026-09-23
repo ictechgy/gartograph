@@ -2,6 +2,7 @@
 package analysis
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,7 +15,8 @@ import (
 // Rule은 어긴 규칙 종류다: "allow"(허용 목록에 없음), "deny"(명시 금지),
 // "signature"(공개 API 타입 누출), "visibleTo"(공급자가 닫은 컴포넌트),
 // "forbidden"(간접 도달 금지), "independence"(독립 선언된 컴포넌트 간 도달),
-// "fileScope"(import 지점의 파일 패턴 위반).
+// "fileScope"(import 지점의 파일 패턴 위반),
+// "stability"(자기보다 불안정한 컴포넌트로의 의존).
 // Name은 fileScope 위반이 어긴 규칙의 이름이다 — 같은 to 컴포넌트를
 // 다른 파일 패턴으로 막는 규칙이 여럿일 때 구분자다.
 // Reason은 deny·fileRules 규칙에 설정된 사유다 — 에이전트가 다음 행동을
@@ -108,6 +110,7 @@ func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
 		}
 	}
 	rep.Violations = append(rep.Violations, reachViolations(d, cfg, comp)...)
+	rep.Violations = append(rep.Violations, stabilityViolations(d, cfg, comp)...)
 	rep.Unmapped = mapping.Unmapped
 	rep.UnmappedExternal = mapping.UnmappedExternal
 	rep.UnmatchedComponents = mapping.UnmatchedComponents
@@ -292,6 +295,66 @@ func reachPath(adj map[string][]string, vcomp map[string]string,
 		path = append([]string{cur}, path...)
 	}
 	return path
+}
+
+// stabilityViolations는 안정성 방향 계약을 검사한다 — stability가 켜지면
+// 컴포넌트는 자기보다 불안정한 컴포넌트에 의존할 수 없다.
+// dependency-cruiser의 moreUnstable 규칙과 같은 계약이다.
+// 불안정성은 metrics와 같은 Ce/(Ca+Ce)다 — 같은 수치가 규칙과 메트릭에서
+// 다른 값을 내면 보고가 거짓말이 된다. 위반에는 두 수치를 사유로 싣는다 —
+// 어느 쪽을 안정화해야 하는지가 다음 행동이다.
+func stabilityViolations(d *graph.Document, cfg *config.File,
+	comp map[string]string) []Violation {
+	if !cfg.Stability {
+		return nil
+	}
+	inDeg, outDeg := map[string]map[string]bool{}, map[string]map[string]bool{}
+	for _, e := range d.Edges {
+		if e.Kind != graph.EdgeImport {
+			continue
+		}
+		fu, tu := comp[e.From], comp[e.To]
+		if fu == "" || tu == "" || fu == tu {
+			continue
+		}
+		if outDeg[fu] == nil {
+			outDeg[fu] = map[string]bool{}
+		}
+		if inDeg[tu] == nil {
+			inDeg[tu] = map[string]bool{}
+		}
+		outDeg[fu][tu] = true
+		inDeg[tu][fu] = true
+	}
+	inst := func(c string) float64 {
+		ca, ce := len(inDeg[c]), len(outDeg[c])
+		if ca+ce == 0 {
+			return 0
+		}
+		return float64(ce) / float64(ca+ce)
+	}
+	var out []Violation
+	for _, e := range d.Edges {
+		if e.Kind != graph.EdgeImport {
+			continue
+		}
+		fu, tu := comp[e.From], comp[e.To]
+		if fu == "" || tu == "" || fu == tu {
+			continue
+		}
+		if inst(tu) <= inst(fu) {
+			continue
+		}
+		out = append(out, Violation{
+			From: e.From, To: e.To,
+			FromComponent: fu, ToComponent: tu,
+			Kind: e.Kind, Rule: "stability",
+			Reason: fmt.Sprintf("depends on a less stable component (I %.3g > %.3g)",
+				inst(tu), inst(fu)),
+			Position: firstPosition(e),
+		})
+	}
+	return out
 }
 
 // firstPosition은 간선의 첫 사용 지점을 돌려준다 — 위반 보고는

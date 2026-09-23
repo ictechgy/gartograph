@@ -240,3 +240,36 @@ func TestDiffStructFields(t *testing.T) {
 		t.Fatalf("missing old fields must not be read as a change: %+v", d)
 	}
 }
+
+// TestConstValueBreaking은 공개 상수의 값 변경이 breaking인지 확인한다 —
+// 상수는 소비자 코드에 인라인되므로 재컴파일 없이 이미 빌드된 바이너리가
+// 다른 상수를 담는다. 값을 모르는 옛 문서와의 비교는 "몰랐다"다.
+func TestConstValueBreaking(t *testing.T) {
+	mk := func(exported bool, value string) graph.Vertex {
+		return graph.Vertex{ID: "m/lib.K", Kind: graph.KindConst,
+			Exported: exported, Value: value}
+	}
+	// 공개 상수 값 변경은 breaking.
+	d := DiffDocuments(
+		&graph.Document{Vertices: []graph.Vertex{mk(true, `"1.0"`)}},
+		&graph.Document{Vertices: []graph.Vertex{mk(true, `"2.0"`)}})
+	if !hasBreaking(d, "changed value") {
+		t.Fatalf("exported const value change must be breaking: %+v", d)
+	}
+	// 비공개 상수의 값 변경은 API 계약이 아니다 — 변경 기록은 남지만
+	// breaking은 아니다.
+	d = DiffDocuments(
+		&graph.Document{Vertices: []graph.Vertex{mk(false, `"1.0"`)}},
+		&graph.Document{Vertices: []graph.Vertex{mk(false, `"2.0"`)}})
+	if len(d.Breaking) != 0 {
+		t.Fatalf("unexported const value change is not breaking: %+v", d)
+	}
+	// 값을 수확하기 전 형식의 문서와 비교하면 "몰랐다" — 모든 상수가
+	// 변경으로 울리면 안 된다.
+	d = DiffDocuments(
+		&graph.Document{Vertices: []graph.Vertex{mk(true, "")}},
+		&graph.Document{Vertices: []graph.Vertex{mk(true, `"2.0"`)}})
+	if len(d.Breaking) != 0 {
+		t.Fatalf("old doc without values must not flag every const: %+v", d)
+	}
+}

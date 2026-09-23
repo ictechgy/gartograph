@@ -150,7 +150,14 @@ func Explain(d *graph.Document, id string, roots []string) ([]string, bool, erro
 	if !d.HasVertex(id) {
 		return nil, false, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	adj := graph.Adjacency(d)
+	path, found := ExplainAdjacency(graph.Adjacency(d), id, roots)
+	return path, found, nil
+}
+
+// ExplainAdjacency는 주어진 인접 맵 위에서 루트→정점 최단 경로를 BFS로 찾는다.
+// 문서의 간선 맵이 아닌 다른 사실(RTA 콜그래프) 위에서 같은 "왜 도달했나"
+// 질의를 하기 위한 장치다 — 경로 알고리즘은 하나여야 한다.
+func ExplainAdjacency(adj map[string][]string, id string, roots []string) ([]string, bool) {
 	parent := map[string]string{}
 	seen := map[string]bool{}
 	queue := append([]string(nil), roots...)
@@ -169,7 +176,7 @@ func Explain(d *graph.Document, id string, roots []string) ([]string, bool, erro
 		}
 	}
 	if !seen[id] {
-		return nil, false, nil
+		return nil, false
 	}
 	var path []string
 	for cur := id; ; cur = parent[cur] {
@@ -178,5 +185,5 @@ func Explain(d *graph.Document, id string, roots []string) ([]string, bool, erro
 			break
 		}
 	}
-	return path, true, nil
+	return path, true
 }
