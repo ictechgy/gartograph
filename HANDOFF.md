@@ -2,15 +2,16 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 현재 상태 (2026-09-22)
+## 현재 상태 (2026-09-23)
 
-**v0.5.0 릴리스·Homebrew tap 배포 완료** — 스키마 v2가 연
-파일 스코프 패리티 묶음이 main(origin)에 있다.
-`brew upgrade` 0.4.0→0.5.0 실측, `gartograph 0.5.0` 보고,
-`brew test` 통과. tap은 여전히 수동 갱신(HOMEBREW_TAP_TOKEN 미설정,
-체크섬은 릴리스 checksums.txt와 대조 후 `81ba5b8`).
+**v0.6.0 릴리스·Homebrew tap 배포 완료** — 잔여 격차 묶음
+(shared/--goos·--goarch/exclude/stability/unused-deps/RTA explain/
+상수 값 diff)이 main(origin)에 있다. `brew upgrade` 0.5.0→0.6.0
+실측, `gartograph 0.6.0` 보고, `brew test` 통과. tap은 여전히 수동
+갱신(HOMEBREW_TAP_TOKEN 미설정, 체크섬은 릴리스 checksums.txt와
+대조 후 `0ef8fc4`).
 
-이번 릴리스에 들어간 것:
+v0.5.0이 들고 있던 것(이번 릴리스에도 포함):
 - `fileRules` — dep-cruiser not-to-dev-dep 계약. `{name, from, to, reason}`.
   `from`은 `/` 없으면 파일명·있으면 모듈 상대 경로 글롭, `!` 접두사 반전
   ("!*_test.go" = 프로덕션 파일의 import 금지). 위반은 `rule:"fileScope"`+
