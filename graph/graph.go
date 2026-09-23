@@ -116,6 +116,11 @@ type Vertex struct {
 	// 목록·순서·타입이기 때문에 diff의 breaking 판정 재료다.
 	// struct가 아닌 타입이나 필드를 수확하지 않은 옛 문서는 nil이다.
 	Fields []string `json:"fields,omitempty"`
+	// Value는 const 정점의 상수 값을 Go 리터럴 형태로 담는다 —
+	// 상수는 컴파일 시 소비자 코드에 인라인되므로 값 변경은 재컴파일을
+	// 깨지는 않아도 API 계약의 변경이다. diff의 breaking 분류 재료다.
+	// const가 아닌 정점이나 값을 수확하지 않은 옛 문서는 비어 있다.
+	Value string `json:"value,omitempty"`
 }
 
 // Edge는 방향 있는 관계다.
