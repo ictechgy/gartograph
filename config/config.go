@@ -273,6 +273,7 @@ func (f *File) checkRefs() error {
 			return err
 		}
 	}
+	seenBound := map[string]bool{}
 	for i, r := range f.Limits {
 		if err := check("limits", "component", r.Component); err != nil {
 			return err
@@ -285,7 +286,18 @@ func (f *File) checkRefs() error {
 			name string
 			v    *int
 		}{{"maxIn", r.MaxIn}, {"maxOut", r.MaxOut}} {
-			if bound.v != nil && *bound.v < 0 {
+			if bound.v == nil {
+				continue
+			}
+			// 같은 상한의 중복 항목은 baseline 키(컴포넌트+종류)까지
+			// 같아져 baseline이 두 위반을 구분하지 못한다 — 거부한다.
+			key := r.Component + "\x00" + bound.name
+			if seenBound[key] {
+				return fmt.Errorf("limits: duplicate %s bound for %q",
+					bound.name, r.Component)
+			}
+			seenBound[key] = true
+			if *bound.v < 0 {
 				return fmt.Errorf("limits: %s for %q is negative (%d)",
 					bound.name, r.Component, *bound.v)
 			}
