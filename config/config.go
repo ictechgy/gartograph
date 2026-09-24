@@ -28,6 +28,7 @@ import (
 //	forbidden: 간접 경로까지 금지하는 {from, to} 컴포넌트 쌍 목록
 //	independent: 어느 방향으로도 서로 도달하면 안 되는 컴포넌트명들
 //	fileRules: import가 일어나는 파일 패턴으로 스코프를 좁히는 규칙들
+//	limits: 컴포넌트별 의존 수 상한({component, maxIn?, maxOut?})
 //	exclude: 그래프에서 아예 빼는 모듈 상대 패키지 경로 패턴들
 //
 // components 패턴은 --deps로 수확된 외부 패키지의 전체 import 경로에도
@@ -63,6 +64,11 @@ import (
 // 같은 규칙이다. 켜면 컴포넌트는 자기보다 불안정한(I = Ce/(Ca+Ce)가 더
 // 큰) 컴포넌트에 의존할 수 없다 — 의존은 안정된 쪽으로만 흘러야
 // 변화가 위로 번지지 않는다.
+// limits는 크기 상한이다 — dep-cruiser의 max-dependencies와 같은 계약으로,
+// 방향이 아니라 양을 제한한다. maxOut은 "이 컴포넌트가 의존할 수 있는 다른
+// 컴포넌트 수", maxIn은 "이 컴포넌트를 의존할 수 있는 다른 컴포넌트 수"다.
+// 상한을 넘기면 어느 간선 하나가 아니라 컴포넌트 자체가 위반이다 —
+// 새 의존 추가가 기존 어느 것도 직접 어기지 않아도 덩치 계약은 깨진다.
 type File struct {
 	Version     int                    `yaml:"version"`
 	Components  map[string][]string    `yaml:"components"`
@@ -74,6 +80,7 @@ type File struct {
 	Forbidden   []ForbiddenRule        `yaml:"forbidden"`
 	Independent []string               `yaml:"independent"`
 	FileRules   []FileRule             `yaml:"fileRules"`
+	Limits      []LimitRule            `yaml:"limits"`
 	Exclude     []string               `yaml:"exclude"`
 	Stability   bool                   `yaml:"stability"`
 }
@@ -102,6 +109,16 @@ func (e *DenyEntry) UnmarshalYAML(value *yaml.Node) error {
 type ForbiddenRule struct {
 	From string `yaml:"from"`
 	To   string `yaml:"to"`
+}
+
+// LimitRule은 컴포넌트 하나의 의존 수 상한이다.
+// MaxIn은 나를 의존할 수 있는 다른 컴포넌트 수(Ca), MaxOut은 내가 의존할
+// 수 있는 다른 컴포넌트 수(Ce)의 상한이다 — 둘 다 포인터라 0이
+// "아무것도 의존/의존받지 말라"로 표현된다. 하나 이상은 있어야 한다.
+type LimitRule struct {
+	Component string `yaml:"component"`
+	MaxIn     *int   `yaml:"maxIn,omitempty"`
+	MaxOut    *int   `yaml:"maxOut,omitempty"`
 }
 
 // FileRule은 import가 일어나는 소스 파일로 스코프를 좁히는 규칙이다.
@@ -254,6 +271,24 @@ func (f *File) checkRefs() error {
 		}
 		if err := check("fileRules", "to", r.To); err != nil {
 			return err
+		}
+	}
+	for i, r := range f.Limits {
+		if err := check("limits", "component", r.Component); err != nil {
+			return err
+		}
+		if r.MaxIn == nil && r.MaxOut == nil {
+			return fmt.Errorf("limits: entry %d for %q sets neither maxIn nor maxOut",
+				i, r.Component)
+		}
+		for _, bound := range []struct {
+			name string
+			v    *int
+		}{{"maxIn", r.MaxIn}, {"maxOut", r.MaxOut}} {
+			if bound.v != nil && *bound.v < 0 {
+				return fmt.Errorf("limits: %s for %q is negative (%d)",
+					bound.name, r.Component, *bound.v)
+			}
 		}
 	}
 	return nil
