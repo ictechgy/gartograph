@@ -113,3 +113,52 @@ func TestMetricsNoConfig(t *testing.T) {
 		t.Fatalf("per-package units: %+v", rep.Components)
 	}
 }
+
+// TestMetricsAbstractnessDistance는 인터페이스 비율(A)과 주 계열 거리(D)를 확인한다.
+// D = |A+I−1| — 타입 정점이 없는 단위는 정의되지 않아 키가 빠진다.
+func TestMetricsAbstractnessDistance(t *testing.T) {
+	d := metricsDoc()
+	// svc에 인터페이스 하나와 구체 타입 하나를 둔다 — A = 1/2 = 0.5.
+	// I = 0.5이므로 D = |0.5+0.5−1| = 0.
+	d.Vertices = append(d.Vertices,
+		graph.Vertex{ID: "example.com/m/svc.Store", Kind: graph.KindType,
+			Package: "example.com/m/svc", Interface: true},
+		graph.Vertex{ID: "example.com/m/svc.svcImpl", Kind: graph.KindType,
+			Package: "example.com/m/svc"},
+		// db는 전부 구체다 — A = 0, I = 0이므로 D = 1(완전 구체·완전 안정).
+		graph.Vertex{ID: "example.com/m/db.Row", Kind: graph.KindType,
+			Package: "example.com/m/db"},
+	)
+	rep := Metrics(d, metricsCfg())
+	svc := metricOf(rep, "svc")
+	if svc.Abstractness == nil || *svc.Abstractness != 0.5 {
+		t.Fatalf("svc A must be 0.5: %+v", svc)
+	}
+	if svc.Distance == nil || *svc.Distance != 0 {
+		t.Fatalf("svc D must be 0 (on the main sequence): %+v", svc)
+	}
+	db := metricOf(rep, "db")
+	if db.Abstractness == nil || *db.Abstractness != 0 {
+		t.Fatalf("db A must be 0 (all concrete): %+v", db)
+	}
+	if db.Distance == nil || *db.Distance != 1 {
+		t.Fatalf("db D must be 1 (concrete stable zone): %+v", db)
+	}
+	// web은 타입 정점이 없다 — A/D는 정의되지 않아 키가 빠진다.
+	web := metricOf(rep, "web")
+	if web.Abstractness != nil || web.Distance != nil {
+		t.Fatalf("type-less component must omit A/D: %+v", web)
+	}
+	// I가 정의되지 않은 고립 단위는 D도 정의되지 않는다 — |A+?−1|은 계산 불가.
+	d.Vertices = append(d.Vertices,
+		graph.Vertex{ID: "example.com/m/util.Helper", Kind: graph.KindType,
+			Package: "example.com/m/util"})
+	rep = Metrics(d, metricsCfg())
+	util := metricOf(rep, "util")
+	if util.Abstractness == nil || *util.Abstractness != 0 {
+		t.Fatalf("util A must be 0: %+v", util)
+	}
+	if util.Distance != nil {
+		t.Fatalf("isolated component must omit D (I undefined): %+v", util)
+	}
+}
