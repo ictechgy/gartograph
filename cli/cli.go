@@ -606,20 +606,35 @@ func hasFieldFinding(findings []analysis.Finding) bool {
 }
 
 // externalDispatchLimitation은 CHA dead의 메서드 보고에 붙는 외부 디스패치
-// 한계 문구를 고른다. 사실(satisfies)이 하나도 없는 문서는 그 규칙이
-// 적용되지 못한 옛 수확일 수 있다 — 규칙이 적용됐다고 말하면 거짓이다.
+// 한계 문구를 고른다. 문구는 문서가 실제로 수확한 사실만큼만 말한다 —
+// 이름 없는 인터페이스 수확 표시(AnonymousDispatch)가 없는 옛 문서에도 명명
+// 인터페이스의 satisfies는 있어서, 그 존재만으로 "이름 없는 것도 셌다"고 하면 거짓이다.
 // RTA는 SSA 전체 프로그램으로 외부 호출까지 보므로 이 문구가 없다.
 func externalDispatchLimitation(doc *graph.Document) string {
-	for _, v := range doc.Vertices {
-		if len(v.Satisfies) > 0 {
-			return "methods implementing interfaces declared outside the module (named, or anonymous " +
-				"literals in dependency source such as errors' interface{ Unwrap() error }) count as " +
-				"reachable while their receiver type is reachable; dispatch via reflection or generic " +
-				"interfaces is invisible to this graph"
-		}
+	const invisible = "dispatch via reflection or generic interfaces is invisible to this graph"
+	if doc.AnonymousDispatch {
+		return "methods implementing interfaces declared outside the module (named, or anonymous " +
+			"literals in dependency source such as errors' interface{ Unwrap() error }) count as " +
+			"reachable while their receiver type is reachable; " + invisible
+	}
+	if hasSatisfies(doc) {
+		return "methods implementing named interfaces declared outside the module count as reachable " +
+			"while their receiver type is reachable; this document predates anonymous-interface facts " +
+			"(e.g. errors' interface{ Unwrap() error }), so methods called only through them may appear " +
+			"unreachable — re-harvest; " + invisible
 	}
 	return "no vertex carries external-dispatch facts (satisfies); methods called only through " +
 		"interfaces declared outside the module may appear unreachable — re-harvest if this document predates them"
+}
+
+// hasSatisfies는 문서에 외부 디스패치 사실을 실은 정점이 하나라도 있는지 본다.
+func hasSatisfies(doc *graph.Document) bool {
+	for _, v := range doc.Vertices {
+		if len(v.Satisfies) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // explainDead는 한 정점이 왜 살아 있는지(또는 왜 못 찾았는지) 보여준다.
@@ -669,7 +684,7 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 		}
 		// 합성 걸음은 문서 간선이 없다 — 표시하지 않으면 소비자가 간선을 찾다 실패한다.
 		if ifaces, ok := analysis.IsExternalDispatch(doc, path[i-1], p); ok {
-			fmt.Fprintf(stdout, "  -> %s (external dispatch: %s)\n", p, strings.Join(ifaces, ", "))
+			fmt.Fprintf(stdout, "  -> %s (external dispatch: %s)\n", p, strings.Join(ifaces, " | "))
 		} else {
 			fmt.Fprintf(stdout, "  -> %s\n", p)
 		}
