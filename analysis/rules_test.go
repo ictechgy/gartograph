@@ -463,3 +463,76 @@ func TestStability(t *testing.T) {
 		}
 	}
 }
+
+// TestLimits는 컴포넌트 의존 수 상한 위반을 확인한다.
+// 상한 초과는 간선 하나의 위반이 아니라 컴포넌트 덩치의 사실이다 —
+// 정점 From/To는 비고 실제 수치가 사유에 실려야 한다.
+func TestLimits(t *testing.T) {
+	// web은 svc와 db 둘에 의존한다 — maxOut 1이면 위반이다.
+	doc := &graph.Document{
+		Module: "m",
+		Vertices: []graph.Vertex{
+			{ID: "m/web", Kind: graph.KindPackage},
+			{ID: "m/svc", Kind: graph.KindPackage},
+			{ID: "m/db", Kind: graph.KindPackage},
+			{ID: "m/api", Kind: graph.KindPackage},
+		},
+		Edges: []graph.Edge{
+			{From: "m/web", To: "m/svc", Kind: graph.EdgeImport},
+			{From: "m/web", To: "m/db", Kind: graph.EdgeImport},
+			{From: "m/api", To: "m/db", Kind: graph.EdgeImport},
+		},
+	}
+	maxOut, maxIn := 1, 1
+	cfg := &config.File{
+		Components: map[string][]string{
+			"web": {"web"}, "svc": {"svc"}, "db": {"db"}, "api": {"api"},
+		},
+		Deps: map[string][]string{
+			"web": {"svc", "db"}, "api": {"db"},
+		},
+		Limits: []config.LimitRule{
+			{Component: "web", MaxOut: &maxOut},
+			{Component: "db", MaxIn: &maxIn},
+		},
+	}
+	rep := CheckRules(doc, cfg)
+	var outV, inV *Violation
+	for i := range rep.Violations {
+		v := &rep.Violations[i]
+		if v.Rule != "limit" {
+			continue
+		}
+		switch v.Name {
+		case "maxOut":
+			outV = v
+		case "maxIn":
+			inV = v
+		}
+	}
+	if outV == nil || outV.FromComponent != "web" ||
+		!strings.Contains(outV.Reason, "depends on 2") {
+		t.Fatalf("web maxOut=1 with 2 deps must violate: %+v", rep.Violations)
+	}
+	if inV == nil || inV.ToComponent != "db" ||
+		!strings.Contains(inV.Reason, "depended on by 2") {
+		t.Fatalf("db maxIn=1 with 2 dependents must violate: %+v", rep.Violations)
+	}
+	// 경계 — 상한과 같은 수는 위반이 아니다.
+	maxOut = 2
+	maxIn = 2
+	rep = CheckRules(doc, cfg)
+	for _, v := range rep.Violations {
+		if v.Rule == "limit" {
+			t.Fatalf("at-limit must not violate: %+v", v)
+		}
+	}
+	// baseline 키는 수치가 변해도 같아야 한다 — 덩치가 더 커져도 같은 위반이다.
+	v1 := Violation{Rule: "limit", Name: "maxOut", FromComponent: "web",
+		Reason: "depends on 2 components; limit maxOut is 1"}
+	v2 := Violation{Rule: "limit", Name: "maxOut", FromComponent: "web",
+		Reason: "depends on 5 components; limit maxOut is 1"}
+	if ViolationBaselineKey(v1) != ViolationBaselineKey(v2) {
+		t.Fatal("limit key must not depend on the observed count")
+	}
+}

@@ -111,6 +111,7 @@ func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
 	}
 	rep.Violations = append(rep.Violations, reachViolations(d, cfg, comp)...)
 	rep.Violations = append(rep.Violations, stabilityViolations(d, cfg, comp)...)
+	rep.Violations = append(rep.Violations, limitViolations(d, cfg, comp)...)
 	rep.Unmapped = mapping.Unmapped
 	rep.UnmappedExternal = mapping.UnmappedExternal
 	rep.UnmatchedComponents = mapping.UnmatchedComponents
@@ -308,24 +309,7 @@ func stabilityViolations(d *graph.Document, cfg *config.File,
 	if !cfg.Stability {
 		return nil
 	}
-	inDeg, outDeg := map[string]map[string]bool{}, map[string]map[string]bool{}
-	for _, e := range d.Edges {
-		if e.Kind != graph.EdgeImport {
-			continue
-		}
-		fu, tu := comp[e.From], comp[e.To]
-		if fu == "" || tu == "" || fu == tu {
-			continue
-		}
-		if outDeg[fu] == nil {
-			outDeg[fu] = map[string]bool{}
-		}
-		if inDeg[tu] == nil {
-			inDeg[tu] = map[string]bool{}
-		}
-		outDeg[fu][tu] = true
-		inDeg[tu][fu] = true
-	}
+	inDeg, outDeg := componentDegrees(d, comp)
 	inst := func(c string) float64 {
 		ca, ce := len(inDeg[c]), len(outDeg[c])
 		if ca+ce == 0 {
@@ -353,6 +337,67 @@ func stabilityViolations(d *graph.Document, cfg *config.File,
 				inst(tu), inst(fu)),
 			Position: firstPosition(e),
 		})
+	}
+	return out
+}
+
+// componentDegrees는 컴포넌트 단위의 들어오는/나가는 의존 집합을 센다.
+// 같은 컴포넌트 안의 의존은 결합이 아니라 제외하고, 같은 쌍의 간선이
+// 여러 개여도 컴포넌트 쌍은 하나로 센다 — stability와 limits가 같은
+// 수치를 보아야 보고가 거짓말하지 않는다.
+func componentDegrees(d *graph.Document, comp map[string]string) (inDeg, outDeg map[string]map[string]bool) {
+	inDeg, outDeg = map[string]map[string]bool{}, map[string]map[string]bool{}
+	for _, e := range d.Edges {
+		if e.Kind != graph.EdgeImport {
+			continue
+		}
+		fu, tu := comp[e.From], comp[e.To]
+		if fu == "" || tu == "" || fu == tu {
+			continue
+		}
+		if outDeg[fu] == nil {
+			outDeg[fu] = map[string]bool{}
+		}
+		if inDeg[tu] == nil {
+			inDeg[tu] = map[string]bool{}
+		}
+		outDeg[fu][tu] = true
+		inDeg[tu][fu] = true
+	}
+	return inDeg, outDeg
+}
+
+// limitViolations는 컴포넌트의 의존 수 상한을 검사한다.
+// 상한 초과는 어느 한 간선의 위반이 아니라 컴포넌트 덩치의 사실이다 —
+// From/To 정점은 비우고 컴포넌트와 실제 수치를 사유로 싣는다.
+// Name에는 어긴 상한 종류(maxIn/maxOut)를 넣는다 — 같은 컴포넌트에
+// 두 상한이 걸릴 때의 구분자이고 baseline 동일성의 재료다.
+func limitViolations(d *graph.Document, cfg *config.File,
+	comp map[string]string) []Violation {
+	if len(cfg.Limits) == 0 {
+		return nil
+	}
+	inDeg, outDeg := componentDegrees(d, comp)
+	var out []Violation
+	for _, r := range cfg.Limits {
+		if r.MaxOut != nil && len(outDeg[r.Component]) > *r.MaxOut {
+			out = append(out, Violation{
+				FromComponent: r.Component,
+				Rule:          "limit",
+				Name:          "maxOut",
+				Reason: fmt.Sprintf("depends on %d components; limit maxOut is %d",
+					len(outDeg[r.Component]), *r.MaxOut),
+			})
+		}
+		if r.MaxIn != nil && len(inDeg[r.Component]) > *r.MaxIn {
+			out = append(out, Violation{
+				ToComponent: r.Component,
+				Rule:        "limit",
+				Name:        "maxIn",
+				Reason: fmt.Sprintf("depended on by %d components; limit maxIn is %d",
+					len(inDeg[r.Component]), *r.MaxIn),
+			})
+		}
 	}
 	return out
 }
