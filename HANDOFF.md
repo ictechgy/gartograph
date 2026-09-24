@@ -2,11 +2,12 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 진행 중 — fix/external-interface-dispatch (2026-09-24)
+## 최근 완료 — 외부 인터페이스 디스패치 dead 오탐 수정 (2026-09-24)
 
-외부 벤치(graphify 대조, 원본 grep 판정)에서 자기 저장소 `dead` 11건 중
-7건이 오탐이었다 — 모듈 밖 인터페이스로만 불리는 메서드(flag.Value의
-Set/String, error.Error, yaml.Unmarshaler)와 그 전이(Error→quote).
+**PR #13(`68efa43`)로 머지 완료.** 외부 벤치(graphify 대조, 원본 grep 판정)에서
+자기 저장소 `dead` 11건 중 7건이 오탐이었다 — 모듈 밖 인터페이스로만 불리는
+메서드(flag.Value의 Set/String, error.Error, yaml.Unmarshaler)와 그
+전이(Error→quote).
 - 수확: 메서드 정점에 `satisfies`(외부 명명 인터페이스, 정렬)·`receiver`
   (리시버 타입 정점 ID) 사실. `source/dispatch.go`. 문서 간선으로 긋지
   않는다 — 메서드→리시버 references와 맞물려 cycles 2-순환이 된다.
@@ -17,6 +18,24 @@ Set/String, error.Error, yaml.Unmarshaler)와 그 전이(Error→quote).
 - 곁다리 수정: 별칭 리시버 메서드 ID가 `pkg.(pkg.A).M`으로 깨지던 버그(Unalias).
 - 실측: 자기 저장소 13→6건(남은 함수·메서드 4건 전부 진짜 미사용),
   go-mssqldb(라이브러리) 509→185, actionlint 58→37. 시간 증가 없음.
+- 리뷰: code-reviewer MEDIUM 5건(별칭 Receiver·한계 문구 진실성 3건·
+  shared/path 불일치) 반영 후, GLM(packet-ask `--diff main`, effort high)
+  "차단 결함 없음". 비차단 중 path·impact·RTA 계약은 `cbd7672` 테스트로
+  고정했다. 처리표는 PR #13 코멘트에 있다.
+- 버린 설계: 리시버 타입→메서드 **문서 간선**. 메서드→리시버 references와
+  맞물려 모든 해당 메서드가 `cycles --level symbol`에 2-순환이 된다.
+  needs-review 같은 확신도 등급도 쓰지 않았다(사실만 싣는 원칙).
+- 배경: 이 결함은 graphify(tree-sitter) 대조 벤치에서 나왔다. graphify는 Go
+  호출 간선의 90%를 오간선 없이 재현했지만 메서드 호출의 37%를 놓쳐,
+  같은 루트로 dead를 흉내 내면 정밀도 17%였다(수정 전 gartograph 36%).
+
+**`gartograph schema` 머지 완료** — isthmus persistence 도메인의 첫 코드
+생산자(PR #11 `7202bf4` + limitations 수정 #12 `763c386`). `platform: "go"` +
+`target: "persistence"` `relation-use`를 낸다. persistence 생산자는 현재
+다섯 개 — schemagraph(SQL `relation-decl` 수신 측)와
+gartograph·rustograph(PR #15)·kartograph(PR #102)·cartograph(PR #136).
+isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
+`schema`는 발행본에 없는 main 기능이다.
 
 다음 후보:
 - 이름 없는 인터페이스 디스패치(errors.Is/As/Unwrap의
