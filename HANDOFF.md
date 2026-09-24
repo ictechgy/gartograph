@@ -9,8 +9,11 @@
 - `source/anoniface.go`: 의존 패키지(`dependencyPackages`)의 `p.Syntax`에서
   패키지 스코프 명명 선언이 아닌 인터페이스 표기(단언·type switch·인자 타입·함수 안
   type 선언·패키지 스코프 별칭)를 모아 `p.TypesInfo`로 읽는다. 심볼 레벨 로드는
-  의존도 소스에서 타입체크한다(이 저장소 181/181 패키지에 Syntax·TypesInfo 실측).
-  타입 제약 전용(`!IsMethodSet`)·메서드 없는 인터페이스는 뺀다.
+  의존도 소스에서 타입체크한다(이 저장소 unsafe 제외 전 패키지에 Syntax·TypesInfo
+  실측). 타입 제약 전용(`!IsMethodSet`)·메서드 없는 인터페이스, 서명에 함수 로컬
+  타입·타입 파라미터가 있는 표기(`mentionsUnnameable` — 모듈이 적을 수 없어 구현
+  불가)는 뺀다. 로컬 타입은 패키지 타입과 같은 이름으로 출력돼, 남겨 두면 이름
+  중복 제거가 구현 가능한 표기를 밀어냈다(2차 리뷰 MEDIUM-A).
 - Satisfies 이름은 파라미터 이름 없는 메서드 집합("interface{Unwrap() error}",
   비공개 메서드는 패키지 경로 한정) — TypeString은 파라미터 이름이 섞여 같은
   인터페이스가 둘로 갈렸다.
@@ -22,7 +25,7 @@
   누락(과소 근사), 패키지 스코프 별칭 누락. TypesInfo 직접 사용으로 전부 해소.
 - 실측: go-mssqldb 185→180(정확히 Unwrap 4 + Is 1), actionlint 37→37, 자기
   저장소 6→6. 시간 변화 노이즈 범위, 두 번 수확 바이트 동일.
-- 리뷰: code-reviewer MEDIUM 4·LOW 6 — 처리표는 PR #16 코멘트.
+- 리뷰: code-reviewer 1차 MEDIUM 4·LOW 6, 2차 MEDIUM 1·LOW 2 — 처리표는 PR #16 코멘트.
 
 ## 이전 완료 — ID 명령 기본 수확 레벨 수정 (2026-09-24, PR #15 머지)
 

@@ -321,7 +321,9 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
 `version: 2`, `tool: "gartograph"`, `level`, `root` (filesystem dir),
 `module` (module path), `roots` (harvested retention roots: `main`, `init`,
 plus `Test*`/`Benchmark*`/`Example*`/`Fuzz*` entry points under `--tests`),
-`vertices`, `edges`, `limitations`.
+`vertices`, `edges`, `limitations`, and `anonymousDispatch: true` when
+method `satisfies` facts include anonymous interfaces from dependency
+source (symbol-level harvests; older documents lack it).
 
 Edges carry `positions` — every source site where the relation holds
 (import decls for `import`, call expressions for `call`, and so on).
@@ -337,7 +339,9 @@ symbols, `pkg/path.(Recv).Name` for methods. Vertex `kind`:
 `// Code generated ... DO NOT EDIT.` — marked, never hidden. Type vertices
 also carry `interface: true` or `fields` (declared `"name:Type"` list) so
 `diff` can classify interface method additions and struct-field contract
-breaks as breaking. Edge `kind`:
+breaks as breaking. Method vertices implementing interfaces declared
+outside the module carry `satisfies` (sorted interface names) and
+`receiver` (the receiver type vertex ID). Edge `kind`:
 `import`/`contains`/`embeds`/`implements`/`references`/`call`/`signature`
 (signature = type references inside declaration signatures; a dependency
 edge, unlike `contains` which is ownership).
