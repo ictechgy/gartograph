@@ -2183,6 +2183,7 @@ func TestDeadExternalDispatch(t *testing.T) {
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 
 	"example.com/fixture/lib"
@@ -2196,9 +2197,16 @@ func main() {
 	_ = json.Unmarshal([]byte("{}"), &cfg)
 	_, _ = lib.Parse("x")
 	_ = lib.Wrapper{}
+	_ = errors.Is(lib.WrapErr{}, nil)
 }
 `,
 		"lib/lib.go": `package lib
+
+// WrapErr.Unwrap은 errors가 이름 없는 interface{ Unwrap() error }로만 부른다.
+type WrapErr struct{}
+
+func (WrapErr) Error() string  { return "wrap" }
+func (WrapErr) Unwrap() error { return nil }
 
 type Named struct{}
 
@@ -2253,7 +2261,8 @@ func (Orphan) String() string { return "orphan" }
 	for _, alive := range []string{
 		lib + ".(Patterns).Set", lib + ".(Patterns).String",
 		lib + ".(Level).UnmarshalText", lib + ".(ParseError).Error", lib + ".quote",
-		lib + ".(Named).String", // 임베딩 승격 — Wrapper가 Named를 embeds로 끌어온다
+		lib + ".(Named).String",   // 임베딩 승격 — Wrapper가 Named를 embeds로 끌어온다
+		lib + ".(WrapErr).Unwrap", // 의존 소스의 이름 없는 인터페이스(errors의 Unwrap 단언)
 	} {
 		if _, ok := found[alive]; ok {
 			t.Fatalf("%s is reachable through external dispatch but was reported: %s", alive, out)
@@ -2287,10 +2296,59 @@ func (Orphan) String() string { return "orphan" }
 		t.Fatalf("rta report must not claim the receiver rule: %s", out)
 	}
 	// 문구를 빼는 근거: RTA는 SSA 전체 프로그램으로 외부 호출을 직접 봐서 이 메서드들을 살린다.
-	for _, alive := range []string{lib + ".(Patterns).Set", lib + ".(ParseError).Error", lib + ".quote"} {
+	for _, alive := range []string{lib + ".(Patterns).Set", lib + ".(ParseError).Error", lib + ".quote",
+		lib + ".(WrapErr).Unwrap"} {
 		if strings.Contains(out, `"`+alive+`"`) {
 			t.Fatalf("rta must keep %s reachable through external calls: %s", alive, out)
 		}
+	}
+}
+
+// TestDeadAnonymousDispatchOldDocument는 명명 인터페이스 satisfies만 있고
+// 이름 없는 인터페이스 수확 표시가 없는 문서(v0.7 이전 수확)가 "이름 없는 것도
+// 셌다"고 거짓 문구를 내지 않고 재수확을 권하는지 확인한다.
+func TestDeadAnonymousDispatchOldDocument(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "errors"
+
+type WrapErr struct{}
+
+func (WrapErr) Error() string  { return "wrap" }
+func (WrapErr) Unwrap() error { return nil }
+func (WrapErr) Helper()       {}
+
+func main() { _ = errors.Is(WrapErr{}, nil) }
+`,
+	})
+	code, out, errb := run(t, "graph", "--level", "symbol", "--format", "json", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("graph failed: %d %s", code, errb)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["anonymousDispatch"] != true {
+		t.Fatalf("symbol harvest must mark anonymous-interface facts: %v", doc["anonymousDispatch"])
+	}
+	delete(doc, "anonymousDispatch")
+	old, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "old.json")
+	if err := os.WriteFile(path, old, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb = run(t, "dead", "--graph", path, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead --graph failed: %d %s", code, errb)
+	}
+	if strings.Contains(out, "anonymous literals in dependency source") ||
+		!strings.Contains(out, "predates anonymous-interface facts") {
+		t.Fatalf("old document must not claim anonymous-interface facts: %s", out)
 	}
 }
 
@@ -2321,6 +2379,7 @@ func Parse(s string) (int, error) { return 0, &ParseError{} }
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatal(err)
 	}
+	delete(doc, "anonymousDispatch")
 	for _, v := range doc["vertices"].([]any) {
 		delete(v.(map[string]any), "satisfies")
 		delete(v.(map[string]any), "receiver")

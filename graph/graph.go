@@ -127,7 +127,9 @@ type Vertex struct {
 	// const가 아닌 정점이나 값을 수확하지 않은 옛 문서는 비어 있다.
 	Value string `json:"value,omitempty"`
 	// Satisfies는 method 정점이 모듈 밖에서 선언된 인터페이스의 메서드를
-	// 구현한다는 사실이다 — 인터페이스를 "경로.이름"(universe는 "error")으로
+	// 구현한다는 사실이다 — 명명 인터페이스는 "경로.이름"(universe는 "error"),
+	// 의존 소스의 이름 없는 표기는 파라미터 이름 없는 메서드 집합
+	// ("interface{Unwrap() error}")으로
 	// 정렬해 담는다. 모듈 밖 코드(fmt, flag, encoding/json 등)의 호출 지점은
 	// 그래프에 없으므로, 이 사실 없이는 error.Error·flag.Value.Set 같은
 	// 메서드가 살아 있어도 unreachable로 보인다. 판정은 analysis가 한다.
@@ -172,6 +174,11 @@ type Document struct {
 	Vertices    []Vertex `json:"vertices"`
 	Edges       []Edge   `json:"edges"`
 	Limitations []string `json:"limitations,omitempty"`
+	// AnonymousDispatch는 이 문서의 Satisfies가 의존 소스의 이름 없는 인터페이스
+	// 표기까지 담았다는 수확 사실이다. 이 수확 이전 문서(false)에도 명명
+	// 인터페이스의 Satisfies는 있어서, Satisfies 존재만으로는 "이름 없는 것도
+	// 셌다"를 말할 수 없다 — 소비자가 거짓 한계 문구를 내지 않게 하는 표시다.
+	AnonymousDispatch bool `json:"anonymousDispatch,omitempty"`
 }
 
 // Limitation은 분석이 보지 못한 것을 그 입력에서 실제로 세어 적는다.

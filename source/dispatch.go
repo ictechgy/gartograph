@@ -24,10 +24,16 @@ type externalIface struct {
 }
 
 // markExternalDispatch는 모듈 안 구체 타입의 메서드 중 외부 인터페이스를
-// 구현하는 것에 Satisfies·Receiver 사실을 싣는다. 심볼 레벨 전용이다 —
-// 타입 레벨 문서에는 메서드 정점이 없다.
+// 구현하는 것에 Satisfies·Receiver 사실을 싣는다. 외부 인터페이스는 export
+// data의 명명 인터페이스와 의존 소스의 이름 없는 표기(anoniface.go) 둘이다.
+// 심볼 레벨 전용이다 — 타입 레벨 문서에는 메서드 정점이 없다.
 func (h *harvester) markExternalDispatch(internal []*packages.Package) {
-	ifaces := externalInterfaces(internal)
+	anon := scanAnonymousInterfaces(internal)
+	for _, l := range anon.limitations() {
+		h.doc.Limitation(l)
+	}
+	h.doc.AnonymousDispatch = true
+	ifaces := append(externalInterfaces(internal), anon.ifaces...)
 	if len(ifaces) == 0 {
 		return
 	}

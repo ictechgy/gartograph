@@ -2,7 +2,32 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — ID 명령 기본 수확 레벨 수정 (2026-09-24, fix/query-default-level)
+## 최근 완료 — 이름 없는 인터페이스 디스패치 수확 (2026-09-24, fix/anonymous-interface-dispatch)
+
+`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`처럼 의존 코드 안에만 있는
+이름 없는 인터페이스로 불리는 메서드가 dead로 나왔다(go-mssqldb 5건).
+- `source/anoniface.go`: 의존 패키지(`dependencyPackages`)의 `p.Syntax`에서
+  패키지 스코프 명명 선언이 아닌 인터페이스 표기(단언·type switch·인자 타입·함수 안
+  type 선언·패키지 스코프 별칭)를 모아 `p.TypesInfo`로 읽는다. 심볼 레벨 로드는
+  의존도 소스에서 타입체크한다(이 저장소 unsafe 제외 전 패키지에 Syntax·TypesInfo
+  실측). 타입 제약 전용(`!IsMethodSet`)·메서드 없는 인터페이스, 서명에 함수 로컬
+  타입·타입 파라미터가 있는 표기(`mentionsUnnameable` — 모듈이 적을 수 없어 구현
+  불가)는 뺀다. 로컬 타입은 패키지 타입과 같은 이름으로 출력돼, 남겨 두면 이름
+  중복 제거가 구현 가능한 표기를 밀어냈다(2차 리뷰 MEDIUM-A).
+- Satisfies 이름은 파라미터 이름 없는 메서드 집합("interface{Unwrap() error}",
+  비공개 메서드는 패키지 경로 한정) — TypeString은 파라미터 이름이 섞여 같은
+  인터페이스가 둘로 갈렸다.
+- 문서 필드 `anonymousDispatch`(수확 표시). dead 문구가 이것을 보고 고른다 —
+  명명 satisfies만 있는 v0.7 이전 문서에 "이름 없는 것도 셌다"고 하면 거짓.
+- **버린 설계: 합성 파일 재해석**(1차 구현). 의존이 export data뿐이라는 전제가
+  틀렸다. 리뷰가 재현한 결함: 함수 안 타입·타입 파라미터·비공개 선언에 가려진
+  이름이 다른 타입으로 풀림(거짓 사실), 승격된 비공개 메서드로 봉인된 인터페이스
+  누락(과소 근사), 패키지 스코프 별칭 누락. TypesInfo 직접 사용으로 전부 해소.
+- 실측: go-mssqldb 185→180(정확히 Unwrap 4 + Is 1), actionlint 37→37, 자기
+  저장소 6→6. 시간 변화 노이즈 범위, 두 번 수확 바이트 동일.
+- 리뷰: code-reviewer 1차 MEDIUM 4·LOW 6, 2차 MEDIUM 1·LOW 2 — 처리표는 PR #16 코멘트.
+
+## 이전 완료 — ID 명령 기본 수확 레벨 수정 (2026-09-24, PR #15 머지)
 
 `query`·`impact`·`path`·`shared`가 `--level` 없이 package 레벨로 수확해
 `--graph` 없이는 메서드·타입 ID가 `vertex not found`였다(추정이던 원인 확인).
@@ -55,9 +80,6 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 `schema`는 발행본에 없는 main 기능이다.
 
 다음 후보:
-- 이름 없는 인터페이스 디스패치(errors.Is/As/Unwrap의
-  `interface{ Unwrap() error }`) — 의존 패키지 TypesInfo에서 익명 인터페이스
-  수집. 지금은 limitation 문구로만 알린다.
 - 비공개 외부 인터페이스(context.stringer 등)가 satisfies에 섞이는 triage 노이즈.
 - (미확인, 리뷰 LOW) `objectID` 충돌 가능성 — 경로에 `.`이 든 패키지
   `example.com/x.y`와 패키지 `example.com/x`의 심볼 `y`가 같은 ID. 재현

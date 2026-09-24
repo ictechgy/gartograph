@@ -246,8 +246,12 @@ gartograph dead   --baseline .dead-baseline.json --strict
   보고된 메서드는 `satisfies` 목록을 triage 사실로 유지하고, `dead --explain`은
   리시버→메서드 걸음에 그래프 간선이 없으므로 `(external dispatch: …)`로 표시합니다.
   이 규칙은 `dead` 전용이며 `shared`·`path`·`impact`는 의존 간선만 따릅니다.
-  reflection·이름 없는 인터페이스(`errors.Is/As/Unwrap`)·제네릭 인터페이스 경유
-  디스패치는 여전히 안 보이고 보고가 그 사실을 밝힙니다.
+  의존 소스의 이름 없는 인터페이스(`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`,
+  함수 안 인터페이스 타입, 인자 타입 리터럴, 패키지 스코프 별칭)도 파라미터
+  이름 없는 메서드 집합 이름(`interface{Unwrap() error}`)으로 셉니다. 이렇게
+  수확한 문서는 `anonymousDispatch: true`를 싣고, 표시 없는 옛 저장 문서에는
+  재수확 권고가 붙습니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히
+  안 보이고 보고가 그 사실을 밝힙니다.
 
 ## 그래프 문서
 
@@ -257,6 +261,9 @@ gartograph dead   --baseline .dead-baseline.json --strict
 type 정점은 `interface: true` 또는 `fields`(선언 순서의 `"name:Type"` 목록)를
 답니다 — `diff`가 인터페이스 메서드 추가와 struct 필드 계약 파괴를
 breaking으로 분류하는 재료입니다.
+모듈 밖 인터페이스를 구현하는 method 정점은 `satisfies`(정렬된 인터페이스 이름)와
+`receiver`(리시버 타입 정점 ID)를 답니다. 문서는 이름 없는 인터페이스까지 수확했으면
+`anonymousDispatch: true`를 싣습니다(심볼 레벨 수확, 옛 문서엔 없음).
 간선 종류: `import`/`contains`/`embeds`/`implements`/`references`/`call`/
 `signature`(선언 시그니처 안의 타입 참조 — `contains`와 달리 의존 관계).
 인터페이스 호출은 CHA 팬아웃으로 인터페이스 메서드와 모든 구현 메서드에
