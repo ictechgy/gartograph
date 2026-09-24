@@ -147,8 +147,10 @@ func TestExternalDispatchTypeLevel(t *testing.T) {
 }
 
 // anonDispatchFixture는 의존 모듈(replace로 붙인 example.com/dep)과 std errors가
-// 이름 없는 인터페이스로만 부르는 메서드를 모은 모듈이다. 대조군으로 시그니처
-// 불일치(Wrong)·제네릭이라 해석할 수 없는 리터럴(Gener)을 담는다.
+// 이름 없는 인터페이스로만 부르는 메서드를 모은 모듈이다. 봉인(임베드 승격된
+// 비공개 메서드)·패키지 스코프 별칭·파라미터 이름만 다른 두 표기를 담고,
+// 대조군으로 시그니처 불일치(Wrong)·타입 파라미터(Gener)·함수 안 타입에
+// 가려진 이름(Shadowed)·타입 제약 전용 인터페이스(Constrained)를 담는다.
 func anonDispatchFixture(t *testing.T) string {
 	t.Helper()
 	return testutil.WriteModule(t, map[string]string{
@@ -200,6 +202,53 @@ func Gen[T any](x any) {
 		_ = g.GenIt()
 	}
 }
+
+type Base struct{}
+
+func (Base) sealed() {}
+
+func Seal(x any) {
+	if s, ok := x.(interface {
+		sealed()
+		Hook()
+	}); ok {
+		s.Hook()
+	}
+}
+
+type Aliased = interface{ AliasCall() }
+
+func Alias(x any) {
+	if a, ok := x.(Aliased); ok {
+		a.AliasCall()
+	}
+}
+
+func Named1(x any) {
+	if h, ok := x.(interface{ Hand(ctx string) error }); ok {
+		_ = h.Hand("")
+	}
+}
+
+func Named2(x any) {
+	if h, ok := x.(interface{ Hand(string) error }); ok {
+		_ = h.Hand("")
+	}
+}
+
+func Shadow(x any) {
+	type Token string
+	if s, ok := x.(interface{ UseShadow(Token) }); ok {
+		s.UseShadow("")
+	}
+}
+
+func Sum[T interface {
+	~int
+	Constrain()
+}](v T) {
+	v.Constrain()
+}
 `,
 		"main.go": `package main
 
@@ -238,6 +287,26 @@ type Gener struct{}
 
 func (Gener) GenIt() int { return 0 }
 
+type Mine struct{ dep.Base }
+
+func (Mine) Hook() {}
+
+type Al struct{}
+
+func (Al) AliasCall() {}
+
+type Hander struct{}
+
+func (Hander) Hand(string) error { return nil }
+
+type Shadowed struct{}
+
+func (Shadowed) UseShadow(dep.Token) {}
+
+type Constrained int
+
+func (Constrained) Constrain() {}
+
 type WrapErr struct{ inner error }
 
 func (w WrapErr) Error() string { return "wrap" }
@@ -251,6 +320,12 @@ func main() {
 	dep.Cancel(Canc{})
 	dep.Use(User{})
 	dep.Gen[int](Gener{})
+	dep.Seal(Mine{})
+	dep.Alias(Al{})
+	dep.Named1(Hander{})
+	dep.Named2(Hander{})
+	dep.Shadow(Shadowed{})
+	dep.Sum(Constrained(0))
 	_ = errors.Is(WrapErr{}, nil)
 }
 `,
@@ -270,6 +345,10 @@ func TestAnonymousInterfaceDispatchFacts(t *testing.T) {
 		{m + ".(Canc).CancelIt", "interface{CancelIt()}", m + ".Canc"},
 		{m + ".(User).UseToken", "interface{UseToken(example.com/dep.Token)}", m + ".User"},
 		{m + ".(WrapErr).Unwrap", "interface{Unwrap() error}", m + ".WrapErr"},
+		// 봉인: 비공개 메서드는 임베드한 dep.Base에서 승격된다 — 밖에서도 구현된다.
+		{m + ".(Mine).Hook", "interface{Hook(); example.com/dep.sealed()}", m + ".Mine"},
+		{m + ".(Al).AliasCall", "interface{AliasCall()}", m + ".Al"},
+		{m + ".(Hander).Hand", "interface{Hand(string) error}", m + ".Hander"},
 	}
 	for _, c := range cases {
 		v, ok := doc.VertexByID(c.id)
@@ -284,17 +363,28 @@ func TestAnonymousInterfaceDispatchFacts(t *testing.T) {
 			t.Fatalf("%s: satisfies must be sorted, got %v", c.id, v.Satisfies)
 		}
 	}
-	// 시그니처가 다르면 이름이 같아도 구현이 아니다 — 사실 없음.
-	// 타입 파라미터를 쓰는 리터럴은 해석할 수 없어 사실 없음(limitation으로 셈).
-	for _, id := range []string{m + ".(Wrong).SetDeadline", m + ".(Gener).GenIt"} {
+	// 파라미터 이름만 다른 두 표기는 같은 인터페이스다 — 이름이 하나여야 한다.
+	hander, _ := doc.VertexByID(m + ".(Hander).Hand")
+	if len(hander.Satisfies) != 1 {
+		t.Fatalf("parameter names must not split one interface into two names, got %v", hander.Satisfies)
+	}
+	// 대조군 — 시그니처 불일치, 타입 파라미터(T는 모듈 메서드가 적을 수 없다),
+	// 함수 안 Token에 가려진 이름(dep.Token이 아니다), 타입 제약 전용 인터페이스.
+	for _, id := range []string{
+		m + ".(Wrong).SetDeadline", m + ".(Gener).GenIt",
+		m + ".(Shadowed).UseShadow", m + ".(Constrained).Constrain",
+	} {
 		v, _ := doc.VertexByID(id)
 		if len(v.Satisfies) != 0 {
 			t.Fatalf("%s must carry no dispatch facts, got %v", id, v.Satisfies)
 		}
 	}
-	if !slices.ContainsFunc(doc.Limitations, func(l string) bool {
-		return strings.Contains(l, "interface literals in dependencies could not be resolved")
+	if !doc.AnonymousDispatch {
+		t.Fatal("symbol harvest must mark that anonymous-interface facts were harvested")
+	}
+	if slices.ContainsFunc(doc.Limitations, func(l string) bool {
+		return strings.Contains(l, "no syntax or type information")
 	}) {
-		t.Fatalf("unresolved literals must be counted as a limitation, got %v", doc.Limitations)
+		t.Fatalf("every dependency here has type information, got %v", doc.Limitations)
 	}
 }
