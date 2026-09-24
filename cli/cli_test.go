@@ -2451,4 +2451,35 @@ func main() {}
 	if !reported[m+".onlyBlank"] {
 		t.Fatalf("a symbol used only by a blank function must still be reported: %s", out)
 	}
+	// RTA도 빈 초기화식을 실행 지점으로 본다 — 합성 init이 그 초기화식을 돈다.
+	code, out, errb = run(t, "dead", "--dir", dir, "--algo", "rta", "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead --algo rta failed: %d %s", code, errb)
+	}
+	if strings.Contains(out, `"`+m+`.first"`) {
+		t.Fatalf("rta must keep a function called by a blank initializer: %s", out)
+	}
+}
+
+// TestDeadRTAExplainSkipsCollidingID는 RTA 인접 맵이 점 경로 패키지와 ID가
+// 겹치는 함수를 경로에 싣지 않는지 확인한다 — "함수가 패키지를 호출한다"는 거짓이다.
+func TestDeadRTAExplainSkipsCollidingID(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.27\n",
+		"main.go": `package main
+
+import (
+	"example.com/m/x"
+	xy "example.com/m/x.y"
+)
+
+func main() { x.Use(); xy.Other() }
+`,
+		"x/x.go":    "package x\n\nfunc y() {}\n\nfunc Use() { y() }\n",
+		"x.y/xy.go": "package xy\n\nfunc Other() {}\n",
+	})
+	_, out, _ := run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/m/x.y")
+	if strings.Contains(out, "-> example.com/m/x.y\n") {
+		t.Fatalf("rta explain must not route a call to a package vertex: %s", out)
+	}
 }

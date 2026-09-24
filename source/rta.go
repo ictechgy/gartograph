@@ -25,7 +25,7 @@ import (
 // var·const·type 정점은 호출 그래프의 노드가 아니므로 집합에 나타나지
 // 않는다 — 비호출 심볼의 판정은 그래프 도달성이 담당한다.
 func RTAReachable(opts Options, roots map[string]bool) (map[string]bool, error) {
-	res, err := analyzeRTA(opts, roots)
+	res, _, err := analyzeRTA(opts, roots)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func RTAReachable(opts Options, roots map[string]bool) (map[string]bool, error) 
 // --algo rta가 CHA 수확 그래프가 아니라 실제 판정을 내린 그래프 위의
 // 경로를 보여주기 위한 장치다.
 func RTAAdjacency(opts Options, roots map[string]bool) (map[string][]string, map[string]bool, error) {
-	res, err := analyzeRTA(opts, roots)
+	res, pkgPaths, err := analyzeRTA(opts, roots)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -63,6 +63,11 @@ func RTAAdjacency(opts Options, roots map[string]bool) (map[string][]string, map
 			continue
 		}
 		from := objectID(fromObj)
+		// 점 경로 패키지와 ID가 겹치는 함수는 문서에서 그 ID가 패키지 정점이다 —
+		// 경로에 실으면 "함수가 패키지를 호출한다"가 된다(수확기와 같은 규칙).
+		if pkgPaths[from] {
+			continue
+		}
 		seen := map[string]bool{}
 		for _, e := range node.Out {
 			if e.Callee == nil || e.Callee.Func == nil {
@@ -73,7 +78,7 @@ func RTAAdjacency(opts Options, roots map[string]bool) (map[string][]string, map
 				continue
 			}
 			to := objectID(toObj)
-			if !seen[to] {
+			if !seen[to] && !pkgPaths[to] {
 				seen[to] = true
 				adj[from] = append(adj[from], to)
 			}
@@ -88,30 +93,43 @@ func RTAAdjacency(opts Options, roots map[string]bool) (map[string][]string, map
 
 // analyzeRTA는 SSA를 만들고 주어진 루트에서 RTA를 실행한다.
 // 도달 집합과 인접 맵의 두 소비자가 같은 분석 결과를 나누기 위한 단위다.
-func analyzeRTA(opts Options, roots map[string]bool) (*rta.Result, error) {
+// 두 번째 값은 프로그램의 패키지 경로 집합이다 — 심볼 ID와 겹치는 경로를 거르는 재료.
+func analyzeRTA(opts Options, roots map[string]bool) (*rta.Result, map[string]bool, error) {
 	pkgs, err := loadSSA(opts)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	prog, ssaPkgs := ssautil.AllPackages(pkgs, ssa.InstantiateGenerics)
 	prog.Build()
 
 	var rootFns []*ssa.Function
 	for _, sp := range ssaPkgs {
-		if sp == nil || sp.Pkg == nil {
-			continue
-		}
-		for _, member := range sp.Members {
-			fn, ok := member.(*ssa.Function)
-			if !ok || fn.Object() == nil {
-				continue
-			}
-			if roots[objectID(fn.Object())] {
-				rootFns = append(rootFns, fn)
-			}
+		if sp != nil && sp.Pkg != nil {
+			rootFns = append(rootFns, packageRootFns(sp, roots)...)
 		}
 	}
-	return rta.Analyze(rootFns, true), nil
+	pkgPaths := map[string]bool{}
+	for _, sp := range prog.AllPackages() {
+		pkgPaths[sp.Pkg.Path()] = true
+	}
+	return rta.Analyze(rootFns, true), pkgPaths, nil
+}
+
+// packageRootFns는 SSA 패키지에서 루트 정점에 해당하는 함수를 고른다.
+// 빈 식별자 루트(pkg._)가 있으면 합성 init을 더한다 — 패키지 변수 초기화식은
+// 합성 init이 실행하고, 그 함수는 Object가 없어 ID로 짝지을 수 없다.
+func packageRootFns(sp *ssa.Package, roots map[string]bool) []*ssa.Function {
+	var out []*ssa.Function
+	for _, member := range sp.Members {
+		fn, ok := member.(*ssa.Function)
+		if ok && fn.Object() != nil && roots[objectID(fn.Object())] {
+			out = append(out, fn)
+		}
+	}
+	if init := sp.Func("init"); init != nil && roots[sp.Pkg.Path()+"._"] {
+		out = append(out, init)
+	}
+	return out
 }
 
 // loadSSA는 SSA 구축에 필요한 로드 모드로 패키지를 읽는다.
