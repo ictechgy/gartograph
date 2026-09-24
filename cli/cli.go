@@ -468,6 +468,11 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 			"methods may satisfy interfaces declared outside the module; "+
 				"dynamic dispatch from external packages is invisible to this graph")
 	}
+	if hasFieldFinding(findings) {
+		limitations = append(limitations,
+			"field reachability counts named accesses (x.F, T{F: v}, positional literals); "+
+				"reflection, serialization (encoding/json, gob), and whole-struct copies are invisible to this graph")
+	}
 
 	// baseline과의 비교는 보고 전에 — baselined는 strict·SARIF 어느 쪽으로도
 	// 새어 나가면 안 된다.
@@ -509,7 +514,11 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, string(out))
 	case "text":
 		for _, f := range findings {
-			fmt.Fprintf(stdout, "unreachable %s: %s\n", f.Kind, f.ID)
+			exported := ""
+			if f.Exported {
+				exported = " (exported)"
+			}
+			fmt.Fprintf(stdout, "unreachable %s: %s%s\n", f.Kind, f.ID, exported)
 		}
 		fmt.Fprintf(stdout, "%d unreachable symbols (%d baselined, %d retention roots)\n",
 			len(findings), len(baselined), len(roots))
@@ -534,6 +543,18 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 func hasMethodFinding(findings []analysis.Finding) bool {
 	for _, f := range findings {
 		if f.Kind == graph.KindMethod {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFieldFinding은 unreachable 보고에 필드가 있는지 확인한다.
+// 필드는 이름으로 고른 접근만 그래프에 남으므로, 보고가 나오면
+// reflection·직렬화 같은 보이지 않는 접근 경로를 밝혀야 한다.
+func hasFieldFinding(findings []analysis.Finding) bool {
+	for _, f := range findings {
+		if f.Kind == graph.KindField {
 			return true
 		}
 	}
@@ -1005,7 +1026,9 @@ func sortNeighborsJSON(res *analysis.Neighbors) {
 }
 
 // cmdMetrics는 컴포넌트(설정 없으면 패키지) 단위의 결합도를 보고한다.
-// --strict는 없다 — Ca/Ce는 판정이 아니라 사실이기 때문이다.
+// --strict는 없다 — Ca/Ce/A/D는 판정이 아니라 사실이기 때문이다.
+// 타입 레벨로 수확해야 abstractness의 분모(인터페이스 비율)가 있다 —
+// 저장 문서(--graph)가 패키지 레벨이면 A/D는 빠지고 limitation으로 남는다.
 func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("metrics", stderr)
 	configPath := fs.String("config", "", "rules file (default: .gartograph.yml in --dir)")
@@ -1013,7 +1036,7 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 	if fs.Parse(args) != nil {
 		return 2
 	}
-	opts.Level = graph.LevelPackage
+	opts.Level = graph.LevelType
 	doc, err := loadDoc(opts, *graphPath)
 	if err != nil {
 		return fail(stderr, err)
@@ -1029,6 +1052,10 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 	}
 	rep := analysis.Metrics(doc, cfg)
 	limitations = append(limitations, doc.Limitations...)
+	if doc.Level.Rank() < graph.LevelType.Rank() {
+		limitations = append(limitations,
+			"abstractness/distance omitted: document has no type vertices (harvest with --level type or finer)")
+	}
 	sort.Strings(limitations)
 	switch *format {
 	case "json":
@@ -1045,8 +1072,15 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 			if m.Instability != nil {
 				inst = fmt.Sprintf("%.3g", *m.Instability)
 			}
-			fmt.Fprintf(stdout, "%s: %d pkgs, Ca=%d Ce=%d I=%s\n",
-				m.Name, len(m.Packages), m.Afferent, m.Efferent, inst)
+			abs, dist := "n/a", "n/a"
+			if m.Abstractness != nil {
+				abs = fmt.Sprintf("%.3g", *m.Abstractness)
+			}
+			if m.Distance != nil {
+				dist = fmt.Sprintf("%.3g", *m.Distance)
+			}
+			fmt.Fprintf(stdout, "%s: %d pkgs, Ca=%d Ce=%d I=%s A=%s D=%s\n",
+				m.Name, len(m.Packages), m.Afferent, m.Efferent, inst, abs, dist)
 		}
 		for _, o := range rep.Orphans {
 			fmt.Fprintf(stdout, "orphan: %s\n", o)

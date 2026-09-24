@@ -92,3 +92,50 @@ func TestExplain(t *testing.T) {
 		t.Fatal("expected ErrNotFound for missing vertex")
 	}
 }
+
+// TestDeadExported는 보고가 심볼의 공개 여부 사실을 싣는지 확인한다 —
+// 공개 unreachable(외부 호출자·플러그인이 쓸 수 있음)과 비공개
+// unreachable(저장소 안에서 닫혀 있음)의 triage 분리 재료다.
+func TestDeadExported(t *testing.T) {
+	findings := Dead(deadDoc(), Reachable(deadDoc(), []string{"p.main"}))
+	var pub, priv *Finding
+	for i := range findings {
+		switch findings[i].ID {
+		case "p.Dead":
+			pub = &findings[i]
+		case "p.gone":
+			priv = &findings[i]
+		}
+	}
+	if pub == nil || !pub.Exported {
+		t.Fatalf("exported finding must carry exported=true: %+v", findings)
+	}
+	if priv == nil || priv.Exported {
+		t.Fatalf("unexported finding must carry exported=false: %+v", findings)
+	}
+}
+
+// TestDeadField는 필드 정점이 unreachable 보고의 대상이 되는지 확인한다 —
+// 멤버 레벨 분석의 종단 계약이다.
+func TestDeadField(t *testing.T) {
+	d := deadDoc()
+	d.Vertices = append(d.Vertices,
+		graph.Vertex{ID: "p.(T).Used", Kind: graph.KindField,
+			Package: "p", Exported: true},
+		graph.Vertex{ID: "p.(T).stale", Kind: graph.KindField, Package: "p"})
+	d.Edges = append(d.Edges,
+		graph.Edge{From: "p.f", To: "p.(T).Used", Kind: graph.EdgeReferences})
+	findings := Dead(d, Reachable(d, []string{"p.main"}))
+	var stale bool
+	for _, f := range findings {
+		if f.ID == "p.(T).Used" {
+			t.Fatal("referenced field must be reachable")
+		}
+		if f.ID == "p.(T).stale" {
+			stale = true
+		}
+	}
+	if !stale {
+		t.Fatalf("unreferenced field must be reported: %+v", findings)
+	}
+}

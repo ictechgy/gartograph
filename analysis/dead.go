@@ -15,11 +15,16 @@ import (
 // Finding은 도달 불가능한 심볼 하나의 보고다.
 // State는 그래프 사실("unreachable")이고 Reason은 그 이유다 —
 // "지워도 된다"는 판정은 어디에도 없다.
+// Exported는 심볼의 공개 여부 사실이다 — 비공개 unreachable이 공개
+// unreachable보다 triage 우선도가 높다는 분류(go-fynx의 HIGH/MEDIUM)의
+// 재료다. 확신도를 판정해 적지 않는다 — 공개 심볼은 모듈 밖 호출자·
+// reflection·플러그인이 쓸 수 있어 "낮은 확신"도 사실이 아니라 해석이다.
 type Finding struct {
 	ID       string           `json:"id"`
 	Kind     graph.VertexKind `json:"kind"`
 	Package  string           `json:"package,omitempty"`
 	Position *graph.Position  `json:"position,omitempty"`
+	Exported bool             `json:"exported,omitempty"`
 	State    string           `json:"state"`
 	Reason   string           `json:"reason"`
 }
@@ -104,6 +109,7 @@ func Dead(d *graph.Document, reachable map[string]bool) []Finding {
 			Kind:     v.Kind,
 			Package:  v.Package,
 			Position: v.Position,
+			Exported: v.Exported,
 			State:    StateUnreachable,
 			Reason:   ReasonUnreachable,
 		})
@@ -134,6 +140,7 @@ func DeadRTA(d *graph.Document, graphReach, rtaReach map[string]bool) []Finding 
 				Kind:     v.Kind,
 				Package:  v.Package,
 				Position: v.Position,
+				Exported: v.Exported,
 				State:    StateUnreachable,
 				Reason:   reason,
 			})

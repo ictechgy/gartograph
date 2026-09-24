@@ -11,6 +11,41 @@
 갱신(HOMEBREW_TAP_TOKEN 미설정, 체크섬은 릴리스 checksums.txt와
 대조 후 `0ef8fc4`).
 
+feature/dead-confidence-members에서 경쟁 비교 잔여 5종을 구현했다
+(브랜치, main 머지 대기):
+- `Finding.exported` — dead 보고가 심볼의 공개 여부를 싣는다. 비공개
+  unreachable이 공개보다 triage 우선이라는 분류의 사실 재료(확신도
+  문자열을 싣지 않는다 — 공개 심볼의 외부 호출 가능성은 해석이지 사실이
+  아니므로). 텍스트 출력은 `(exported)` 접미.
+- keep 어노테이션 — `//deadcode:keep`·`//gartograph:keep`이 붙은 선언
+  (func/method/var/const/type + struct 필드 개별)이 문서 `roots`의
+  보존 루트로 수확된다. 주의: `CommentGroup.Text()`는 지시문 형태 주석을
+  빼므로 원문 `c.Text`를 훑어야 한다(`keepMarked`).
+- 멤버 레벨 dead — struct 필드가 심볼 레벨 정점(kind `field`,
+  ID `pkg.(T).F`). `refObject`가 패키지 레벨 필터 전에 `fieldIDs` 맵을
+  본다. 참조 수확 경로: 셀렉터(x.F)·키 리터럴(T{F:v})은 go/types가
+  해석하고, 위치 리터럴(T{a,b})·승격 경유(Selections.Index의 중간
+  임베드 필드)·`==`/`!=` 구조체 비교는 수확기가 직접 전개한다 —
+  과대 근사는 "살아 있다" 쪽. 필드는 나가는 간선이 없어서 들어오는
+  references만으로 도달이 결정된다. 필드 보고가 나오면 reflection·
+  직렬화·통째 복사가 안 보인다는 limitation이 실린다.
+- metrics A/D — `abstractness`(컴포넌트 안 인터페이스 타입 비율,
+  `Vertex.Interface`)와 `distance`(|A+I−1|)를 ComponentMetric에 추가
+  (둘 다 *float64 — 타입 없는 단위·I 미정의 고립은 정의 불가로 키 생략).
+  metrics 명령은 이제 type 레벨로 수확해 A의 분모를 확보한다 — 패키지
+  레벨 저장 문서는 A/D를 빼고 limitation으로 알린다.
+- `limits:` 규칙 — `{component, maxIn?, maxOut?}`(0 유효, 둘 중 하나 필수,
+  음수·미정의 컴포넌트는 Load 거부). 상한 초과는 간선이 아니라
+  컴포넌트 사실이라 Violation의 From/To는 비우고 `rule:"limit"`+
+  `name:"maxIn"|"maxOut"`+실제 수치 사유. baseline 키는 컴포넌트+종류만
+  (수치는 들어가지 않는다 — 3→5로 변해도 같은 위반). degree 계산은
+  stability와 같은 `componentDegrees`를 공유한다.
+
+자기 분석 실측: `dead`가 `config.(File).Version`(yaml만 씀)·
+`cli.(rpcRequest).JSONRPC`(JSON marshal만 씀)를 field finding으로 올바르게
+잡았다 — reflection blind spot limitation이 그대로 설명이 된다.
+`rules --strict`·`cycles --level symbol --strict`는 여전히 clean.
+
 v0.5.0이 들고 있던 것(이번 릴리스에도 포함):
 - `fileRules` — dep-cruiser not-to-dev-dep 계약. `{name, from, to, reason}`.
   `from`은 `/` 없으면 파일명·있으면 모듈 상대 경로 글롭, `!` 접두사 반전

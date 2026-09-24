@@ -1888,3 +1888,177 @@ import _ "example.com/fixture/b"
 		t.Fatalf("violation must carry its import site: %s", out)
 	}
 }
+
+// TestDeadFieldAndKeep은 멤버 레벨 보고와 keep 어노테이션의 종단 계약을 확인한다:
+// 참조 안 된 필드는 kind=field로 보고되고, 참조된 필드와 keep 표지 심볼은
+// 보고되지 않으며, 공개 심볼은 exported 표지를 싣는다.
+func TestDeadFieldAndKeep(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func main() { lib.Use() }
+`,
+		"lib/lib.go": `package lib
+
+type Cfg struct {
+	Addr  string
+	stale int
+}
+
+func Use() int {
+	var c Cfg
+	return len(c.Addr)
+}
+
+//deadcode:keep — plugin loader calls this by name
+func Register() {}
+
+// ExportedUnused is public API — reported but marked exported.
+func ExportedUnused() {}
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead failed: %d %s", code, errb)
+	}
+	var rep struct {
+		Unreachable []struct {
+			ID       string `json:"id"`
+			Kind     string `json:"kind"`
+			Exported bool   `json:"exported"`
+		} `json:"unreachable"`
+		Limitations []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("dead output is not JSON: %v\n%s", err, out)
+	}
+	ids := map[string]bool{}
+	exported := map[string]bool{}
+	for _, f := range rep.Unreachable {
+		ids[f.ID] = true
+		exported[f.ID] = f.Exported
+	}
+	if !ids["example.com/fixture/lib.(Cfg).stale"] {
+		t.Fatalf("unreferenced field must be reported: %s", out)
+	}
+	if ids["example.com/fixture/lib.(Cfg).Addr"] {
+		t.Fatalf("referenced field must not be reported: %s", out)
+	}
+	if ids["example.com/fixture/lib.Register"] {
+		t.Fatalf("keep-annotated symbol must be retained: %s", out)
+	}
+	if !ids["example.com/fixture/lib.ExportedUnused"] ||
+		!exported["example.com/fixture/lib.ExportedUnused"] {
+		t.Fatalf("exported unreachable must be flagged exported: %s", out)
+	}
+	var fieldLimitation bool
+	for _, l := range rep.Limitations {
+		if strings.Contains(l, "field reachability") {
+			fieldLimitation = true
+		}
+	}
+	if !fieldLimitation {
+		t.Fatalf("field findings must carry the access-path limitation: %v",
+			rep.Limitations)
+	}
+}
+
+// TestMetricsAD는 타입 레벨 수확에서 abstractness·distance가 나오는지 확인한다.
+func TestMetricsAD(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/svc"
+
+func main() { svc.Run() }
+`,
+		"svc/svc.go": `package svc
+
+type Store interface{ Get() int }
+type mem struct{}
+
+func (mem) Get() int { return 0 }
+func Run()         {}
+`,
+	})
+	code, out, errb := run(t, "metrics", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("metrics failed: %d %s", code, errb)
+	}
+	var rep struct {
+		Components []struct {
+			Name         string   `json:"name"`
+			Abstractness *float64 `json:"abstractness"`
+			Distance     *float64 `json:"distance"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("metrics output is not JSON: %v\n%s", err, out)
+	}
+	var found bool
+	for _, c := range rep.Components {
+		if c.Name == "example.com/fixture/svc" {
+			found = true
+			if c.Abstractness == nil || *c.Abstractness != 0.5 {
+				t.Fatalf("svc A must be 0.5: %+v", c)
+			}
+			if c.Distance == nil {
+				t.Fatalf("svc D must be present when I and A are defined: %+v", c)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("svc package metric missing: %s", out)
+	}
+}
+
+// TestRulesLimits는 limits 규칙이 실제 위반과 strict 종료를 내는지 확인한다.
+func TestRulesLimits(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"web/web.go": `package web
+
+import (
+	_ "example.com/fixture/db"
+	_ "example.com/fixture/cache"
+)
+`,
+		"db/db.go":       `package db`,
+		"cache/cache.go": `package cache`,
+		".gartograph.yml": `components:
+  web: ["web"]
+  db: ["db"]
+  cache: ["cache"]
+deps:
+  web: ["db", "cache"]
+limits:
+  - {component: web, maxOut: 1}
+`,
+	})
+	code, out, errb := run(t, "rules", "--dir", dir, "--strict", "--format", "json")
+	if code != 1 {
+		t.Fatalf("rules --strict over limit: expected 1, got %d %s", code, errb)
+	}
+	var rep struct {
+		Violations []struct {
+			Rule          string `json:"rule"`
+			Name          string `json:"name"`
+			FromComponent string `json:"fromComponent"`
+			Reason        string `json:"reason"`
+		} `json:"violations"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("rules output is not JSON: %v\n%s", err, out)
+	}
+	var limitV bool
+	for _, v := range rep.Violations {
+		if v.Rule == "limit" && v.Name == "maxOut" &&
+			v.FromComponent == "web" && strings.Contains(v.Reason, "depends on 2") {
+			limitV = true
+		}
+	}
+	if !limitV {
+		t.Fatalf("expected limit violation for web: %s", out)
+	}
+}

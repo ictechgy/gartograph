@@ -355,3 +355,28 @@ func TestExcluded(t *testing.T) {
 		t.Fatal("empty exclude pattern must be rejected at Load")
 	}
 }
+
+// TestLimitsValidation은 limits 항목의 검증을 확인한다 —
+// 정의되지 않은 컴포넌트·빈 상한·음수는 죽은 설정이라 로드 시점에 거부한다.
+func TestLimitsValidation(t *testing.T) {
+	cases := []string{
+		"components: {a: [a]}\nlimits: [{component: ghost, maxOut: 1}]\n",
+		"components: {a: [a]}\nlimits: [{component: a}]\n",            // 상한 없음
+		"components: {a: [a]}\nlimits: [{component: a, maxIn: -1}]\n", // 음수
+		"components: {a: [a]}\nlimits: [{maxOut: 2}]\n",               // 컴포넌트 없음
+	}
+	for _, c := range cases {
+		if _, err := Load(writeRules(t, c)); err == nil {
+			t.Fatalf("must reject bad limit:\n%s", c)
+		}
+	}
+	// 0은 유효한 상한이다 — "아무것도 의존하지 말라"를 표현할 수 있어야 한다.
+	f, err := Load(writeRules(t,
+		"components: {a: [a]}\nlimits: [{component: a, maxIn: 0, maxOut: 0}]\n"))
+	if err != nil {
+		t.Fatalf("zero limits must load: %v", err)
+	}
+	if len(f.Limits) != 1 || *f.Limits[0].MaxIn != 0 || *f.Limits[0].MaxOut != 0 {
+		t.Fatalf("limits must round-trip: %+v", f.Limits)
+	}
+}

@@ -56,6 +56,10 @@ func ViolationBaselineKey(v Violation) string {
 		}
 		return v.Rule + "\x00" + v.Name + "\x00" + v.From + "\x00" +
 			v.To + "\x00" + file
+	case "limit":
+		// 실제 수치는 reason에 있다 — 수치가 3→5로 변해도 같은 상한
+		// 위반이므로 컴포넌트와 상한 종류만으로 식별한다.
+		return v.Rule + "\x00" + v.Name + "\x00" + v.FromComponent + "\x00" + v.ToComponent
 	}
 	return v.Rule + "\x00" + string(v.Kind) + "\x00" + v.From + "\x00" +
 		v.To + "\x00" + v.FromComponent + "\x00" + v.ToComponent

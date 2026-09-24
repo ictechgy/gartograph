@@ -20,14 +20,15 @@ import (
 // harvester는 한 번의 심볼 수확 동안 공유되는 상태다.
 type harvester struct {
 	doc      *graph.Document
-	vertices map[string]bool     // 존재 확인 — 없는 정점으로의 간선은 금지
-	edgeIdx  map[string]int      // (from,to,kind) → doc.Edges 인덱스 — 지점 병합용
-	roots    map[string]bool     // 보존 루트 중복 억제
-	impls    map[string][]string // 인터페이스 메서드 ID → 구현 메서드 ID들
-	extRefs  int                 // 모듈 밖 심볼 참조 수
-	noTypes  int                 // 타입 정보 없는 패키지 수
-	reflectN int                 // reflect를 import하는 패키지 수
-	linkname int                 // //go:linkname 지시문 수
+	vertices map[string]bool         // 존재 확인 — 없는 정점으로의 간선은 금지
+	edgeIdx  map[string]int          // (from,to,kind) → doc.Edges 인덱스 — 지점 병합용
+	roots    map[string]bool         // 보존 루트 중복 억제
+	impls    map[string][]string     // 인터페이스 메서드 ID → 구현 메서드 ID들
+	fieldIDs map[types.Object]string // struct 필드 객체 → 정점 ID — 참조 간선 해석용
+	extRefs  int                     // 모듈 밖 심볼 참조 수
+	noTypes  int                     // 타입 정보 없는 패키지 수
+	reflectN int                     // reflect를 import하는 패키지 수
+	linkname int                     // //go:linkname 지시문 수
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -40,6 +41,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		edgeIdx:  make(map[string]int),
 		roots:    make(map[string]bool),
 		impls:    make(map[string][]string),
+		fieldIDs: make(map[types.Object]string),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -115,6 +117,7 @@ func (h *harvester) addSymbolVertices(internal []*packages.Package, wantSymbols 
 			}
 			if tn, isType := obj.(*types.TypeName); isType && wantSymbols {
 				h.methodVertices(tn, p)
+				h.fieldVertices(tn, p)
 			}
 		}
 	}
@@ -189,6 +192,42 @@ func (h *harvester) methodVertex(f *types.Func, fset *token.FileSet) {
 		Exported: f.Exported(),
 	})
 	h.edge(f.Pkg().Path(), id, graph.EdgeContains, nil)
+}
+
+// fieldVertices는 struct 타입의 필드를 정점으로 만들고 fieldIDs에 심어 둔다.
+// 메서드와 같은 멤버 단위라 ID는 "pkg.(T).F" 형태를 공유한다 — 소비자가
+// 필드의 소유 타입을 ID에서 바로 읽는다. 임베드 필드도 필드다 — 승격 선택은
+// go/types가 선언 필드로 해석해 주므로 정점은 선언 타입 아래에 둔다.
+// 필드는 코드가 아니라 값을 담는 선언이라 나가는 간선을 만들지 않는다 —
+// 도달성은 들어오는 references만으로 결정된다.
+func (h *harvester) fieldVertices(tn *types.TypeName, p *packages.Package) {
+	named, ok := tn.Type().(*types.Named)
+	if !ok {
+		return
+	}
+	st, ok := named.Underlying().(*types.Struct)
+	if !ok {
+		return
+	}
+	for i := 0; i < st.NumFields(); i++ {
+		f := st.Field(i)
+		id := fieldID(tn, f)
+		h.fieldIDs[f] = id
+		h.vertex(graph.Vertex{
+			ID:       id,
+			Kind:     graph.KindField,
+			Name:     f.Name(),
+			Package:  p.PkgPath,
+			Position: positionAt(p.Fset, f.Pos()),
+			Exported: f.Exported(),
+		})
+		h.edge(p.PkgPath, id, graph.EdgeContains, nil)
+	}
+}
+
+// fieldID는 struct 필드의 정점 ID를 만든다 — 메서드와 같은 멤버 형식이다.
+func fieldID(tn *types.TypeName, f *types.Var) string {
+	return tn.Pkg().Path() + ".(" + tn.Name() + ")." + f.Name()
 }
 
 // addStructuralEdges는 타입 간 구조적 관계(embeds, implements)를 긋는다.
@@ -327,18 +366,41 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 		if d.Recv == nil && isTestEntry(p, d) {
 			h.root(from)
 		}
+		// //deadcode:keep·//gartograph:keep은 선언 옆에 "의도적으로
+		// 남긴다"를 적는 표지다 — 루트 목록은 그래프 사실이라 문서에 남는다.
+		if keepMarked(d.Doc) {
+			h.root(from)
+		}
 		h.sigTypeEdges(p, d.Type, from)
 		h.inspect(p, d, from)
 	case *ast.GenDecl:
 		for _, spec := range d.Specs {
-			h.specEdges(p, spec, wantSymbols)
+			h.specEdges(p, spec, d.Doc, wantSymbols)
 		}
 	}
 }
 
+// keepMarked는 주석 그룹에 keep 표지가 있는지 본다.
+// "//deadcode:keep"은 go-fynx/deadcode의 관례, "//gartograph:keep"은
+// 이 도구의 표지다 — 둘 다 받는다. CommentGroup.Text()는 지시문 형태
+// 주석을 빼 버리므로 원문(c.Text)을 훑어야 한다.
+func keepMarked(cg *ast.CommentGroup) bool {
+	if cg == nil {
+		return false
+	}
+	for _, c := range cg.List {
+		if strings.Contains(c.Text, "deadcode:keep") ||
+			strings.Contains(c.Text, "gartograph:keep") {
+			return true
+		}
+	}
+	return false
+}
+
 // specEdges는 선언 스펙을 순회한다.
 // type 레벨에서는 TypeSpec만 처리해 타입 간 관계만 남긴다.
-func (h *harvester) specEdges(p *packages.Package, spec ast.Spec, wantSymbols bool) {
+func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
+	declDoc *ast.CommentGroup, wantSymbols bool) {
 	switch s := spec.(type) {
 	case *ast.TypeSpec:
 		obj, ok := p.TypesInfo.Defs[s.Name].(*types.TypeName)
@@ -346,22 +408,54 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec, wantSymbols bo
 			return
 		}
 		id := objectID(obj)
+		if keepMarked(declDoc) || keepMarked(s.Doc) || keepMarked(s.Comment) {
+			h.root(id)
+		}
+		if wantSymbols {
+			h.keepStructFields(p, s.Type)
+		}
 		h.sigTypeEdges(p, s.Type, id)
 		h.inspect(p, s, id)
 	case *ast.ValueSpec:
 		if !wantSymbols {
 			return
 		}
+		keep := keepMarked(declDoc) || keepMarked(s.Doc) || keepMarked(s.Comment)
 		for _, name := range s.Names {
 			obj := p.TypesInfo.Defs[name]
 			if obj == nil {
 				continue
 			}
 			id := objectID(obj)
+			if keep {
+				h.root(id)
+			}
 			if s.Type != nil {
 				h.sigTypeEdges(p, s.Type, id)
 			}
 			h.inspect(p, s, id)
+		}
+	}
+}
+
+// keepStructFields는 struct 선언 안의 필드 keep 표지를 루트로 기록한다.
+// 필드 정점은 addSymbolVertices에서 이미 만들어졌다 — fieldIDs가 채워진
+// 뒤에 이 패스가 도는 순서가 보장돼야 한다.
+func (h *harvester) keepStructFields(p *packages.Package, expr ast.Expr) {
+	st, ok := expr.(*ast.StructType)
+	if !ok || st.Fields == nil {
+		return
+	}
+	for _, f := range st.Fields.List {
+		if !keepMarked(f.Doc) && !keepMarked(f.Comment) {
+			continue
+		}
+		for _, name := range f.Names {
+			if obj := p.TypesInfo.Defs[name]; obj != nil {
+				if id, ok := h.fieldIDs[obj]; ok {
+					h.root(id)
+				}
+			}
 		}
 	}
 }
@@ -374,11 +468,70 @@ func (h *harvester) inspect(p *packages.Package, node ast.Node, from string) {
 			h.callEdge(p, x, from)
 		case *ast.SelectorExpr:
 			h.selectorEdge(p, x, from)
+		case *ast.CompositeLit:
+			h.compositeLitFields(p, x, from)
+		case *ast.BinaryExpr:
+			if x.Op == token.EQL || x.Op == token.NEQ {
+				h.structCompareFields(p, x.X, from)
+				h.structCompareFields(p, x.Y, from)
+			}
 		case *ast.Ident:
 			h.identEdge(p, x, from)
 		}
 		return true
 	})
+}
+
+// compositeLitFields는 위치 인자 struct 리터럴(T{a, b})이 모든 필드를
+// 쓰는 사실을 references 간선으로 긋는다. 위치 리터럴은 필드명을 적지
+// 않아서 Uses/Selections에 필드 참조가 남지 않는다 — 안 적으면 전부 쓴
+// 리터럴인데도 필드가 unreachable로 나오는 오탐이다.
+// 키 리터럴(T{f: v})의 필드 키는 identEdge가 개별 참조로 이미 남긴다.
+func (h *harvester) compositeLitFields(p *packages.Package, cl *ast.CompositeLit, from string) {
+	positional := false
+	for _, el := range cl.Elts {
+		if _, keyed := el.(*ast.KeyValueExpr); !keyed {
+			positional = true
+			break
+		}
+	}
+	if !positional {
+		return
+	}
+	tv := p.TypesInfo.TypeOf(cl)
+	if tv == nil {
+		return
+	}
+	st, ok := tv.Underlying().(*types.Struct)
+	if !ok {
+		return
+	}
+	pos := position(p, cl.Pos())
+	for i := 0; i < st.NumFields(); i++ {
+		if id, ok := h.fieldIDs[st.Field(i)]; ok {
+			h.edge(from, id, graph.EdgeReferences, pos)
+		}
+	}
+}
+
+// structCompareFields는 ==/!= 비교의 struct 피연산자가 모든 필드를 읽는
+// 사실을 references 간선으로 긋는다. 비교는 필드 이름을 적지 않지만
+// 필드 전체를 실제로 읽는다 — 살아 있다 쪽으로 기우는 과대 근사다.
+func (h *harvester) structCompareFields(p *packages.Package, e ast.Expr, from string) {
+	tv := p.TypesInfo.TypeOf(e)
+	if tv == nil {
+		return
+	}
+	st, ok := tv.Underlying().(*types.Struct)
+	if !ok {
+		return
+	}
+	pos := position(p, e.Pos())
+	for i := 0; i < st.NumFields(); i++ {
+		if id, ok := h.fieldIDs[st.Field(i)]; ok {
+			h.edge(from, id, graph.EdgeReferences, pos)
+		}
+	}
 }
 
 // callEdge는 호출식의 피호출자를 해석해 call 간선을 긋는다.
@@ -401,6 +554,7 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 			id := objectID(fn)
 			pos := position(p, ce.Pos())
 			h.edge(from, id, graph.EdgeCall, pos)
+			h.promotedFields(sel, from, pos)
 			if isInterface(sel.Recv()) {
 				for _, impl := range h.impls[id] {
 					h.edge(from, impl, graph.EdgeCall, pos)
@@ -446,10 +600,38 @@ func (h *harvester) sigRef(obj types.Object, from string, pos *graph.Position) {
 // references 간선으로 기록한다. 호출 위치는 callEdge가 call로 이미 남긴다.
 func (h *harvester) selectorEdge(p *packages.Package, sel *ast.SelectorExpr, from string) {
 	if s, ok := p.TypesInfo.Selections[sel]; ok {
-		h.refObject(s.Obj(), from, position(p, sel.Pos()))
+		pos := position(p, sel.Pos())
+		h.refObject(s.Obj(), from, pos)
+		h.promotedFields(s, from, pos)
 		return
 	}
 	h.refObject(p.TypesInfo.Uses[sel.Sel], from, position(p, sel.Pos()))
+}
+
+// promotedFields는 승격 선택의 중간 임베드 필드를 참조로 긋는다.
+// "a.X"에서 X가 임베드 B의 필드면 Selections의 Index 경로는 [iB, iX]다 —
+// Obj()는 도착 필드만 주므로 경유 필드 A.B는 여기서 직접 밟아야 한다.
+// 안 밟으면 승격으로만 쓰이는 임베드 필드가 unreachable로 오보된다.
+func (h *harvester) promotedFields(s *types.Selection, from string, pos *graph.Position) {
+	idx := s.Index()
+	if len(idx) < 2 {
+		return
+	}
+	t := s.Recv()
+	for _, i := range idx[:len(idx)-1] {
+		if ptr, ok := t.(*types.Pointer); ok {
+			t = ptr.Elem()
+		}
+		st, ok := t.Underlying().(*types.Struct)
+		if !ok {
+			return
+		}
+		f := st.Field(i)
+		if id, ok := h.fieldIDs[f]; ok {
+			h.edge(from, id, graph.EdgeReferences, pos)
+		}
+		t = f.Type()
+	}
 }
 
 // identEdge는 식별자 참조를 references 간선으로 기록한다.
@@ -459,10 +641,20 @@ func (h *harvester) identEdge(p *packages.Package, id *ast.Ident, from string) {
 	h.refObject(p.TypesInfo.Uses[id], from, position(p, id.Pos()))
 }
 
-// refObject는 패키지 수준의 모듈 안 객체를 가리키는 references 간선을 긋는다.
+// refObject는 모듈 안 객체를 가리키는 references 간선을 긋는다.
+// 필드는 패키지 스코프 선언이 아니라 isPackageLevel이 걸러 버리므로
+// fieldIDs로 먼저 해석한다 — 필드 접근이 그래프 사실이어야 필드의
+// 도달성을 dead가 말할 수 있다.
 // 지역 선언·모듈 밖 심볼은 정점이 없으므로 외부 참조는 개수만 세어 둔다.
 func (h *harvester) refObject(obj types.Object, from string, pos *graph.Position) {
-	if obj == nil || obj.Pkg() == nil || !isPackageLevel(obj) {
+	if obj == nil || obj.Pkg() == nil {
+		return
+	}
+	if id, ok := h.fieldIDs[obj]; ok {
+		h.edge(from, id, graph.EdgeReferences, pos)
+		return
+	}
+	if !isPackageLevel(obj) {
 		return
 	}
 	id := objectID(obj)
