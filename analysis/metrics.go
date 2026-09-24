@@ -182,10 +182,17 @@ func Metrics(d *graph.Document, cfg *config.File) *MetricsReport {
 
 // rootSet은 문서에 기록된 보존 루트의 패키지 ID 집합이다.
 // 루트는 심볼 ID일 수 있으므로 패키지 부분을 뽑는다.
+// 빈 식별자 루트(pkg._)는 뺀다 — var _ I = (*T)(nil)은 컴파일 타임 단언이라
+// 패키지를 남기겠다는 표지(init의 부작용·keep 어노테이션)가 아니다. 흔한 관용구라
+// 넣으면 import되지 않는 패키지 대부분이 orphan에서 숨는다.
 func rootSet(d *graph.Document) map[string]bool {
 	out := map[string]bool{}
 	for _, r := range d.Roots {
-		if v, ok := d.VertexByID(r); ok && v.Package != "" {
+		v, ok := d.VertexByID(r)
+		if ok && v.Kind == graph.KindVar && v.Name == "_" {
+			continue
+		}
+		if ok && v.Package != "" {
 			out[v.Package] = true
 		} else {
 			out[r] = true

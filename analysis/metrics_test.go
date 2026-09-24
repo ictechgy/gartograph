@@ -101,6 +101,21 @@ func TestMetricsRootExclusion(t *testing.T) {
 	}
 }
 
+// TestMetricsBlankRootKeepsOrphan은 빈 식별자 루트(pkg._)가 패키지를 orphan에서
+// 빼지 않는지 확인한다 — var _ I = (*T)(nil)은 컴파일 타임 단언이지 패키지를
+// 남기겠다는 표지가 아니다(init·keep과 다르다).
+func TestMetricsBlankRootKeepsOrphan(t *testing.T) {
+	d := metricsDoc()
+	d.Roots = []string{"example.com/m/util._"}
+	d.Vertices = append(d.Vertices,
+		graph.Vertex{ID: "example.com/m/util._", Kind: graph.KindVar, Name: "_",
+			Package: "example.com/m/util"})
+	rep := Metrics(d, metricsCfg())
+	if len(rep.Orphans) != 1 || rep.Orphans[0] != "example.com/m/util" {
+		t.Fatalf("a blank-declaration root must not hide the orphan: %+v", rep.Orphans)
+	}
+}
+
 // TestMetricsNoConfig는 설정 없이 패키지 단위로 계산되는지 확인한다.
 func TestMetricsNoConfig(t *testing.T) {
 	rep := Metrics(metricsDoc(), nil)
