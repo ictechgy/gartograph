@@ -32,7 +32,8 @@ type BridgeFactsDocument struct {
 	Target           any             `json:"target"`
 	Project          string          `json:"project"`
 	Facts            []any           `json:"facts"`
-	Limitations      []string        `json:"limitations,omitempty"`
+	// 계약상 항상 배열이다 — 비어 있어도 생략하면 isthmus 파서가 거부한다.
+	Limitations []string `json:"limitations"`
 }
 
 // BridgeFactsTool은 문서를 생산한 도구 식별자다.
@@ -62,6 +63,7 @@ func BridgeFacts(dir, toolVersion string) (*BridgeFactsDocument, error) {
 		Target:      nil,
 		Project:     root,
 		Facts:       []any{},
+		Limitations: []string{},
 	}
 	if !scan.latest.IsZero() {
 		doc.SourceModifiedAt = bridgeTimestamp(scan.latest)
