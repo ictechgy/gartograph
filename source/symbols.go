@@ -33,9 +33,12 @@ type harvester struct {
 	// packageIDs는 수확 전부터 있던 패키지 정점 ID다. 패키지 경로에 점이 들면
 	// (example.com/m/x.y) 패키지 x의 심볼 y와 ID가 같아진다 — 심볼 쪽 정점·간선이
 	// 패키지 정점에 얹히면 "함수가 패키지를 호출한다" 같은 거짓 사실이 된다.
-	packageIDs    map[string]bool
-	idCollisions  map[string]bool // 패키지 ID와 겹쳐 정점을 만들지 않은 심볼 ID
-	collidedEdges int             // 그 충돌 때문에 버린 간선 수
+	packageIDs   map[string]bool
+	idCollisions map[string]bool // 패키지 ID와 겹쳐 정점을 만들지 않은 심볼 ID
+	// collidedEdges는 그 충돌 때문에 버린 서로 다른 간선(from,to,kind)이다 — 호출
+	// 횟수를 세면 같은 간선이 호출 지점·--tests 변형마다 불어난다.
+	collidedEdges map[string]bool
+	collidedRoots int // 리시버가 충돌해 보존 루트로 살린 메서드 수
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -50,8 +53,9 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		impls:    make(map[string][]string),
 		fieldIDs: make(map[types.Object]string),
 
-		packageIDs:   make(map[string]bool),
-		idCollisions: make(map[string]bool),
+		packageIDs:    make(map[string]bool),
+		idCollisions:  make(map[string]bool),
+		collidedEdges: make(map[string]bool),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -85,7 +89,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		doc.Limitation(fmt.Sprintf(
 			"%d //go:linkname directives found; their targets may appear unreachable", h.linkname))
 	}
-	if len(h.idCollisions) > 0 {
+	if len(h.idCollisions) > 0 || len(h.collidedEdges) > 0 {
 		doc.Limitation(h.collisionLimitation())
 	}
 	doc.Level = level
@@ -801,7 +805,7 @@ func (h *harvester) vertex(v graph.Vertex) {
 // 간선은 하나인 채 positions에 지점만 쌓인다.
 func (h *harvester) edge(from, to string, kind graph.EdgeKind, pos *graph.Position) {
 	if h.collidesWithPackage(from, to, kind) {
-		h.collidedEdges++
+		h.collidedEdges[from+"\x00"+to+"\x00"+string(kind)] = true
 		return
 	}
 	if !h.vertices[from] || !h.vertices[to] {
@@ -859,15 +863,30 @@ func (h *harvester) collidesWithPackage(from, to string, kind graph.EdgeKind) bo
 }
 
 // collisionLimitation은 ID 충돌을 실제 수와 한 예시로 적는다.
-// 예시는 정렬 첫 번째 — 맵 순회 순서가 문서를 흔들지 않게.
+// 예시는 정렬 첫 번째 — 맵 순회 순서가 문서를 흔들지 않게. type 레벨은 const·func
+// 정점을 시도하지 않아 충돌 심볼 없이 버린 간선만 있을 수 있다.
 func (h *harvester) collisionLimitation() string {
-	ids := make([]string, 0, len(h.idCollisions))
-	for id := range h.idCollisions {
-		ids = append(ids, id)
+	msg := fmt.Sprintf("%d edges to or from symbols whose vertex ID equals a package path containing a dot "+
+		"were omitted", len(h.collidedEdges))
+	if ids := sortedKeys(h.idCollisions); len(ids) > 0 {
+		msg = fmt.Sprintf("%d symbols share their vertex ID with a package whose path contains a dot (e.g. %s); "+
+			"they have no vertex and %d of their edges were omitted", len(ids), ids[0], len(h.collidedEdges))
 	}
-	sort.Strings(ids)
-	return fmt.Sprintf("%d symbols share their vertex ID with a package whose path contains a dot (e.g. %s); "+
-		"they have no vertex and %d of their edges were omitted", len(ids), ids[0], h.collidedEdges)
+	if h.collidedRoots > 0 {
+		msg += fmt.Sprintf("; %d methods of such types implement external interfaces and are kept as retention roots",
+			h.collidedRoots)
+	}
+	return msg
+}
+
+// sortedKeys는 집합의 키를 정렬해 돌려준다.
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // objectID는 심볼의 정점 ID를 만든다.

@@ -537,6 +537,13 @@ func MakeErr() error { return &Z{} }
 
 func Zed() {}
 `,
+		// 충돌 심볼을 참조하지 않는 테스트 — --tests에서 x를 두 변형으로 돌게만 한다.
+		"x/x_test.go": `package x
+
+import "testing"
+
+func TestNothing(t *testing.T) {}
+`,
 	})
 }
 
@@ -558,11 +565,72 @@ func TestSymbolIDCollidingWithPackage(t *testing.T) {
 	}
 	// 리시버 타입이 패키지 ID와 겹치면 외부 디스패치 Receiver가 패키지를 가리키게
 	// 된다 — "패키지가 도달하면 메서드도 도달"은 거짓 규칙이다.
-	if v, _ := doc.VertexByID("example.com/m/x.(Z).Error"); v.Receiver == "example.com/m/x.Z" {
-		t.Fatalf("receiver must not point at a colliding package vertex: %+v", v)
+	// 대신 메서드는 satisfies를 유지한 채 보존 루트가 된다 — 리시버 규칙을 못 거는
+	// 메서드를 죽었다고 하면 과소 근사다.
+	zerr, _ := doc.VertexByID("example.com/m/x.(Z).Error")
+	if zerr.Receiver == "example.com/m/x.Z" {
+		t.Fatalf("receiver must not point at a colliding package vertex: %+v", zerr)
+	}
+	if !slices.Contains(zerr.Satisfies, "error") || !slices.Contains(doc.Roots, zerr.ID) {
+		t.Fatalf("method of a colliding type must keep satisfies and become a root: %+v roots=%v",
+			zerr, doc.Roots)
 	}
 	if !containsLimitation(doc, "share their vertex ID with a package") {
 		t.Fatalf("colliding symbols must be counted, got %v", doc.Limitations)
+	}
+}
+
+// TestCollisionLimitationCountsDistinctEdges는 충돌 limitation이 호출 횟수가 아니라
+// 서로 다른 간선 수를 세는지 확인한다 — --tests는 같은 패키지를 두 변형으로
+// 돌지만 간선은 같으므로 문장도 같아야 한다.
+func TestCollisionLimitationCountsDistinctEdges(t *testing.T) {
+	dir := idCollisionFixture(t)
+	plain := loadSymbol(t, dir)
+	tests, err := Load(Options{Dir: dir, Level: graph.LevelSymbol, Tests: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pick := func(d *graph.Document) string {
+		for _, l := range d.Limitations {
+			if strings.Contains(l, "share their vertex ID") {
+				return l
+			}
+		}
+		return ""
+	}
+	if pick(plain) == "" || pick(plain) != pick(tests) {
+		t.Fatalf("collision count must not depend on harvest passes:\n%q\n%q", pick(plain), pick(tests))
+	}
+}
+
+// TestCollisionLimitationAtTypeLevel은 정점을 시도하지 않는 type 레벨에서도
+// 충돌로 버린 간선을 limitation으로 세는지 확인한다.
+func TestCollisionLimitationAtTypeLevel(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.27\n",
+		"main.go": `package main
+
+import (
+	"example.com/m/x"
+	_ "example.com/m/x.y"
+)
+
+func main() { _ = x.T{} }
+`,
+		"x/x.go": `package x
+
+const y = 2
+
+type T [y]int
+`,
+		"x.y/xy.go": "package xy\n",
+	})
+	doc, err := Load(Options{Dir: dir, Level: graph.LevelType})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsLimitation(doc, "package path containing a dot") {
+		t.Fatalf("edges dropped by an ID collision must be counted, got %v", doc.Limitations)
 	}
 }
 
