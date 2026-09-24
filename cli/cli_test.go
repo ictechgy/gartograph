@@ -1166,6 +1166,16 @@ func TestSchemaEmpty(t *testing.T) {
 	if len(doc.Facts) != 0 {
 		t.Fatalf("expected no facts: %s", out)
 	}
+	// limitations는 계약상 항상 배열이다 — 키가 빠지거나 null이면
+	// isthmus 파서가 문서를 거부한다.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	lim, ok := raw["limitations"]
+	if !ok || string(lim) != "[]" {
+		t.Fatalf("limitations must always be an array (got %v): %s", ok, out)
+	}
 }
 
 // TestDiff는 두 저장 문서의 차이와 --strict의 breaking 계약을 확인한다.

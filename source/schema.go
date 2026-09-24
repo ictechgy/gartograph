@@ -838,8 +838,9 @@ func (s *schemaScan) facts() []any {
 }
 
 // limitations는 수확에서 실제로 센 공백만 문장으로 낸다.
+// 계약상 항상 배열이라 빈 경우에도 nil이 아닌 빈 슬라이스를 돌려준다.
 func (s *schemaScan) limitations() []string {
-	var out []string
+	out := []string{}
 	if s.unparsed > 0 {
 		out = append(out, fmt.Sprintf(
 			"unparsed-sources: %d package load or parse error(s); relation uses there are uncounted",
