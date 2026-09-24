@@ -2,17 +2,16 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 현재 상태 (2026-09-23)
+## 현재 상태 (2026-09-24)
 
-**v0.6.0 릴리스·Homebrew tap 배포 완료** — 잔여 격차 묶음
-(shared/--goos·--goarch/exclude/stability/unused-deps/RTA explain/
-상수 값 diff)이 main(origin)에 있다. `brew upgrade` 0.5.0→0.6.0
-실측, `gartograph 0.6.0` 보고, `brew test` 통과. tap은 여전히 수동
-갱신(HOMEBREW_TAP_TOKEN 미설정, 체크섬은 릴리스 checksums.txt와
-대조 후 `0ef8fc4`).
+**v0.7.0 릴리스·Homebrew tap 배포 완료** — 경쟁 비교 잔여 5종
+(dead exported 분류·keep 어노테이션·필드 dead·metrics A/D·limits)이
+GLM 리뷰 수정을 포함해 main(origin)에 있다. `brew upgrade`
+0.6.0→0.7.0 실측, `gartograph 0.7.0` 보고, `brew test` 통과.
+tap은 여전히 수동 갱신(HOMEBREW_TAP_TOKEN 미설정, 체크섬은 릴리스
+checksums.txt와 대조 후 `59fbe78`).
 
-feature/dead-confidence-members에서 경쟁 비교 잔여 5종을 구현했다
-(브랜치, main 머지 대기):
+feature/dead-confidence-members(머지 `98b2e54`)가 구현한 것:
 - `Finding.exported` — dead 보고가 심볼의 공개 여부를 싣는다. 비공개
   unreachable이 공개보다 triage 우선이라는 분류의 사실 재료(확신도
   문자열을 싣지 않는다 — 공개 심볼의 외부 호출 가능성은 해석이지 사실이
@@ -45,6 +44,18 @@ feature/dead-confidence-members에서 경쟁 비교 잔여 5종을 구현했다
 `cli.(rpcRequest).JSONRPC`(JSON marshal만 씀)를 field finding으로 올바르게
 잡았다 — reflection blind spot limitation이 그대로 설명이 된다.
 `rules --strict`·`cycles --level symbol --strict`는 여전히 clean.
+
+GLM 리뷰(packet-ask, diff 기준)가 잡아서 반영된 수정:
+- 위치 리터럴·== 비교가 중첩 struct·배열 원소의 잎 필드까지
+  worklist로 재귀 마킹(자기 호출 재귀는 심볼 그래프 자기 순환으로
+  새어 cycles 자기 분석을 오염시켜 worklist로 썼다).
+- 제네릭 인스턴스 경유 필드는 `Var.Origin()`으로 origin 정점 해석.
+- keep 표지는 주석 줄의 첫 토큰일 때만 — 인용 문장은 루트 불가.
+- 임베드 필드의 keep은 AST↔types 인덱스 대응으로 잡는다(Names 부재).
+- `Finding.Exported`는 omitempty 없이 항상 출력 — false와 "옛 형식
+  문서"를 소비자가 구분할 수 있어야 한다.
+- distance는 미반올림 A·I로 계산해 한 번만 반올림.
+- 같은 컴포넌트의 중복 상한 limits 항목은 baseline 키 충돌이라 Load 거부.
 
 v0.5.0이 들고 있던 것(이번 릴리스에도 포함):
 - `fileRules` — dep-cruiser not-to-dev-dep 계약. `{name, from, to, reason}`.
