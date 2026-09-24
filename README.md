@@ -65,6 +65,11 @@ gartograph dead --algo rta --explain my/pkg.F   # path on the RTA call graph its
 # Go reports cgo via unscanned-ffi-interop limitations — no channel facts.
 gartograph bridges --out go-facts.json
 
+# Emit isthmus persistence facts: SQL relation references harvested from
+# typed database/sql·sqlx·gorm calls, SQL literals, TableName() bindings,
+# and db/sql/gorm column tags (platform "go", target "persistence").
+gartograph schema --out go-schema-facts.json
+
 # Check layer rules from .gartograph.yml
 gartograph rules --strict
 

@@ -58,6 +58,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdInit(args[1:], stdout, stderr)
 	case "bridges":
 		return cmdBridges(args[1:], stdout, stderr)
+	case "schema":
+		return cmdSchema(args[1:], stdout, stderr)
 	case "unused-deps":
 		return cmdUnusedDeps(args[1:], stdout, stderr)
 	case "mcp":
@@ -99,6 +101,7 @@ Usage:
   gartograph mapping [--config FILE] [--format text|json] [flags]
   gartograph init   [--dir PATH]  scaffold .gartograph.yml from observed imports
   gartograph bridges [--dir PATH] [--out FILE]  isthmus bridge-facts (platform "go")
+  gartograph schema  [--dir PATH] [--out FILE]  isthmus persistence relation-uses (platform "go")
   gartograph unused-deps [--strict] [--format text|json] [flags]
   gartograph mcp    serve the graph over MCP stdio [flags]
   gartograph version
@@ -1260,6 +1263,34 @@ func cmdBridges(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	doc, err := source.BridgeFacts(*dir, Version)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if *out != "" {
+		if err := os.WriteFile(*out, append(data, '\n'), 0o644); err != nil {
+			return fail(stderr, fmt.Errorf("writing %s: %w", *out, err))
+		}
+		return 0
+	}
+	fmt.Fprintln(stdout, string(data))
+	return 0
+}
+
+// cmdSchema는 isthmus persistence 도메인의 go 문서를 낸다 —
+// 코드가 SQL 관계를 이름으로 참조하는 경계를 relation-use 사실로 수확한다.
+func cmdSchema(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("schema", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dir := fs.String("dir", ".", "module root to scan")
+	out := fs.String("out", "", "write the document to FILE instead of stdout")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	doc, err := source.SchemaFacts(*dir, Version)
 	if err != nil {
 		return fail(stderr, err)
 	}

@@ -1008,6 +1008,166 @@ func TestBridgesNoInterop(t *testing.T) {
 	}
 }
 
+// TestSchema는 persistence 생산자가 SQL 관계 참조를 relation-use 사실로
+// 내는지 확인한다 — 리터럴·한정 이름·동적 인자·테이블 바인딩 태그를 함께 본다.
+func TestSchema(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import (
+	"context"
+	"database/sql"
+)
+
+type User struct {
+	ID   int    ` + "`db:\"id\"`" + `
+	Name string ` + "`db:\"name\"`" + `
+}
+
+func (User) TableName() string { return "users" }
+
+func run(ctx context.Context, db *sql.DB, q string) {
+	db.QueryRow("SELECT id FROM users WHERE id = 1")
+	db.ExecContext(ctx, "INSERT INTO audit.events (id) VALUES (1)")
+	db.Query(q)
+}
+
+var kept = "SELECT o.id FROM orders o JOIN users u ON o.uid = u.id"
+
+func main() {}
+`,
+	})
+	code, out, errb := run(t, "schema", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("schema failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Format   string `json:"format"`
+		Version  int    `json:"version"`
+		Platform string `json:"platform"`
+		Target   any    `json:"target"`
+		Project  string `json:"project"`
+		Facts    []struct {
+			Kind     string `json:"kind"`
+			Channel  string `json:"channel"`
+			Method   string `json:"method"`
+			Dynamic  bool   `json:"dynamic"`
+			Location struct {
+				Path   string `json:"path"`
+				Line   int    `json:"line"`
+				Column int    `json:"column"`
+			} `json:"location"`
+		} `json:"facts"`
+		Limitations []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if doc.Format != "bridge-facts" || doc.Version != 1 {
+		t.Fatalf("bad envelope: %s", out)
+	}
+	if doc.Platform != "go" || doc.Target != "persistence" {
+		t.Fatalf("persistence documents carry platform go and target persistence: %s", out)
+	}
+	channels := map[string]int{}
+	var dynamic, columns int
+	for _, f := range doc.Facts {
+		if f.Kind != "relation-use" {
+			t.Fatalf("unexpected fact kind: %s", f.Kind)
+		}
+		if f.Dynamic {
+			dynamic++
+			continue
+		}
+		if f.Method != "" {
+			columns++
+		}
+		channels[f.Channel]++
+	}
+	// 리터럴 스캔: users(QueryRow)·audit.events(한정)·orders+users(JOIN)·
+	// TableName 바인딩의 users — 각 관계가 사실로 보인다.
+	for _, want := range []string{"users", "audit.events", "orders"} {
+		if channels[want] == 0 {
+			t.Fatalf("missing relation use %q: %v", want, channels)
+		}
+	}
+	// db 태그가 TableName에 귀속해 컬럼 사실(id·name)이 된다.
+	if columns != 2 {
+		t.Fatalf("expected 2 column facts bound to users, got %d", columns)
+	}
+	// 비리터럴 인자 db.Query(q)는 버리지 않고 dynamic으로 보존한다.
+	if dynamic != 1 {
+		t.Fatalf("expected 1 dynamic fact for db.Query(q), got %d", dynamic)
+	}
+	// 위치는 프로젝트 상대 경로다 — 절대 경로가 새면 문서가 이식 불가하다.
+	for _, f := range doc.Facts {
+		if filepath.IsAbs(f.Location.Path) {
+			t.Fatalf("location path must be project-relative: %s", f.Location.Path)
+		}
+	}
+}
+
+// TestSchemaDynamicLimitation은 동적 SQL 인자가 있을 때 문서가
+// unjoined-dynamic-relations limitation을 실는지 확인한다.
+func TestSchemaDynamicLimitation(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "database/sql"
+
+func run(db *sql.DB, table string) {
+	db.Query("SELECT * FROM " + table)
+}
+
+func main() {}
+`,
+	})
+	code, out, errb := run(t, "schema", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("schema failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Facts []struct {
+			Dynamic bool `json:"dynamic"`
+		} `json:"facts"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	var dynamic bool
+	for _, f := range doc.Facts {
+		if f.Dynamic {
+			dynamic = true
+		}
+	}
+	if !dynamic {
+		t.Fatalf("concatenated query arg must surface as dynamic: %s", out)
+	}
+}
+
+// TestSchemaEmpty는 SQL 참조가 없는 모듈이 target null의 빈 문서를 내는지
+// 확인한다 — 계약상 target은 사실이 있을 때만 설정된다.
+func TestSchemaEmpty(t *testing.T) {
+	dir := fixture(t)
+	code, out, errb := run(t, "schema", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("schema failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Target any   `json:"target"`
+		Facts  []any `json:"facts"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if doc.Target != nil {
+		t.Fatalf("documents without facts must carry a null target: %s", out)
+	}
+	if len(doc.Facts) != 0 {
+		t.Fatalf("expected no facts: %s", out)
+	}
+}
+
 // TestDiff는 두 저장 문서의 차이와 --strict의 breaking 계약을 확인한다.
 func TestDiff(t *testing.T) {
 	dir := deadFixture(t)
