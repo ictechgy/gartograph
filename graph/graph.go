@@ -55,8 +55,13 @@ const (
 	KindType    VertexKind = "type"
 	KindFunc    VertexKind = "func"
 	KindMethod  VertexKind = "method"
-	KindVar     VertexKind = "var"
-	KindConst   VertexKind = "const"
+	// KindField는 struct 필드다 — 심볼 레벨에서만 수확된다.
+	// 메서드와 같은 멤버 단위라 ID는 "pkgpath.(Recv).Name" 형태를 공유한다.
+	// 필드는 나가는 의존을 만들지 않으므로(값은 담지만 코드는 아님)
+	// 들어오는 references만이 도달성을 결정한다.
+	KindField VertexKind = "field"
+	KindVar   VertexKind = "var"
+	KindConst VertexKind = "const"
 )
 
 // EdgeKind는 간선의 관계 종류다.

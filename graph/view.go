@@ -10,7 +10,7 @@ var vertexKindsForLevel = map[Level]map[VertexKind]bool{
 	LevelType:    {KindType: true},
 	LevelSymbol: {
 		KindType: true, KindFunc: true, KindMethod: true,
-		KindVar: true, KindConst: true,
+		KindField: true, KindVar: true, KindConst: true,
 	},
 }
 
@@ -80,13 +80,13 @@ func (d *Document) View(l Level) (*Document, error) {
 	return out, nil
 }
 
-// Symbols는 심볼 레벨 정점(type·func·method·var·const)만 골라 돌려준다.
+// Symbols는 심볼 레벨 정점(type·func·method·field·var·const)만 골라 돌려준다.
 // dead 질의처럼 패키지·모듈이 아닌 정점만 대상으로 할 때 쓴다.
 func (d *Document) Symbols() []Vertex {
 	var out []Vertex
 	for _, v := range d.Vertices {
 		switch v.Kind {
-		case KindType, KindFunc, KindMethod, KindVar, KindConst:
+		case KindType, KindFunc, KindMethod, KindField, KindVar, KindConst:
 			out = append(out, v)
 		}
 	}
