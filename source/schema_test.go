@@ -27,6 +27,12 @@ func TestSQLRelations(t *testing.T) {
 		{"DELETE FROM", "DELETE FROM sessions WHERE id = 1", []string{"sessions"}},
 		{"TABLE 수식", "ALTER TABLE orders ADD COLUMN x int", []string{"orders"}},
 		{"TRUNCATE", "TRUNCATE TABLE events", []string{"events"}},
+		{"TRUNCATE 단독", "TRUNCATE events", []string{"events"}},
+		// `table`을 수식어로 건너뛰는 것은 TRUNCATE 뒤에서만이다 —
+		// UPDATE에서는 table이 진짜 관계 이름이다.
+		{"UPDATE의 table 관계", "UPDATE table SET x = 1", []string{"table"}},
+		{"FROM의 table 관계", "SELECT * FROM table", []string{"table"}},
+		{"인용된 table", `SELECT * FROM "table"`, []string{"table"}},
 		{"쉼표 목록", "SELECT * FROM a, b, c.d", []string{"a", "b", "c.d"}},
 		{"ONLY 수식어", "SELECT * FROM ONLY users", []string{"users"}},
 		{"IF NOT EXISTS", "CREATE TABLE IF NOT EXISTS t (id int)", []string{"t"}},
@@ -427,8 +433,15 @@ func (User) TableName() string { return "users" }
 // TableName이 없는 모델 — 귀속 불가로 센다.
 type Orphan struct{ ID int }
 
+// gorm과 같은 모양의 메서드를 가진 로컬 타입 — 수신자 타입 확인이
+// 이름만 같은 호출을 걸러내는지 보는 음성 대조다.
+type fakeDB struct{}
+
+func (fakeDB) Table(name string) {}
+
 func main() {
 	var name string
+	var fake fakeDB
 	gdb.Table("widgets")                 // 인자가 곧 관계 이름
 	gdb.Table(name)                      // 비리터럴 — 동적 사실
 	gdb.Model(&User{})                   // TableName으로 해석
@@ -437,9 +450,12 @@ func main() {
 	gdb.AutoMigrate(&User{})             // 마이그레이션도 관계 참조
 	gdb.Raw("SELECT * FROM raw_t")       // SQL 인자
 	gdb.Exec("DELETE FROM exec_t")       // SQL 인자
+	fake.Table(other)                    // gorm이 아닌 수신자 — 무시
 }
 
 func compute() any { return nil }
+
+var other string
 `,
 	})
 	doc, err := SchemaFacts(dir, "test")
@@ -462,6 +478,13 @@ func compute() any { return nil }
 	}
 	if !sawDynamic {
 		t.Fatalf("Table(name) must be a dynamic fact: %v", doc.Facts)
+	}
+	// 음성 대조 — fakeDB.Table의 수신자는 gorm이 아니므로 인자가
+	// 동적 사실로도 남으면 안 된다.
+	for _, f := range doc.Facts {
+		if f.(RelationFact).Channel == "other" {
+			t.Fatalf("non-gorm receiver leaked a fact: %v", doc.Facts)
+		}
 	}
 	// users는 TableName 리터럴 + Model + AutoMigrate로 여러 번 관측된다 —
 	// 위치가 달라 사실은 별개다.

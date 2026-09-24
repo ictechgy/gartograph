@@ -579,19 +579,25 @@ var relationKeywords = map[string]bool{
 func sqlRelations(text string) []string {
 	tokens := lexSQL(text)
 	var out []string
-	seen := map[string]bool{} // TRUNCATE TABLE처럼 겹치는 키워드 창의 중복을 막는다
+	seen := map[string]bool{}  // TRUNCATE TABLE처럼 겹치는 키워드 창의 중복을 막는다
+	consumed := map[int]bool{} // 이름·수식어로 소비된 토큰 — 키워드로 재발화하지 않는다
 	for i, tok := range tokens {
-		if tok.quoted || !relationKeywords[strings.ToLower(tok.text)] {
+		if consumed[i] || tok.quoted || !relationKeywords[strings.ToLower(tok.text)] {
 			continue
 		}
 		j := i + 1
-		// ONLY·IF NOT EXISTS·TRUNCATE TABLE 같은 수식어는 건너뛴다.
+		// ONLY·IF NOT EXISTS 같은 수식어는 건너뛴다. `table`은 TRUNCATE 뒤의
+		// 수식어일 때만 건너뛴다 — UPDATE table 같은 문에서 table이 진짜
+		// 관계 이름일 수 있고, 억지로 건너뛰면 SET 같은 다음 단어가
+		// 관계명으로 읽힌다.
+		headIsTruncate := strings.EqualFold(tok.text, "truncate")
 		for j < len(tokens) && !tokens[j].quoted &&
 			(strings.EqualFold(tokens[j].text, "only") ||
 				strings.EqualFold(tokens[j].text, "if") ||
 				strings.EqualFold(tokens[j].text, "not") ||
 				strings.EqualFold(tokens[j].text, "exists") ||
-				strings.EqualFold(tokens[j].text, "table")) {
+				(headIsTruncate && strings.EqualFold(tokens[j].text, "table"))) {
+			consumed[j] = true
 			j++
 		}
 		// 쉼표로 이어지는 목록(`FROM a, b`)을 읽는다.
@@ -603,6 +609,9 @@ func sqlRelations(text string) []string {
 			if !seen[name] {
 				seen[name] = true
 				out = append(out, name)
+			}
+			for k := j; k < next; k++ {
+				consumed[k] = true
 			}
 			if next < len(tokens) && tokens[next].text == "," {
 				j = next + 1
