@@ -137,7 +137,9 @@ func (h *harvester) addSatisfies(fn *types.Func, ifaceName string, index map[str
 		return
 	}
 	receiver, ok := receiverTypeID(fn)
-	if _, exists := index[receiver]; !ok || !exists {
+	// 리시버 ID가 점 경로 패키지 ID와 겹치면 index는 그 패키지 정점을 가리킨다 —
+	// 타입 정점이 아니므로 사실을 싣지 않는다(충돌은 limitation으로 이미 센다).
+	if _, exists := index[receiver]; !ok || !exists || h.packageIDs[receiver] {
 		return
 	}
 	v := &h.doc.Vertices[i]

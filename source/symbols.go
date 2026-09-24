@@ -11,6 +11,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"sort"
 	"strings"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -29,6 +30,12 @@ type harvester struct {
 	noTypes  int                     // 타입 정보 없는 패키지 수
 	reflectN int                     // reflect를 import하는 패키지 수
 	linkname int                     // //go:linkname 지시문 수
+	// packageIDs는 수확 전부터 있던 패키지 정점 ID다. 패키지 경로에 점이 들면
+	// (example.com/m/x.y) 패키지 x의 심볼 y와 ID가 같아진다 — 심볼 쪽 정점·간선이
+	// 패키지 정점에 얹히면 "함수가 패키지를 호출한다" 같은 거짓 사실이 된다.
+	packageIDs    map[string]bool
+	idCollisions  map[string]bool // 패키지 ID와 겹쳐 정점을 만들지 않은 심볼 ID
+	collidedEdges int             // 그 충돌 때문에 버린 간선 수
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -42,9 +49,15 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		roots:    make(map[string]bool),
 		impls:    make(map[string][]string),
 		fieldIDs: make(map[types.Object]string),
+
+		packageIDs:   make(map[string]bool),
+		idCollisions: make(map[string]bool),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
+		if v.Kind == graph.KindPackage {
+			h.packageIDs[v.ID] = true
+		}
 	}
 	wantSymbols := level == graph.LevelSymbol
 
@@ -71,6 +84,9 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	if h.linkname > 0 {
 		doc.Limitation(fmt.Sprintf(
 			"%d //go:linkname directives found; their targets may appear unreachable", h.linkname))
+	}
+	if len(h.idCollisions) > 0 {
+		doc.Limitation(h.collisionLimitation())
 	}
 	doc.Level = level
 }
@@ -744,6 +760,10 @@ func unwrapCallee(e ast.Expr) ast.Expr {
 
 // vertex는 정점을 중복 없이 추가한다.
 func (h *harvester) vertex(v graph.Vertex) {
+	if v.Kind != graph.KindPackage && h.packageIDs[v.ID] {
+		h.idCollisions[v.ID] = true
+		return
+	}
 	if h.vertices[v.ID] {
 		return
 	}
@@ -757,6 +777,10 @@ func (h *harvester) vertex(v graph.Vertex) {
 // pos는 이 관계가 성립하는 소스 지점이다 — 같은 관계가 지점마다 반복되면
 // 간선은 하나인 채 positions에 지점만 쌓인다.
 func (h *harvester) edge(from, to string, kind graph.EdgeKind, pos *graph.Position) {
+	if h.collidesWithPackage(from, to, kind) {
+		h.collidedEdges++
+		return
+	}
 	if !h.vertices[from] || !h.vertices[to] {
 		if h.vertices[from] && kind != graph.EdgeContains {
 			h.extRefs++
@@ -794,12 +818,33 @@ func isTestEntry(p *packages.Package, d *ast.FuncDecl) bool {
 }
 
 // root는 보존 루트를 중복 없이 기록한다.
+// 패키지 ID와 겹친 심볼은 루트가 되지 않는다 — 그 ID는 패키지 정점을 가리킨다.
 func (h *harvester) root(id string) {
-	if h.roots[id] {
+	if h.roots[id] || h.idCollisions[id] {
 		return
 	}
 	h.roots[id] = true
 	h.doc.Roots = append(h.doc.Roots, id)
+}
+
+// collidesWithPackage는 수확기 간선이 패키지 ID와 겹친 심볼의 간선인지 본다.
+// 수확기가 긋는 간선 중 패키지 정점에 닿아도 되는 것은 그 패키지가 자기 심볼을
+// 담는 contains뿐이다(import 간선은 수확기 밖에서 만든다). 그 외에 패키지 ID에
+// 닿는 간선은 같은 ID의 심볼을 뜻한 것이다.
+func (h *harvester) collidesWithPackage(from, to string, kind graph.EdgeKind) bool {
+	return h.packageIDs[to] || (h.packageIDs[from] && kind != graph.EdgeContains)
+}
+
+// collisionLimitation은 ID 충돌을 실제 수와 한 예시로 적는다.
+// 예시는 정렬 첫 번째 — 맵 순회 순서가 문서를 흔들지 않게.
+func (h *harvester) collisionLimitation() string {
+	ids := make([]string, 0, len(h.idCollisions))
+	for id := range h.idCollisions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return fmt.Sprintf("%d symbols share their vertex ID with a package whose path contains a dot (e.g. %s); "+
+		"they have no vertex and %d of their edges were omitted", len(ids), ids[0], h.collidedEdges)
 }
 
 // objectID는 심볼의 정점 ID를 만든다.

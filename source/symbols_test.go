@@ -1,6 +1,7 @@
 package source
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -475,4 +476,102 @@ func (Al) Name() string { return "al" }
 		}
 		t.Fatalf("alias receiver method must live under the real type, got %v", ids)
 	}
+}
+
+// idCollisionFixture는 점이 든 패키지 경로(example.com/m/x.y)와 패키지 x의 심볼 y가
+// 같은 ID가 되는 모듈이다. 빈 식별자 변수 초기화식(var _ = first())과 빈 함수
+// (func _())도 담는다.
+func idCollisionFixture(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.27\n",
+		"main.go": `package main
+
+import (
+	"example.com/m/x"
+	xy "example.com/m/x.y"
+)
+
+func main() { x.Use(); xy.Other() }
+`,
+		"x/x.go": `package x
+
+func y() {}
+
+func Use() { y() }
+
+type I interface{ M() }
+type T struct{}
+
+func (T) M() {}
+
+var _ I = T{}
+var _ = first()
+
+func first() int { return 1 }
+
+func _() { onlyBlank() }
+
+func onlyBlank() {}
+`,
+		"x/x2.go": `package x
+
+var _ = second()
+
+func second() int { return 2 }
+`,
+		"x.y/xy.go": `package xy
+
+func Other() {}
+`,
+		"x/z.go": `package x
+
+// Z의 타입 ID는 패키지 example.com/m/x.Z와 같다.
+type Z struct{}
+
+func (*Z) Error() string { return "z" }
+
+func MakeErr() error { return &Z{} }
+`,
+		"x.Z/z.go": `package xz
+
+func Zed() {}
+`,
+	})
+}
+
+// TestSymbolIDCollidingWithPackage는 패키지 ID와 겹치는 심볼이 패키지 정점에
+// 간선을 덮어쓰지 않는지 확인한다. 겹친 심볼은 정점이 없고 그 사실이 limitation으로
+// 세어진다 — 함수가 패키지를 호출하는 간선은 거짓 사실이다.
+func TestSymbolIDCollidingWithPackage(t *testing.T) {
+	doc := loadSymbol(t, idCollisionFixture(t))
+	const pkg = "example.com/m/x.y"
+	for _, e := range doc.Edges {
+		touches := e.From == pkg || e.To == pkg
+		legit := e.Kind == graph.EdgeImport || (e.Kind == graph.EdgeContains && e.From == pkg)
+		if touches && !legit {
+			t.Fatalf("symbol edge landed on package vertex %s: %+v", pkg, e)
+		}
+	}
+	if !hasEdge(doc, pkg, pkg+".Other", graph.EdgeContains) {
+		t.Fatal("the dotted package must still contain its own symbols")
+	}
+	// 리시버 타입이 패키지 ID와 겹치면 외부 디스패치 Receiver가 패키지를 가리키게
+	// 된다 — "패키지가 도달하면 메서드도 도달"은 거짓 규칙이다.
+	if v, _ := doc.VertexByID("example.com/m/x.(Z).Error"); v.Receiver == "example.com/m/x.Z" {
+		t.Fatalf("receiver must not point at a colliding package vertex: %+v", v)
+	}
+	if !containsLimitation(doc, "share their vertex ID with a package") {
+		t.Fatalf("colliding symbols must be counted, got %v", doc.Limitations)
+	}
+}
+
+// containsLimitation은 문서 limitation 중 부분 문자열을 담은 것이 있는지 본다.
+func containsLimitation(doc *graph.Document, part string) bool {
+	return slices.ContainsFunc(doc.Limitations, func(l string) bool { return strings.Contains(l, part) })
+}
+
+// hasEdgeTo는 종류와 상관없이 from→to 간선이 있는지 본다.
+func hasEdgeTo(doc *graph.Document, from, to string) bool {
+	return slices.ContainsFunc(doc.Edges, func(e graph.Edge) bool { return e.From == from && e.To == to })
 }
