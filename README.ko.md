@@ -50,6 +50,11 @@ gartograph dead --algo rta                    # RTA 정밀도 — 소스 필요,
 # isthmus bridge-facts 문서 생성(platform "go")
 # Go는 cgo를 unscanned-ffi-interop limitation으로만 신고 — 채널 사실 없음.
 gartograph bridges --out go-facts.json
+
+# isthmus persistence 사실 생성 — 타입 확인된 database/sql·sqlx·gorm
+# 호출, SQL 리터럴, TableName() 바인딩, db/sql/gorm 컬럼 태그에서
+# SQL 관계 참조를 수확한다(platform "go", target "persistence").
+gartograph schema --out go-schema-facts.json
 gartograph rules --strict                     # .gartograph.yml 레이어 규칙 검사
 
 gartograph query <정점ID> --depth 2            # 이웃 되묻기(에이전트용 JSON)
