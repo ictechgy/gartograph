@@ -812,15 +812,17 @@ func objectID(obj types.Object) string {
 
 // recvName은 메서드의 리시버 타입 이름을 돌려준다.
 // 포인터 리시버는 벗겨 같은 타입 아래로 모은다 — "(T).M"과 "(*T).M"을
-// 두 정점으로 갈라 내면 같은 선언이 둘이 된다.
+// 두 정점으로 갈라 내면 같은 선언이 둘이 된다. 별칭 리시버(type A = T;
+// func (A) M())는 Unalias로 실체 타입 이름을 쓴다 — Go 1.23+의
+// *types.Alias를 그대로 두면 t.String()으로 빠져 "pkg.pkg.A" 같은 깨진 ID가 된다.
 func recvName(f *types.Func) string {
 	sig := f.Signature()
 	if sig == nil || sig.Recv() == nil {
 		return ""
 	}
-	t := sig.Recv().Type()
+	t := types.Unalias(sig.Recv().Type())
 	if ptr, ok := t.(*types.Pointer); ok {
-		t = ptr.Elem()
+		t = types.Unalias(ptr.Elem())
 	}
 	if named, ok := t.(*types.Named); ok {
 		return named.Obj().Name()
