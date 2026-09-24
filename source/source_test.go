@@ -259,3 +259,221 @@ const count = 42
 		}
 	}
 }
+
+// TestFieldVertices는 struct 필드가 심볼 레벨 정점과 참조 간선을 갖는지 확인한다.
+// 선택(x.F)·키 리터럴(T{F: v})·위치 리터럴(T{v}) 세 경로가 모두
+// 필드 도달성의 사실이어야 한다 — 하나라도 빠지면 dead가 쓰이는 필드를
+// unreachable로 오보한다.
+func TestFieldVertices(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func main() { lib.Use() }
+`,
+		"lib/lib.go": `package lib
+
+type Point struct {
+	X     int
+	Y     int
+	label string
+}
+
+func Use() int {
+	p := Point{1, 2}
+	q := Point{X: 3}
+	return p.X + q.Y
+}
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: "symbol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{
+		"example.com/fixture/lib.(Point).X",
+		"example.com/fixture/lib.(Point).Y",
+		"example.com/fixture/lib.(Point).label",
+	} {
+		v, ok := doc.VertexByID(id)
+		if !ok || v.Kind != graph.KindField {
+			t.Fatalf("missing field vertex %s", id)
+		}
+	}
+	// 위치 리터럴 p := Point{1,2}는 모든 필드를 쓰고, 선택 p.X는 X를 쓴다.
+	refs := map[string]bool{}
+	for _, e := range doc.Edges {
+		if e.Kind == graph.EdgeReferences && e.From == "example.com/fixture/lib.Use" {
+			refs[e.To] = true
+		}
+	}
+	for _, f := range []string{"X", "Y", "label"} {
+		id := "example.com/fixture/lib.(Point)." + f
+		if !refs[id] {
+			t.Fatalf("field %s must be referenced by Use (positional literal): %v", id, refs)
+		}
+	}
+	// 타입 레벨 문서에는 필드 정점이 없다 — 멤버 단위는 심볼 레벨의 분해다.
+	tdoc, err := Load(Options{Dir: dir, Level: "type"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range tdoc.Vertices {
+		if v.Kind == graph.KindField {
+			t.Fatalf("type-level doc must not carry field vertices: %+v", v)
+		}
+	}
+}
+
+// TestFieldSelectorRef는 셀렉터 접근만 있는 필드가 참조되는지 확인한다 —
+// 리터럴을 쓰지 않는 필드(외부에서 만들어진 값을 읽기만 하는 경우)도
+// 사실로 남아야 한다.
+func TestFieldSelectorRef(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func main() { lib.Serve() }
+`,
+		"lib/lib.go": `package lib
+
+type Cfg struct {
+	Addr string
+	dead int
+}
+
+func Serve() int {
+	var c Cfg
+	_ = c.Addr
+	return 0
+}
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: "symbol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var addrRef, deadRef bool
+	for _, e := range doc.Edges {
+		if e.Kind != graph.EdgeReferences {
+			continue
+		}
+		if e.To == "example.com/fixture/lib.(Cfg).Addr" {
+			addrRef = true
+		}
+		if e.To == "example.com/fixture/lib.(Cfg).dead" {
+			deadRef = true
+		}
+	}
+	if !addrRef {
+		t.Fatal("selector c.Addr must produce a references edge")
+	}
+	if deadRef {
+		t.Fatal("unreferenced field must not gain a references edge")
+	}
+}
+
+// TestKeepAnnotation은 //deadcode:keep·//gartograph:keep 표지가 붙은
+// 선언이 보존 루트로 수확되는지 확인한다 — 의도적 보존이 선언 옆의
+// 사실로 문서에 남아야 dead가 살린다.
+func TestKeepAnnotation(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+func main() {}
+`,
+		"lib/lib.go": `package lib
+
+//deadcode:keep
+func PluginEntry() {}
+
+// gartograph:keep for the reflection registry
+var Registry = map[string]int{}
+
+//deadcode:keep
+const Magic = 7
+
+//deadcode:keep
+type marker struct{}
+
+type Meta struct {
+	//deadcode:keep — written by reflection
+	tag    string
+	Unused int
+}
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: "symbol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := map[string]bool{}
+	for _, r := range doc.Roots {
+		roots[r] = true
+	}
+	for _, id := range []string{
+		"example.com/fixture/lib.PluginEntry",
+		"example.com/fixture/lib.Registry",
+		"example.com/fixture/lib.Magic",
+		"example.com/fixture/lib.marker",
+		"example.com/fixture/lib.(Meta).tag",
+	} {
+		if !roots[id] {
+			t.Fatalf("annotated symbol %s must be a retention root: %v", id, doc.Roots)
+		}
+	}
+	if roots["example.com/fixture/lib.(Meta).Unused"] {
+		t.Fatal("unannotated field must not become a root")
+	}
+}
+
+// TestFieldPromotion은 승격 선택이 경유하는 임베드 필드를 참조로 긋는지
+// 확인한다 — a.Name에서 Name이 임베드 Base의 필드면 Base 자체도 밟힌다.
+// 경유 필드를 빼먹으면 승격으로만 쓰이는 임베드가 unreachable로 오보된다.
+func TestFieldPromotion(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func main() { lib.Use() }
+`,
+		"lib/lib.go": `package lib
+
+type Base struct{ Name string }
+
+type Wrap struct {
+	Base
+	extra int
+}
+
+func Use() string {
+	var w Wrap
+	return w.Name
+}
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: "symbol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := map[string]bool{}
+	for _, e := range doc.Edges {
+		if e.Kind == graph.EdgeReferences && e.From == "example.com/fixture/lib.Use" {
+			refs[e.To] = true
+		}
+	}
+	for _, id := range []string{
+		"example.com/fixture/lib.(Base).Name", // 도착 필드
+		"example.com/fixture/lib.(Wrap).Base", // 경유 임베드 필드
+	} {
+		if !refs[id] {
+			t.Fatalf("promoted selection must reference %s: %v", id, refs)
+		}
+	}
+	if refs["example.com/fixture/lib.(Wrap).extra"] {
+		t.Fatal("untouched field must not gain a reference")
+	}
+}
