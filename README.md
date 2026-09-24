@@ -293,9 +293,18 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
   `reflect` use, `//go:linkname`, packages without type info) — absent
   means nothing to report, not a boilerplate warning.
 - No delete verdicts. `unreachable` is a graph fact ("not reachable from
-  retention roots"), never "safe to delete". Methods satisfying interfaces
-  declared outside the module are a known blind spot — the report says so
-  when it applies.
+  retention roots"), never "safe to delete".
+- Methods implementing interfaces declared outside the module (`error`,
+  `fmt.Stringer`, `flag.Value`, `encoding.TextUnmarshaler`, …) carry
+  `satisfies` and `receiver` in the symbol graph. Their callers live in
+  the standard library or a dependency, so `dead` counts such a method as
+  reachable whenever its receiver type is reachable. A reported method
+  keeps its `satisfies` list as a triage fact, and `dead --explain` marks
+  the receiver → method hop as `(external dispatch: …)` because no graph
+  edge backs it. The rule applies to `dead` only — `shared`, `path`, and
+  `impact` follow dependency edges. Dispatch through reflection, anonymous
+  interfaces (`errors.Is/As/Unwrap`), or generic interfaces is still
+  invisible and the report says so.
 - Optional fields are omitted when empty (`omitempty`).
 
 ## Graph document

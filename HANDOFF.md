@@ -2,6 +2,30 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
+## 진행 중 — fix/external-interface-dispatch (2026-09-24)
+
+외부 벤치(graphify 대조, 원본 grep 판정)에서 자기 저장소 `dead` 11건 중
+7건이 오탐이었다 — 모듈 밖 인터페이스로만 불리는 메서드(flag.Value의
+Set/String, error.Error, yaml.Unmarshaler)와 그 전이(Error→quote).
+- 수확: 메서드 정점에 `satisfies`(외부 명명 인터페이스, 정렬)·`receiver`
+  (리시버 타입 정점 ID) 사실. `source/dispatch.go`. 문서 간선으로 긋지
+  않는다 — 메서드→리시버 references와 맞물려 cycles 2-순환이 된다.
+- 분석: `ReachAdjacency`가 dead·explain에만 리시버→메서드 인접을 더한다.
+  `shared`는 `DependencyReachable`(의존 간선만)로 path·impact와 답을 맞춘다.
+- CLI: 합성 걸음은 explain에 `(external dispatch: …)` 표시. 한계 문구는
+  CHA에서만, 사실 없는 옛 문서엔 재수확 권고 문구.
+- 곁다리 수정: 별칭 리시버 메서드 ID가 `pkg.(pkg.A).M`으로 깨지던 버그(Unalias).
+- 실측: 자기 저장소 13→6건(남은 함수·메서드 4건 전부 진짜 미사용),
+  go-mssqldb(라이브러리) 509→185, actionlint 58→37. 시간 증가 없음.
+
+다음 후보:
+- 이름 없는 인터페이스 디스패치(errors.Is/As/Unwrap의
+  `interface{ Unwrap() error }`) — 의존 패키지 TypesInfo에서 익명 인터페이스
+  수집. 지금은 limitation 문구로만 알린다.
+- `query <메서드ID>`는 `--graph` 없이 메서드 정점을 못 찾는다(수정 전
+  바이너리도 동일, 기본 수확 레벨 문제로 추정 — 미확인).
+- 비공개 외부 인터페이스(context.stringer 등)가 satisfies에 섞이는 triage 노이즈.
+
 ## 현재 상태 (2026-09-24)
 
 **v0.7.0 릴리스·Homebrew tap 배포 완료** — 경쟁 비교 잔여 5종

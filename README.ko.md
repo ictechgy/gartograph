@@ -235,8 +235,15 @@ gartograph dead   --baseline .dead-baseline.json --strict
 - `limitations`는 매 실행에서 실제로 세어 만듭니다(생략한 외부 참조 수,
   `reflect` 사용, `//go:linkname`) — 없으면 키가 빠집니다.
 - 삭제 판정은 없습니다. `unreachable`은 그래프 사실이지 "지워도 됨"이 아닙니다.
-  모듈 밖에서 선언된 인터페이스를 만족하는 메서드는 알려진 blind spot입니다 —
-  해당하면 보고가 그 사실을 밝힙니다.
+- 모듈 밖에서 선언된 인터페이스(`error`, `fmt.Stringer`, `flag.Value`,
+  `encoding.TextUnmarshaler` 등)를 구현하는 메서드는 심볼 그래프에
+  `satisfies`·`receiver`를 싣습니다. 호출자가 표준 라이브러리·의존 안에
+  있으므로 `dead`는 리시버 타입이 도달하면 그 메서드도 도달한 것으로 셉니다.
+  보고된 메서드는 `satisfies` 목록을 triage 사실로 유지하고, `dead --explain`은
+  리시버→메서드 걸음에 그래프 간선이 없으므로 `(external dispatch: …)`로 표시합니다.
+  이 규칙은 `dead` 전용이며 `shared`·`path`·`impact`는 의존 간선만 따릅니다.
+  reflection·이름 없는 인터페이스(`errors.Is/As/Unwrap`)·제네릭 인터페이스 경유
+  디스패치는 여전히 안 보이고 보고가 그 사실을 밝힙니다.
 
 ## 그래프 문서
 
