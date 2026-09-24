@@ -364,6 +364,9 @@ func TestLimitsValidation(t *testing.T) {
 		"components: {a: [a]}\nlimits: [{component: a}]\n",            // 상한 없음
 		"components: {a: [a]}\nlimits: [{component: a, maxIn: -1}]\n", // 음수
 		"components: {a: [a]}\nlimits: [{maxOut: 2}]\n",               // 컴포넌트 없음
+		// 같은 상한의 중복 — baseline 키가 충돌해 baseline이 구분 못 한다.
+		"components: {a: [a]}\nlimits: [{component: a, maxOut: 1}, {component: a, maxOut: 2}]\n",
+		"components: {a: [a]}\nlimits: [{component: a, maxIn: 0, maxIn: 0}]\n",
 	}
 	for _, c := range cases {
 		if _, err := Load(writeRules(t, c)); err == nil {

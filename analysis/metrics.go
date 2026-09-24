@@ -155,17 +155,23 @@ func Metrics(d *graph.Document, cfg *config.File) *MetricsReport {
 		}
 		ca, ce := len(inDeg[n]), len(outDeg[n])
 		m := ComponentMetric{Name: n, Packages: pkgs, Afferent: ca, Efferent: ce}
+		var iRaw float64
 		if ca+ce > 0 {
-			i := math.Round(float64(ce)/float64(ca+ce)*1000) / 1000
+			iRaw = float64(ce) / float64(ca+ce)
+			i := math.Round(iRaw*1000) / 1000
 			m.Instability = &i
 		}
 		// 타입이 하나도 없으면 추상성은 정의되지 않는다 — 0으로 채우면
 		// "전부 구체 타입"이라는 다른 사실과 구분할 수 없다.
 		if typeCount[n] > 0 {
-			a := math.Round(float64(ifaceCount[n])/float64(typeCount[n])*1000) / 1000
+			aRaw := float64(ifaceCount[n]) / float64(typeCount[n])
+			a := math.Round(aRaw*1000) / 1000
 			m.Abstractness = &a
-			if m.Instability != nil {
-				dist := math.Round(math.Abs(a+*m.Instability-1)*1000) / 1000
+			// distance는 반올림 전 값으로 계산해 한 번만 반올림한다 —
+			// 반올림된 피연산자로 계산하면 경계값 근처에서 실제 순서와
+			// 어긋난 D가 나올 수 있다.
+			if ca+ce > 0 {
+				dist := math.Round(math.Abs(aRaw+iRaw-1)*1000) / 1000
 				m.Distance = &dist
 			}
 		}
