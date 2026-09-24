@@ -119,6 +119,45 @@ func TestQueryNotFound(t *testing.T) {
 	}
 }
 
+// TestIDCommandsFindSymbolVertices는 정점 ID를 받는 명령이 --level 없이도
+// 함수·메서드·타입 ID를 찾는지 확인한다. 기본 수확이 package 레벨이면
+// 이 정점들이 문서에 없어 "vertex not found"로 오답이 났다.
+func TestIDCommandsFindSymbolVertices(t *testing.T) {
+	dir := deadFixture(t)
+	for _, args := range [][]string{
+		{"query", "example.com/fixture/lib.Run"},
+		{"impact", "example.com/fixture/lib.helper"},
+		{"path", "example.com/fixture/lib.Run", "example.com/fixture/lib.helper"},
+		{"shared", "example.com/fixture/lib.Run", "example.com/fixture.main"},
+	} {
+		code, _, errb := run(t, append(args, "--dir", dir)...)
+		if code != 0 {
+			t.Fatalf("%v: expected 0, got %d %s", args, code, errb)
+		}
+	}
+}
+
+// TestIDCommandsLevelFlag는 --level package가 수확을 좁히고, 그 레벨에서
+// 못 찾은 심볼 ID는 "없다"가 아니라 "그 레벨이라 못 봤다"로 알리는지 확인한다.
+func TestIDCommandsLevelFlag(t *testing.T) {
+	dir := deadFixture(t)
+	code, _, errb := run(t, "query", "example.com/fixture/lib.Run",
+		"--dir", dir, "--level", "package")
+	if code != 2 {
+		t.Fatalf("symbol ID at package level: expected 2, got %d", code)
+	}
+	if !strings.Contains(errb, "not found") || !strings.Contains(errb, "package level") {
+		t.Fatalf("expected level hint on not-found: %s", errb)
+	}
+	if code, _, errb := run(t, "query", "example.com/fixture/lib",
+		"--dir", dir, "--level", "package"); code != 0 {
+		t.Fatalf("package ID at package level: %d %s", code, errb)
+	}
+	if code, _, _ := run(t, "path", "a", "b", "--dir", dir, "--level", "nope"); code != 2 {
+		t.Fatalf("bad level must exit 2, got %d", code)
+	}
+}
+
 // deadFixture는 main과 미도달 심볼이 있는 모듈이다.
 func deadFixture(t *testing.T) string {
 	t.Helper()

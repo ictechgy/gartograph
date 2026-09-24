@@ -5,6 +5,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -91,11 +92,11 @@ Usage:
                     [--baseline FILE | --write-baseline FILE] [flags]
   gartograph rules  [--config FILE] [--strict] [--format text|json|sarif]
                     [--baseline FILE | --write-baseline FILE] [flags]
-  gartograph query  <id> [--depth N] [--max N] [flags]
-  gartograph impact <id> [--depth N] [--max N] [flags]
+  gartograph query  <id> [--depth N] [--max N] [--level L] [flags]
+  gartograph impact <id> [--depth N] [--max N] [--level L] [flags]
   gartograph impact --since <git-rev>|--files F... [--depth N] [flags]
-  gartograph path   <from-id> <to-id> [flags]
-  gartograph shared <id> <id> [more ids...] [flags]
+  gartograph path   <from-id> <to-id> [--level L] [flags]
+  gartograph shared <id> <id> [more ids...] [--level L] [flags]
   gartograph diff   <old.json> <new.json> [--strict] [--format text|json]
   gartograph metrics [--config FILE] [--format text|json] [flags]
   gartograph mapping [--config FILE] [--format text|json] [flags]
@@ -112,7 +113,10 @@ Harvest flags (graph, cycles, dead, rules, query):
   --tests       include test variant packages
   --deps        include dependencies outside the main module
   --goos/--goarch  harvest for a different target platform (conditional files)
-  --graph FILE  read a saved graph document instead of harvesting`)
+  --graph FILE  read a saved graph document instead of harvesting
+
+ID commands (query, impact, path, shared) harvest at --level symbol by
+default so type, function, and method IDs resolve; --level package is faster.`)
 }
 
 // flagSet는 공통 수확 플래그를 등록한다.
@@ -216,6 +220,40 @@ func requireLevel(doc *graph.Document, want graph.Level) error {
 			doc.Level, want)
 	}
 	return nil
+}
+
+// idLevelFlag는 정점 ID를 받는 명령(query·impact·path·shared)의 --level을 등록한다.
+// 기본이 symbol인 이유: ID가 타입·함수·메서드를 가리킬 수 있는데 package
+// 레벨로 수확하면 그 정점이 문서에 없어 "vertex not found"가 된다.
+// 패키지 ID의 답은 symbol 문서에서도 같다 — Adjacency가 contains를 빼서
+// 패키지 정점에는 import 간선만 닿는다. package는 큰 저장소에서 수확을
+// 빠르게 하려는 선택지로 남긴다. --graph와 함께면 다른 수확 플래그처럼 무시된다.
+func idLevelFlag(fs *flag.FlagSet) *string {
+	return fs.String("level", string(graph.LevelSymbol),
+		"harvest level: package|type|symbol (ignored with --graph)")
+}
+
+// loadIDDoc는 ID 명령의 --level을 해석해 문서를 얻는다.
+// 레벨 오류는 수확 전에 드러나야 한다 — 잘못된 값이 기본 레벨로 새면
+// 사용자는 자기가 고른 레벨의 답이라고 오독한다.
+func loadIDDoc(opts *source.Options, graphPath, level string) (*graph.Document, error) {
+	lvl, err := graph.ParseLevel(level)
+	if err != nil {
+		return nil, err
+	}
+	opts.Level = lvl
+	return loadDoc(opts, graphPath)
+}
+
+// levelHint는 저레벨 문서에서 정점을 못 찾은 오류에 레벨 사실을 덧붙인다.
+// package 문서에 심볼 ID가 없는 것은 "코드에 없다"가 아니라 "그 레벨이라
+// 못 봤다"다 — 둘을 구분하지 않으면 소비자가 존재하는 코드를 없다고 믿는다.
+func levelHint(doc *graph.Document, err error) error {
+	if !errors.Is(err, analysis.ErrNotFound) || doc.Level.Rank() >= graph.LevelSymbol.Rank() {
+		return err
+	}
+	return fmt.Errorf("%w (document is %s level; type and symbol IDs need --level symbol)",
+		err, doc.Level)
 }
 
 // fail은 에러를 출력하고 종료 코드 2를 돌려준다.
@@ -798,6 +836,7 @@ func cmdQuery(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("query", stderr)
 	depth := fs.Int("depth", 1, "neighbor depth")
 	maxN := fs.Int("max", 0, "max neighbors per direction (0 = unlimited)")
+	level := idLevelFlag(fs)
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return 2
@@ -806,13 +845,13 @@ func cmdQuery(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: gartograph query <vertex-id> [--depth N]")
 		return 2
 	}
-	doc, err := loadDoc(opts, *graphPath)
+	doc, err := loadIDDoc(opts, *graphPath, *level)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	res, err := analysis.Query(doc, positional[0], *depth, *maxN)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, levelHint(doc, err))
 	}
 	sortNeighborsJSON(res)
 	out, _ := json.MarshalIndent(res, "", "  ")
@@ -831,6 +870,7 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	since := fs.String("since", "", "git revision to diff for changed files (e.g. HEAD~1, origin/main...HEAD)")
 	var files stringsFlag
 	fs.Var(&files, "files", "changed file path relative to --dir (repeatable)")
+	level := idLevelFlag(fs)
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return 2
@@ -847,11 +887,12 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	// 파일→정점 해석은 심볼 위치가 있어야 정확하다 — 새로 수확할 때는
-	// 가장 세밀한 레벨을 고른다. 저장 문서(--graph)는 있는 레벨 그대로 쓴다.
-	if fileMode && *graphPath == "" {
-		opts.Level = graph.LevelSymbol
+	// --level과 상관없이 가장 세밀한 레벨을 고른다. 저장 문서(--graph)는
+	// 있는 레벨 그대로 쓴다.
+	if fileMode {
+		*level = string(graph.LevelSymbol)
 	}
-	doc, err := loadDoc(opts, *graphPath)
+	doc, err := loadIDDoc(opts, *graphPath, *level)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -866,7 +907,7 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 		}
 		res, err := analysis.AffectedByFiles(doc, changed, positional, *depth, *maxN)
 		if err != nil {
-			return fail(stderr, err)
+			return fail(stderr, levelHint(doc, err))
 		}
 		if err := emitJSON(stdout, res); err != nil {
 			return fail(stderr, err)
@@ -875,7 +916,7 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	}
 	res, err := analysis.FindImpact(doc, positional[0], *depth, *maxN)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, levelHint(doc, err))
 	}
 	if err := emitJSON(stdout, res); err != nil {
 		return fail(stderr, err)
@@ -888,6 +929,7 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 // 그래프 사실로 돌아가고, 정점이 없으면 사용법이 아닌 분석 오류(2)다.
 func cmdPath(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("path", stderr)
+	level := idLevelFlag(fs)
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return 2
@@ -896,13 +938,13 @@ func cmdPath(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: gartograph path <from-id> <to-id>")
 		return 2
 	}
-	doc, err := loadDoc(opts, *graphPath)
+	doc, err := loadIDDoc(opts, *graphPath, *level)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	res, err := analysis.Path(doc, positional[0], positional[1])
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, levelHint(doc, err))
 	}
 	if err := emitJSON(stdout, res); err != nil {
 		return fail(stderr, err)
@@ -915,6 +957,7 @@ func cmdPath(args []string, stdout, stderr io.Writer) int {
 // 출력은 JSON만이다 — 집합 목록은 에이전트 소비가 상정이다.
 func cmdShared(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("shared", stderr)
+	level := idLevelFlag(fs)
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return 2
@@ -923,13 +966,13 @@ func cmdShared(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: gartograph shared <id> <id> [more ids...]")
 		return 2
 	}
-	doc, err := loadDoc(opts, *graphPath)
+	doc, err := loadIDDoc(opts, *graphPath, *level)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	res, err := analysis.Shared(doc, positional)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, levelHint(doc, err))
 	}
 	if err := emitJSON(stdout, res); err != nil {
 		return fail(stderr, err)
