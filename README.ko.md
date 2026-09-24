@@ -61,7 +61,11 @@ gartograph bridges --out go-facts.json
 gartograph schema --out go-schema-facts.json
 gartograph rules --strict                     # .gartograph.yml 레이어 규칙 검사
 
+# query·impact·path·shared는 기본으로 symbol 레벨을 수확해 패키지·타입·
+# 함수·메서드 ID를 모두 찾는다. --level package는 큰 저장소에서 빠르지만
+# 그 문서에는 패키지 ID만 있다.
 gartograph query <정점ID> --depth 2            # 이웃 되묻기(에이전트용 JSON)
+gartograph query 'github.com/ictechgy/gartograph/graph.(Document).Sort'
 gartograph impact <정점ID> --depth 2           # 역방향 전이 — 바꾸면 뭐가 깨지나
 gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분석
                                               # (--files cli/cli.go도 가능)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -116,6 +117,103 @@ func TestQueryNotFound(t *testing.T) {
 	}
 	if !strings.Contains(errb, "not found") {
 		t.Fatalf("expected not-found message: %s", errb)
+	}
+}
+
+// TestIDCommandsFindSymbolVertices는 정점 ID를 받는 명령이 --level 없이도
+// 함수·메서드·타입 ID를 찾는지 확인한다. 기본 수확이 package 레벨이면
+// 이 정점들이 문서에 없어 "vertex not found"로 오답이 났다.
+func TestIDCommandsFindSymbolVertices(t *testing.T) {
+	dir := deadFixture(t)
+	for _, args := range [][]string{
+		{"query", "example.com/fixture/lib.Run"},
+		{"impact", "example.com/fixture/lib.helper"},
+		{"path", "example.com/fixture/lib.Run", "example.com/fixture/lib.helper"},
+		{"shared", "example.com/fixture/lib.Run", "example.com/fixture.main"},
+	} {
+		code, _, errb := run(t, append(args, "--dir", dir)...)
+		if code != 0 {
+			t.Fatalf("%v: expected 0, got %d %s", args, code, errb)
+		}
+	}
+}
+
+// TestIDCommandsLevelFlag는 --level package가 수확을 좁히고, 그 레벨에서
+// 못 찾은 심볼 ID는 "없다"가 아니라 "그 레벨이라 못 봤다"로 알리는지 확인한다.
+func TestIDCommandsLevelFlag(t *testing.T) {
+	dir := deadFixture(t)
+	code, _, errb := run(t, "query", "example.com/fixture/lib.Run",
+		"--dir", dir, "--level", "package")
+	if code != 2 {
+		t.Fatalf("symbol ID at package level: expected 2, got %d", code)
+	}
+	if !strings.Contains(errb, "not found") || !strings.Contains(errb, "package level") {
+		t.Fatalf("expected level hint on not-found: %s", errb)
+	}
+	if code, _, errb := run(t, "query", "example.com/fixture/lib",
+		"--dir", dir, "--level", "package"); code != 0 {
+		t.Fatalf("package ID at package level: %d %s", code, errb)
+	}
+	if code, _, _ := run(t, "path", "a", "b", "--dir", dir, "--level", "nope"); code != 2 {
+		t.Fatalf("bad level must exit 2, got %d", code)
+	}
+	// 파일 모드는 symbol로 덮어쓰지만, 오타는 ID 모드처럼 거부해야 한다.
+	if code, _, _ := run(t, "impact", "--files", "lib/lib.go",
+		"--dir", dir, "--level", "nope"); code != 2 {
+		t.Fatalf("bad level in file mode must exit 2, got %d", code)
+	}
+}
+
+// TestIDCommandsLevelHintSavedGraph는 저장 문서에서 못 찾은 ID의 힌트가
+// 무시되는 --level이 아니라 다시 저장하는 길을 알리는지 확인한다.
+func TestIDCommandsLevelHintSavedGraph(t *testing.T) {
+	dir := deadFixture(t)
+	saved := filepath.Join(t.TempDir(), "pkg.json")
+	if code, _, errb := run(t, "graph", "--dir", dir, "--out", saved); code != 0 {
+		t.Fatalf("graph --out failed: %d %s", code, errb)
+	}
+	for _, args := range [][]string{
+		{"query", "example.com/fixture/lib.Run"},
+		{"impact", "example.com/fixture/lib.Run"},
+		{"path", "example.com/fixture/lib.Run", "example.com/fixture/lib"},
+		{"shared", "example.com/fixture/lib.Run", "example.com/fixture/lib"},
+	} {
+		code, _, errb := run(t, append(args, "--graph", saved)...)
+		if code != 2 || !strings.Contains(errb, "drop --graph") {
+			t.Fatalf("%v: expected saved-graph hint, got %d %s", args, code, errb)
+		}
+	}
+}
+
+// TestIDCommandsPackageAnswersAcrossLevels는 패키지 ID의 답(경로·집합·의존자)이
+// package와 symbol 수확에서 같은지 확인한다. symbol이 기본이 되어도 기존
+// 패키지 질의가 달라지면 안 된다 — contains는 의존이 아니다. limitations는
+// 수확 레벨마다 못 본 영역이 달라 비교에서 뺀다.
+func TestIDCommandsPackageAnswersAcrossLevels(t *testing.T) {
+	dir := deadFixture(t)
+	for _, args := range [][]string{
+		{"query", "example.com/fixture/lib"},
+		{"impact", "example.com/fixture/lib"},
+		{"path", "example.com/fixture", "example.com/fixture/lib"},
+		{"shared", "example.com/fixture", "example.com/fixture/lib"},
+	} {
+		answers := map[string]map[string]any{}
+		for _, level := range []string{"package", "symbol"} {
+			code, out, errb := run(t, append(args, "--dir", dir, "--level", level)...)
+			if code != 0 {
+				t.Fatalf("%v at %s: %d %s", args, level, code, errb)
+			}
+			var res map[string]any
+			if err := json.Unmarshal([]byte(out), &res); err != nil {
+				t.Fatalf("%v at %s: not JSON: %v", args, level, err)
+			}
+			delete(res, "limitations")
+			answers[level] = res
+		}
+		if !reflect.DeepEqual(answers["package"], answers["symbol"]) {
+			t.Fatalf("%v: package answer changed across levels:\npackage %v\nsymbol  %v",
+				args, answers["package"], answers["symbol"])
+		}
 	}
 }
 
