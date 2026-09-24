@@ -36,7 +36,7 @@ func Shared(d *graph.Document, roots []string) (*SharedResult, error) {
 	reach := make(map[string]map[string]bool, len(roots))
 	count := map[string]int{} // 정점 → 도달하는 루트 수
 	for _, r := range roots {
-		reach[r] = Reachable(d, []string{r})
+		reach[r] = DependencyReachable(d, []string{r})
 		for id := range reach[r] {
 			count[id]++
 		}
