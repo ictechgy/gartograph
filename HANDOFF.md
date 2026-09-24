@@ -8,10 +8,11 @@
 공개 인터페이스 옆에 늘 붙어 triage 목록을 부풀렸다.
 - 규칙(`pruneHidden`): 공개 인터페이스(error·이름 없는 표기 포함)가 하나라도 있으면
   비공개 명명 인터페이스를 뺀다. 비공개만 있으면 그대로 — 빼면 그 메서드가 죽는다.
-  비공개 판정은 수집 시점 `TypeName.Exported()`(`externalIface.hidden`), 문자열 파싱 아님.
+  hidden 판정은 수집 시점 `TypeName.Exported()` + internal 경로 세그먼트
+  (`externalIface.hidden`) — 이름 문자열 파싱 아님(이름 없는 표기에도 소문자 경로가 든다).
 - 사전 실측: 비공개만으로 살아 있는 메서드는 세 저장소 모두 0건 → 도달성 불변.
   사후 실측: dead finding 목록 세 저장소 모두 동일, satisfies 항목 자기 저장소
-  12→8, go-mssqldb 258→236, actionlint 84→36.
+  12→8, go-mssqldb 258→230, actionlint 84→36(internal 경로 포함, 리뷰 LOW 반영).
 
 ## 이전 완료 — 이름 없는 인터페이스 디스패치 수확 (2026-09-24, PR #16 머지)
 
