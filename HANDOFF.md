@@ -9,13 +9,20 @@
   심볼 정점이 조용히 사라지고, 그 간선이 패키지 정점에 얹혀 `x → x.y contains`
   (패키지가 패키지를 담음)·`x.Use → x.y call`(함수가 패키지를 호출) 같은 거짓
   사실이 됐다. 외부 디스패치 `Receiver`도 패키지를 가리킬 수 있었다.
-  수정: `packageIDs`와 겹치는 심볼은 정점·간선·루트·Receiver를 만들지 않고
-  `idCollisions`/`collidedEdges`로 세어 limitation. 규칙 — 수확기 간선 중 패키지
-  ID에 닿아도 되는 것은 그 패키지가 자기 심볼을 담는 contains뿐.
+  수정: `packageIDs`와 겹치는 심볼은 정점·간선·루트를 만들지 않고
+  `idCollisions`/`collidedEdges`(서로 다른 간선 집합 — 호출 횟수 아님)로 세어
+  limitation. 규칙 — 수확기 간선 중 패키지 ID에 닿아도 되는 것은 그 패키지가 자기
+  심볼을 담는 contains뿐. 리시버가 충돌한 메서드는 Receiver 없이 satisfies를
+  유지하고 보존 루트가 된다(과소 근사 방지). RTA 인접 맵도 패키지 경로와 같은 ID를
+  거른다. type 레벨처럼 충돌 정점 없이 버린 간선만 있어도 limitation을 낸다.
 - **빈 식별자 초기화식(재현 중 발견)**: `var _ = first()`·`var _ I = T{}`의 참조가
   `_` 정점 부재로 limitation 없이 버려져 first·T·I가 dead로 보고됐다. 수정:
   패키지당 보존 루트 정점 `pkg._`(init과 같은 방식). `func _()`·`type _` 본문은
-  실행·참조되지 않으므로 제외.
+  실행·참조되지 않으므로 제외. RTA는 `pkg._` 루트가 있으면 그 패키지의 합성
+  `init`을 루트에 더한다. metrics orphan은 `pkg._` 루트를 보지 않는다(컴파일 타임
+  단언은 패키지 보존 표지가 아니다 — init·keep과 다르다).
+- 리뷰: code-reviewer REQUEST CHANGES(HIGH 1·MEDIUM 2·LOW 4) — HIGH·MEDIUM·LOW 2
+  반영, 나머지는 아래 후보.
 - 실측: go-mssqldb 180·actionlint 37·자기 저장소 6 불변(벤치에 충돌·빈 초기화
   전용 심볼 없음).
 
@@ -113,7 +120,15 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
   지금은 충돌 심볼을 빼고 limitation으로 센다. 근본 해결은 ID 형식 변경(문서 v3,
   계열·isthmus 소비자 계약)이라 사용자 결정 대상.
 - 같은 패키지의 여러 `init`·빈 선언은 정점 하나로 합쳐져 위치가 첫 선언만 남는다
-  (둘 다 보존 루트라 도달성 영향 없음).
+  (둘 다 보존 루트라 도달성 영향 없음). `pkg._`의 `generated`는 처음 본 선언의
+  파일을 따르고 kind는 const만 있어도 var다(리뷰 LOW).
+- 옛 저장 문서에는 `pkg._`가 없어 빈 초기화식 전용 심볼이 여전히 dead — 재수확
+  권고 표지 없음(리뷰 LOW, 선택).
+- **이름 있는 변수 초기화식의 부작용(재현, 기존 결함)**: `var registered = register()`에서
+  `registered`를 아무도 읽지 않으면 `register`가 dead로 나온다 — 초기화 때 실행되는데.
+  초기화식 호출을 변수가 아니라 패키지 초기화 루트에 귀속시키는 설계 변경이 필요.
+- RTA 루트 매핑은 패키지 멤버 함수만 본다 — 메서드 루트(keep·충돌 리시버)는
+  RTA 루트가 되지 않는다(기존 동작).
 
 ## 현재 상태 (2026-09-24)
 
