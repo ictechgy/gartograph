@@ -51,6 +51,9 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	h.addSymbolVertices(internal, wantSymbols)
 	h.addStructuralEdges(internal)
 	h.addBodyEdges(internal, wantSymbols)
+	if wantSymbols {
+		h.markExternalDispatch(internal)
+	}
 
 	// limitation은 실제로 세어서 만든다.
 	if h.noTypes > 0 {
