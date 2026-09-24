@@ -258,6 +258,27 @@ func PkgUse(x any) {
 	}
 }
 
+type hooker interface{ OnlyHook() }
+
+func Hook(x any) {
+	if h, ok := x.(hooker); ok {
+		h.OnlyHook()
+	}
+}
+
+type Stringish struct{}
+
+func (Stringish) String() string { return "" }
+
+type stringer interface{ String() string }
+
+func Str(x any) string {
+	if s, ok := x.(stringer); ok {
+		return s.String()
+	}
+	return ""
+}
+
 func Sum[T interface {
 	~int
 	Constrain()
@@ -269,6 +290,7 @@ func Sum[T interface {
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"example.com/dep"
@@ -318,6 +340,14 @@ type Shadowed struct{}
 
 func (Shadowed) UseShadow(dep.Token) {}
 
+type OnlyHooker struct{}
+
+func (OnlyHooker) OnlyHook() {}
+
+type Strung struct{}
+
+func (Strung) String() string { return "" }
+
 type PkgUser struct{}
 
 func (PkgUser) Use(dep.Token) {}
@@ -346,10 +376,35 @@ func main() {
 	dep.Shadow(Shadowed{})
 	dep.Sum(Constrained(0))
 	dep.PkgUse(PkgUser{})
+	dep.Hook(OnlyHooker{})
+	_ = dep.Str(Strung{})
+	_ = fmt.Sprint(Strung{})
 	_ = errors.Is(WrapErr{}, nil)
 }
 `,
 	})
+}
+
+// TestSatisfiesPrunesUnexportedNamed는 공개 인터페이스(또는 error·이름 없는 표기)가
+// 설명하는 메서드의 satisfies에서 비공개 명명 인터페이스(context.stringer 같은)가
+// 빠지고, 비공개만 설명하는 메서드에는 남는지 확인한다. 목록이 비지 않으므로
+// 도달성은 그대로다 — 비공개 항목은 triage 노이즈일 뿐 새 도달을 더하지 않는다.
+func TestSatisfiesPrunesUnexportedNamed(t *testing.T) {
+	doc := loadSymbol(t, anonDispatchFixture(t))
+	const m = "example.com/anonfix"
+	strung, _ := doc.VertexByID(m + ".(Strung).String")
+	if !slices.Contains(strung.Satisfies, "fmt.Stringer") {
+		t.Fatalf("Strung.String must satisfy fmt.Stringer, got %v", strung.Satisfies)
+	}
+	for _, s := range strung.Satisfies {
+		if s == "example.com/dep.stringer" || s == "context.stringer" || s == "runtime.stringer" {
+			t.Fatalf("unexported named interface must be pruned beside fmt.Stringer, got %v", strung.Satisfies)
+		}
+	}
+	only, _ := doc.VertexByID(m + ".(OnlyHooker).OnlyHook")
+	if !slices.Equal(only.Satisfies, []string{"example.com/dep.hooker"}) {
+		t.Fatalf("an unexported interface that alone explains dispatch must stay, got %v", only.Satisfies)
+	}
 }
 
 // TestAnonymousInterfaceDispatchFacts는 의존 소스의 이름 없는 인터페이스
