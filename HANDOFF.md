@@ -8,11 +8,16 @@
 `--graph` 없이는 메서드·타입 ID가 `vertex not found`였다(추정이던 원인 확인).
 - 기본 `--level symbol` + `--level package` 선택지(`idLevelFlag`·`loadIDDoc`).
   `impact --since/--files`는 여전히 symbol 강제.
-- 패키지 ID 답은 symbol 문서에서도 같다 — `Adjacency`가 contains를 뺀다.
-  이 저장소에서 네 명령의 package/symbol 출력 diff 0으로 확인.
+- 패키지 ID의 이웃·경로·집합은 symbol 문서에서도 같다 — `Adjacency`·
+  `Incoming`이 contains를 뺀다(`TestIDCommandsPackageAnswersAcrossLevels`).
+  **단 `limitations`는 달라진다** — impact·path·shared JSON에 symbol 수확의
+  "N references to symbols outside the module" 줄이 더해진다. 그 문서가
+  실제로 못 본 영역이라 거르지 않았다(리뷰 지적으로 처음 주장 "diff 0" 정정).
 - 비용: 이 저장소 warm 수확 0.05s → 0.33s. 큰 저장소는 `--level package`.
-- 저레벨 문서에서 못 찾은 ID는 `levelHint`가 "document is package level"을
-  덧붙인다 — 없는 것과 못 본 것의 구분.
+- symbol보다 거친 문서에서 못 찾은 ID는 `levelHint`가 레벨 사실 + 효과 있는
+  해결책을 덧붙인다 — `--graph`면 무시되는 `--level` 대신 다시 저장하라고.
+  파일 모드도 `--level` 오타는 거부(덮어쓰기 전에 검증).
+- 리뷰: code-reviewer MEDIUM 2(limitations 주장·`--graph` 힌트)·LOW 5 반영.
 
 ## 이전 완료 — 외부 인터페이스 디스패치 dead 오탐 수정 (2026-09-24)
 
@@ -54,6 +59,9 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
   `interface{ Unwrap() error }`) — 의존 패키지 TypesInfo에서 익명 인터페이스
   수집. 지금은 limitation 문구로만 알린다.
 - 비공개 외부 인터페이스(context.stringer 등)가 satisfies에 섞이는 triage 노이즈.
+- (미확인, 리뷰 LOW) `objectID` 충돌 가능성 — 경로에 `.`이 든 패키지
+  `example.com/x.y`와 패키지 `example.com/x`의 심볼 `y`가 같은 ID. 재현
+  사례 없음. ID 명령이 symbol 기본이 되어 부딪힐 확률만 늘었다.
 
 ## 현재 상태 (2026-09-24)
 
