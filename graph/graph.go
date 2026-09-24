@@ -126,6 +126,16 @@ type Vertex struct {
 	// 깨지는 않아도 API 계약의 변경이다. diff의 breaking 분류 재료다.
 	// const가 아닌 정점이나 값을 수확하지 않은 옛 문서는 비어 있다.
 	Value string `json:"value,omitempty"`
+	// Satisfies는 method 정점이 모듈 밖에서 선언된 인터페이스의 메서드를
+	// 구현한다는 사실이다 — 인터페이스를 "경로.이름"(universe는 "error")으로
+	// 정렬해 담는다. 모듈 밖 코드(fmt, flag, encoding/json 등)의 호출 지점은
+	// 그래프에 없으므로, 이 사실 없이는 error.Error·flag.Value.Set 같은
+	// 메서드가 살아 있어도 unreachable로 보인다. 판정은 analysis가 한다.
+	Satisfies []string `json:"satisfies,omitempty"`
+	// Receiver는 Satisfies가 있는 method 정점의 리시버 타입 정점 ID다 —
+	// "리시버 타입이 도달하면 외부 디스패치로 이 메서드도 도달할 수 있다"를
+	// ID 문자열 파싱 없이 계산하기 위한 짝 사실이다. Satisfies가 없으면 비어 있다.
+	Receiver string `json:"receiver,omitempty"`
 }
 
 // Edge는 방향 있는 관계다.

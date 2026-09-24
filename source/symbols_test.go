@@ -452,3 +452,27 @@ func F() { fmt.Println() }
 		t.Fatalf("expected external-references limitation: %v", doc.Limitations)
 	}
 }
+
+// TestAliasReceiverMethodID는 별칭 리시버 메서드가 실체 타입 아래 ID를
+// 갖는지 확인한다 — 별칭을 벗기지 않으면 "pkg.(pkg.A).M" 같은 깨진 ID가 된다.
+func TestAliasReceiverMethodID(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/aliasfix\n\ngo 1.27\n",
+		"lib/lib.go": `package lib
+
+type Real struct{}
+
+type Al = Real
+
+func (Al) Name() string { return "al" }
+`,
+	})
+	doc := loadSymbol(t, dir)
+	if !doc.HasVertex("example.com/aliasfix/lib.(Real).Name") {
+		var ids []string
+		for _, v := range doc.Vertices {
+			ids = append(ids, v.ID)
+		}
+		t.Fatalf("alias receiver method must live under the real type, got %v", ids)
+	}
+}

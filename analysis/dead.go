@@ -25,8 +25,12 @@ type Finding struct {
 	Package  string           `json:"package,omitempty"`
 	Position *graph.Position  `json:"position,omitempty"`
 	Exported bool             `json:"exported"`
-	State    string           `json:"state"`
-	Reason   string           `json:"reason"`
+	// Satisfies는 메서드가 구현하는 모듈 밖 인터페이스다(정점 사실 그대로).
+	// 리시버 타입까지 도달하지 못해 보고된 메서드라도 외부 코드가 이
+	// 인터페이스로 부를 수 있다는 triage 재료다 — 확신도로 번역하지 않는다.
+	Satisfies []string `json:"satisfies,omitempty"`
+	State     string   `json:"state"`
+	Reason    string   `json:"reason"`
 }
 
 // StateUnreachable은 보존 루트에서 도달할 수 없다는 그래프 사실이다.
@@ -70,10 +74,78 @@ func RetentionRoots(d *graph.Document, retainPublic bool,
 	return roots, unknown
 }
 
-// Reachable은 루트들에서 의존 간선을 따라 도달 가능한 정점 집합을 BFS로 만든다.
-// contains는 의존이 아니라 제외된다(Adjacency가 걸러 준다).
-func Reachable(d *graph.Document, roots []string) map[string]bool {
+// ReachAdjacency는 도달성 전용 인접 맵이다 — 의존 간선에 외부 디스패치를 더한다.
+// 모듈 밖 인터페이스를 구현한 메서드(Satisfies)는 리시버 타입이 도달하면
+// 함께 도달한다고 본다. 그 인터페이스의 호출 지점(fmt의 Error 호출, flag의
+// Value.Set 호출)은 그래프 밖이라, 이 규칙이 없으면 살아 있는 메서드가
+// unreachable로 나온다 — 모듈 안 인터페이스의 CHA 팬아웃과 같은 "살아
+// 있다" 쪽 과대 근사다. 문서 간선으로 긋지 않는 이유: 메서드→리시버
+// references와 맞물려 모든 해당 메서드가 cycles에 2-순환으로 새어 나간다.
+func ReachAdjacency(d *graph.Document) map[string][]string {
 	adj := graph.Adjacency(d)
+	exists := make(map[string]bool, len(d.Vertices))
+	for _, v := range d.Vertices {
+		exists[v.ID] = true
+	}
+	touched := map[string]bool{}
+	for _, v := range d.Vertices {
+		if v.Kind != graph.KindMethod || len(v.Satisfies) == 0 || !exists[v.Receiver] {
+			continue
+		}
+		adj[v.Receiver] = append(adj[v.Receiver], v.ID)
+		touched[v.Receiver] = true
+	}
+	// 결정성 — 덧붙인 목록도 Adjacency와 같은 정렬·중복 없는 형태로 맞춘다.
+	for from := range touched {
+		adj[from] = sortedUnique(adj[from])
+	}
+	return adj
+}
+
+// sortedUnique는 문자열 목록을 정렬하고 중복을 없앤다.
+func sortedUnique(in []string) []string {
+	sort.Strings(in)
+	out := in[:0]
+	for i, s := range in {
+		if i == 0 || s != in[i-1] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// IsExternalDispatch는 경로의 한 걸음(from→to)이 문서 간선이 아니라
+// 외부 디스패치 규칙(리시버 타입 → Satisfies 메서드)으로 이어졌는지 본다.
+// explain 출력이 합성 걸음을 표시해, 소비자가 없는 간선을 찾지 않게 한다.
+// 돌려주는 목록은 그 메서드의 Satisfies다.
+func IsExternalDispatch(d *graph.Document, from, to string) ([]string, bool) {
+	v, ok := d.VertexByID(to)
+	if !ok || v.Kind != graph.KindMethod || len(v.Satisfies) == 0 || v.Receiver != from {
+		return nil, false
+	}
+	for _, e := range d.Edges {
+		if e.From == from && e.To == to && e.Kind != graph.EdgeContains {
+			return nil, false
+		}
+	}
+	return v.Satisfies, true
+}
+
+// Reachable은 dead·explain의 도달 집합이다 — 의존 간선에 외부 디스패치를
+// 더한 ReachAdjacency 위의 BFS다. contains는 의존이 아니라 제외된다.
+func Reachable(d *graph.Document, roots []string) map[string]bool {
+	return reachFrom(ReachAdjacency(d), roots)
+}
+
+// DependencyReachable은 문서의 의존 간선만 따르는 도달 집합이다.
+// shared처럼 "무엇에 의존하나"를 묻는 질의용이다 — 외부 디스패치는
+// 의존이 아니라 도달 가능성 규칙이라 path·impact와 답이 갈라지면 안 된다.
+func DependencyReachable(d *graph.Document, roots []string) map[string]bool {
+	return reachFrom(graph.Adjacency(d), roots)
+}
+
+// reachFrom은 인접 맵 위에서 루트들의 BFS 도달 집합을 만든다.
+func reachFrom(adj map[string][]string, roots []string) map[string]bool {
 	seen := make(map[string]bool)
 	queue := append([]string(nil), roots...)
 	for _, r := range roots {
@@ -105,13 +177,14 @@ func Dead(d *graph.Document, reachable map[string]bool) []Finding {
 			continue
 		}
 		out = append(out, Finding{
-			ID:       v.ID,
-			Kind:     v.Kind,
-			Package:  v.Package,
-			Position: v.Position,
-			Exported: v.Exported,
-			State:    StateUnreachable,
-			Reason:   ReasonUnreachable,
+			ID:        v.ID,
+			Kind:      v.Kind,
+			Package:   v.Package,
+			Position:  v.Position,
+			Exported:  v.Exported,
+			Satisfies: v.Satisfies,
+			State:     StateUnreachable,
+			Reason:    ReasonUnreachable,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -136,13 +209,14 @@ func DeadRTA(d *graph.Document, graphReach, rtaReach map[string]bool) []Finding 
 		}
 		if dead {
 			out = append(out, Finding{
-				ID:       v.ID,
-				Kind:     v.Kind,
-				Package:  v.Package,
-				Position: v.Position,
-				Exported: v.Exported,
-				State:    StateUnreachable,
-				Reason:   reason,
+				ID:        v.ID,
+				Kind:      v.Kind,
+				Package:   v.Package,
+				Position:  v.Position,
+				Exported:  v.Exported,
+				Satisfies: v.Satisfies,
+				State:     StateUnreachable,
+				Reason:    reason,
 			})
 		}
 	}
@@ -157,7 +231,7 @@ func Explain(d *graph.Document, id string, roots []string) ([]string, bool, erro
 	if !d.HasVertex(id) {
 		return nil, false, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	path, found := ExplainAdjacency(graph.Adjacency(d), id, roots)
+	path, found := ExplainAdjacency(ReachAdjacency(d), id, roots)
 	return path, found, nil
 }
 

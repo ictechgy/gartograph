@@ -55,8 +55,13 @@ import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상
 **`dead`의 기본 루트는 `main`·`init`뿐입니다.** 라이브러리에서는 저장소 안에
 호출자가 없는 공개 API 전체가 unreachable로 나옵니다 — `--retain-public`이
 그때의 스위치입니다. 모듈 밖 인터페이스(error, flag.Value 같은)를 만족하는
-메서드는 외부 디스패치가 그래프에 안 보여 unreachable로 나올 수 있고,
-보고에 해당 limitation이 실립니다.
+메서드는 수확이 정점에 `satisfies`·`receiver` 사실로 남기고, `analysis`가
+"리시버 타입이 도달하면 그 메서드도 도달"로 계산합니다(`ReachAdjacency`).
+문서 간선으로 긋지 마세요 — 메서드→리시버 references와 맞물려 cycles에
+가짜 2-순환이 생깁니다. 이 규칙은 `dead`·`explain` 전용입니다 —
+`shared`·`path`·`impact`는 의존 간선만 따릅니다(`DependencyReachable`).
+reflection·이름 없는 인터페이스(`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`)·
+제네릭 인터페이스 경유 디스패치는 여전히 안 보이고, 메서드 보고에 그 limitation이 실립니다.
 
 ## 절대 하지 말 것
 
@@ -69,7 +74,8 @@ import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상
 - **인터페이스 디스패치를 과소 근사하지 마세요.** 인터페이스 메서드 호출은
   CHA로 모든 구현 메서드에 call 간선을 긋습니다. 간선을 빼먹으면 dead가
   살아 있는 코드를 죽었다고 보고합니다 — 과대 근사는 "살아 있다" 쪽으로만
-  기울이세요. 모듈 밖 인터페이스의 디스패치는 여전히 blind spot입니다.
+  기울이세요. 모듈 밖 인터페이스는 호출 지점이 안 보여서 `satisfies` 사실과
+  리시버 도달성으로 대신합니다(위 `dead` 절).
 - **JSON 출력을 비결정적으로 만들지 마세요.** 내보내기 전에 `Document.Sort`.
   같은 입력이 매번 다른 파일이 되면 리포트 diff와 캐시가 무의미해집니다.
 - **삭제 판정을 내지 마세요.** `unreachable`은 "보존 루트에서 도달할 수 없다"는

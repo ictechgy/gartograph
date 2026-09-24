@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -2070,5 +2071,178 @@ limits:
 	}
 	if !limitV {
 		t.Fatalf("expected limit violation for web: %s", out)
+	}
+}
+
+// TestDeadExternalDispatch는 모듈 밖 인터페이스로만 불리는 메서드의 오탐
+// 회귀다. 실측(gartograph 자기 저장소)에서 flag.Value(fs.Var)·error 반환·
+// 외부 라이브러리 unmarshal 훅과 그 전이 호출(Error→quote)이 unreachable로
+// 잘못 나왔다. 리시버가 살아 있으면 살리고, 무관한 메서드와 리시버가 죽은
+// 메서드는 그대로 보고하며 보고에 satisfies 사실을 싣는지 본다.
+func TestDeadExternalDispatch(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import (
+	"encoding/json"
+	"flag"
+
+	"example.com/fixture/lib"
+)
+
+func main() {
+	fs := flag.NewFlagSet("x", flag.ContinueOnError)
+	var p lib.Patterns
+	fs.Var(&p, "pattern", "repeatable")
+	var cfg lib.Config
+	_ = json.Unmarshal([]byte("{}"), &cfg)
+	_, _ = lib.Parse("x")
+	_ = lib.Wrapper{}
+}
+`,
+		"lib/lib.go": `package lib
+
+type Named struct{}
+
+func (Named) String() string { return "named" }
+
+type Wrapper struct{ Named }
+
+type Patterns []string
+
+func (p *Patterns) Set(v string) error { *p = append(*p, v); return nil }
+func (p *Patterns) String() string     { return "" }
+func (p *Patterns) Helper()            {}
+
+type Level int
+
+func (l *Level) UnmarshalText(b []byte) error { *l = Level(len(b)); return nil }
+
+type Config struct{ Level Level }
+
+type ParseError struct{ Input string }
+
+func (e *ParseError) Error() string { return quote(e.Input) }
+
+func quote(s string) string { return "'" + s + "'" }
+
+func Parse(s string) (int, error) { return 0, &ParseError{Input: s} }
+
+type Orphan struct{}
+
+func (Orphan) String() string { return "orphan" }
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead failed: %d %s", code, errb)
+	}
+	var rep struct {
+		Unreachable []struct {
+			ID        string   `json:"id"`
+			Satisfies []string `json:"satisfies"`
+		} `json:"unreachable"`
+		Limitations []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("dead output is not JSON: %v\n%s", err, out)
+	}
+	found := map[string][]string{}
+	for _, f := range rep.Unreachable {
+		found[f.ID] = f.Satisfies
+	}
+	const lib = "example.com/fixture/lib"
+	for _, alive := range []string{
+		lib + ".(Patterns).Set", lib + ".(Patterns).String",
+		lib + ".(Level).UnmarshalText", lib + ".(ParseError).Error", lib + ".quote",
+		lib + ".(Named).String", // 임베딩 승격 — Wrapper가 Named를 embeds로 끌어온다
+	} {
+		if _, ok := found[alive]; ok {
+			t.Fatalf("%s is reachable through external dispatch but was reported: %s", alive, out)
+		}
+	}
+	if _, ok := found[lib+".(Patterns).Helper"]; !ok {
+		t.Fatalf("method unrelated to external interfaces must still be reported: %s", out)
+	}
+	if s, ok := found[lib+".(Orphan).String"]; !ok || !slices.Contains(s, "fmt.Stringer") {
+		t.Fatalf("method of an unreachable receiver must be reported with its satisfies fact: %s", out)
+	}
+	var mentions bool
+	for _, l := range rep.Limitations {
+		mentions = mentions || strings.Contains(l, "receiver type is reachable")
+	}
+	if !mentions {
+		t.Fatalf("method findings must state the external dispatch rule: %v", rep.Limitations)
+	}
+
+	code, out, errb = run(t, "dead", "--dir", dir, "--explain", lib+".quote")
+	if code != 0 || !strings.Contains(out, lib+".(ParseError).Error (external dispatch: error)") {
+		t.Fatalf("explain must mark the synthetic hop through the receiver type: %d %s %s", code, out, errb)
+	}
+
+	// RTA는 외부 호출을 SSA로 직접 보므로 리시버 규칙 문구가 붙으면 거짓이다.
+	code, out, errb = run(t, "dead", "--dir", dir, "--algo", "rta", "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead --algo rta failed: %d %s", code, errb)
+	}
+	if strings.Contains(out, "receiver type is reachable") {
+		t.Fatalf("rta report must not claim the receiver rule: %s", out)
+	}
+	// 문구를 빼는 근거: RTA는 SSA 전체 프로그램으로 외부 호출을 직접 봐서 이 메서드들을 살린다.
+	for _, alive := range []string{lib + ".(Patterns).Set", lib + ".(ParseError).Error", lib + ".quote"} {
+		if strings.Contains(out, `"`+alive+`"`) {
+			t.Fatalf("rta must keep %s reachable through external calls: %s", alive, out)
+		}
+	}
+}
+
+// TestDeadExternalDispatchOldDocument는 satisfies 사실이 없는 옛 저장 문서가
+// 규칙이 적용됐다고 거짓 문구를 내지 않고, 재수확을 권하는지 확인한다.
+func TestDeadExternalDispatchOldDocument(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func main() { _, _ = lib.Parse("x") }
+`,
+		"lib/lib.go": `package lib
+
+type ParseError struct{}
+
+func (*ParseError) Error() string { return "e" }
+
+func Parse(s string) (int, error) { return 0, &ParseError{} }
+`,
+	})
+	code, out, errb := run(t, "graph", "--level", "symbol", "--format", "json", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("graph failed: %d %s", code, errb)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range doc["vertices"].([]any) {
+		delete(v.(map[string]any), "satisfies")
+		delete(v.(map[string]any), "receiver")
+	}
+	old, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "old.json")
+	if err := os.WriteFile(path, old, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb = run(t, "dead", "--graph", path, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead --graph failed: %d %s", code, errb)
+	}
+	if !strings.Contains(out, "(ParseError).Error") {
+		t.Fatalf("without facts the old false positive is expected to remain: %s", out)
+	}
+	if strings.Contains(out, "receiver type is reachable") || !strings.Contains(out, "re-harvest") {
+		t.Fatalf("old document must get the re-harvest limitation, not the rule claim: %s", out)
 	}
 }

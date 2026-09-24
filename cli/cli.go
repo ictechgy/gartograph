@@ -463,10 +463,8 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		limitations = append(limitations,
 			"rta under-approximates: methods reachable only via reflection or uninstantiated types may appear unreachable")
 	}
-	if hasMethodFinding(findings) {
-		limitations = append(limitations,
-			"methods may satisfy interfaces declared outside the module; "+
-				"dynamic dispatch from external packages is invisible to this graph")
+	if *algo != "rta" && hasMethodFinding(findings) {
+		limitations = append(limitations, externalDispatchLimitation(doc))
 	}
 	if hasFieldFinding(findings) {
 		limitations = append(limitations,
@@ -561,6 +559,22 @@ func hasFieldFinding(findings []analysis.Finding) bool {
 	return false
 }
 
+// externalDispatchLimitation은 CHA dead의 메서드 보고에 붙는 외부 디스패치
+// 한계 문구를 고른다. 사실(satisfies)이 하나도 없는 문서는 그 규칙이
+// 적용되지 못한 옛 수확일 수 있다 — 규칙이 적용됐다고 말하면 거짓이다.
+// RTA는 SSA 전체 프로그램으로 외부 호출까지 보므로 이 문구가 없다.
+func externalDispatchLimitation(doc *graph.Document) string {
+	for _, v := range doc.Vertices {
+		if len(v.Satisfies) > 0 {
+			return "methods implementing named interfaces declared outside the module count as " +
+				"reachable while their receiver type is reachable; dispatch via reflection, " +
+				"anonymous interfaces (e.g. errors.Is/As/Unwrap), or generic interfaces is invisible to this graph"
+		}
+	}
+	return "no vertex carries external-dispatch facts (satisfies); methods called only through " +
+		"interfaces declared outside the module may appear unreachable — re-harvest if this document predates them"
+}
+
 // explainDead는 한 정점이 왜 살아 있는지(또는 왜 못 찾았는지) 보여준다.
 // --algo rta면 RTA 호출 그래프 위에서 설명한다 — CHA 수확 그래프의 경로를
 // 보여주면 "RTA가 왜 죽였다/살렸다"의 답이 아니라 다른 알고리즘의 말이 된다.
@@ -604,6 +618,11 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 	for i, p := range path {
 		if i == 0 {
 			fmt.Fprintf(stdout, "root: %s\n", p)
+			continue
+		}
+		// 합성 걸음은 문서 간선이 없다 — 표시하지 않으면 소비자가 간선을 찾다 실패한다.
+		if ifaces, ok := analysis.IsExternalDispatch(doc, path[i-1], p); ok {
+			fmt.Fprintf(stdout, "  -> %s (external dispatch: %s)\n", p, strings.Join(ifaces, ", "))
 		} else {
 			fmt.Fprintf(stdout, "  -> %s\n", p)
 		}
