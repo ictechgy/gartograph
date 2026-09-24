@@ -363,7 +363,9 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 			return
 		}
 		obj, ok := p.TypesInfo.Defs[d.Name].(*types.Func)
-		if !ok {
+		// 빈 함수(func _())는 부를 수 없어 본문이 실행되지 않는다 — 간선을 만들면
+		// 빈 변수 루트 정점(pkg._)에 얹혀 죽은 코드를 살린다.
+		if !ok || d.Name.Name == "_" {
 			return
 		}
 		from := objectID(obj)
@@ -399,6 +401,24 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 	}
 }
 
+// blankVertex는 패키지의 빈 식별자 var·const 선언들이 공유하는 정점(pkg._)을
+// 만들고 보존 루트로 둔다. var _ = f()는 프로그램 초기화 때 실행되고
+// var _ I = (*T)(nil)은 T·I를 쓴다 — 정점이 없으면 그 참조가 조용히 버려져
+// 초기화식에서만 쓰는 심볼이 unreachable로 보고된다. 빈 선언들은 이름으로
+// 구분할 수 없어 init처럼 한 정점으로 모이고 위치는 처음 본 선언이다.
+func (h *harvester) blankVertex(p *packages.Package, name *ast.Ident) {
+	id := p.PkgPath + "._"
+	h.vertex(graph.Vertex{
+		ID:       id,
+		Kind:     graph.KindVar,
+		Name:     "_",
+		Package:  p.PkgPath,
+		Position: position(p, name.Pos()),
+	})
+	h.edge(p.PkgPath, id, graph.EdgeContains, nil)
+	h.root(id)
+}
+
 // keepMarked는 주석 그룹에 keep 표지가 있는지 본다.
 // "//deadcode:keep"은 go-fynx/deadcode의 관례, "//gartograph:keep"은
 // 이 도구의 표지다 — 둘 다 받는다. CommentGroup.Text()는 지시문 형태
@@ -431,7 +451,7 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
 	switch s := spec.(type) {
 	case *ast.TypeSpec:
 		obj, ok := p.TypesInfo.Defs[s.Name].(*types.TypeName)
-		if !ok {
+		if !ok || s.Name.Name == "_" { // 빈 타입은 참조될 수 없다 — 빈 변수 루트에 얹지 않는다
 			return
 		}
 		id := objectID(obj)
@@ -454,6 +474,9 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
 				continue
 			}
 			id := objectID(obj)
+			if name.Name == "_" {
+				h.blankVertex(p, name)
+			}
 			if keep {
 				h.root(id)
 			}

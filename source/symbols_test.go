@@ -566,6 +566,26 @@ func TestSymbolIDCollidingWithPackage(t *testing.T) {
 	}
 }
 
+// TestBlankInitializersAreRoots는 빈 식별자 변수 초기화식이 보존 루트로 수확되는지
+// 확인한다 — var _ = f()는 프로그램 초기화 때 실행되고, var _ I = T{}는 T·I를
+// 쓴다. 빈 함수(func _())의 본문은 실행되지 않으므로 루트가 아니다.
+func TestBlankInitializersAreRoots(t *testing.T) {
+	doc := loadSymbol(t, idCollisionFixture(t))
+	const blank = "example.com/m/x._"
+	if _, ok := doc.VertexByID(blank); !ok || !slices.Contains(doc.Roots, blank) {
+		t.Fatalf("blank declarations must share one root vertex, roots=%v", doc.Roots)
+	}
+	for _, to := range []string{"example.com/m/x.first", "example.com/m/x.second",
+		"example.com/m/x.T", "example.com/m/x.I"} {
+		if !hasEdgeTo(doc, blank, to) {
+			t.Fatalf("blank initializer must reference %s", to)
+		}
+	}
+	if hasEdgeTo(doc, blank, "example.com/m/x.onlyBlank") {
+		t.Fatal("a blank function body never runs and must not become a root's edge")
+	}
+}
+
 // containsLimitation은 문서 limitation 중 부분 문자열을 담은 것이 있는지 본다.
 func containsLimitation(doc *graph.Document, part string) bool {
 	return slices.ContainsFunc(doc.Limitations, func(l string) bool { return strings.Contains(l, part) })

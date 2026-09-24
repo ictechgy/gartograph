@@ -2403,3 +2403,52 @@ func Parse(s string) (int, error) { return 0, &ParseError{} }
 		t.Fatalf("old document must get the re-harvest limitation, not the rule claim: %s", out)
 	}
 }
+
+// TestDeadBlankInitializers는 빈 식별자 변수 초기화식에서만 쓰는 심볼이 dead로
+// 보고되지 않는지 확인한다 — var _ = f()는 초기화 때 실행되고, 컴파일 타임
+// 단언 var _ I = T{}는 T·I를 쓴다. 빈 함수 본문에서만 쓰는 심볼은 여전히 보고된다.
+func TestDeadBlankInitializers(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+type I interface{ M() }
+type T struct{}
+
+func (T) M() {}
+
+var _ I = T{}
+var _ = first()
+
+func first() int { return 1 }
+
+func _() { onlyBlank() }
+
+func onlyBlank() {}
+
+func main() {}
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead failed: %d %s", code, errb)
+	}
+	var rep struct {
+		Unreachable []struct{ ID string } `json:"unreachable"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("dead output is not JSON: %v", err)
+	}
+	reported := map[string]bool{}
+	for _, f := range rep.Unreachable {
+		reported[f.ID] = true
+	}
+	const m = "example.com/fixture"
+	for _, alive := range []string{m + ".first", m + ".T", m + ".I"} {
+		if reported[alive] {
+			t.Fatalf("%s runs at init or is used by a blank assertion but was reported: %s", alive, out)
+		}
+	}
+	if !reported[m+".onlyBlank"] {
+		t.Fatalf("a symbol used only by a blank function must still be reported: %s", out)
+	}
+}
