@@ -225,12 +225,14 @@ func requireLevel(doc *graph.Document, want graph.Level) error {
 // idLevelFlag는 정점 ID를 받는 명령(query·impact·path·shared)의 --level을 등록한다.
 // 기본이 symbol인 이유: ID가 타입·함수·메서드를 가리킬 수 있는데 package
 // 레벨로 수확하면 그 정점이 문서에 없어 "vertex not found"가 된다.
-// 패키지 ID의 답은 symbol 문서에서도 같다 — Adjacency가 contains를 빼서
-// 패키지 정점에는 import 간선만 닿는다. package는 큰 저장소에서 수확을
-// 빠르게 하려는 선택지로 남긴다. --graph와 함께면 다른 수확 플래그처럼 무시된다.
+// 패키지 ID의 이웃·경로·집합은 symbol 문서에서도 같다 — Adjacency·Incoming이
+// contains를 빼서 패키지 정점에는 import 간선만 닿는다. 다만 limitations에는
+// symbol 수확이 실제로 못 본 영역(모듈 밖 심볼 참조 수 등)이 더해진다 —
+// 그 문서의 사실이라 거르지 않는다. package는 큰 저장소에서 수확을 빠르게
+// 하려는 선택지로 남긴다. --graph와 함께면 다른 수확 플래그처럼 무시된다.
 func idLevelFlag(fs *flag.FlagSet) *string {
 	return fs.String("level", string(graph.LevelSymbol),
-		"harvest level: package|type|symbol (ignored with --graph)")
+		"harvest level: module|package|type|symbol (ignored with --graph)")
 }
 
 // loadIDDoc는 ID 명령의 --level을 해석해 문서를 얻는다.
@@ -245,15 +247,21 @@ func loadIDDoc(opts *source.Options, graphPath, level string) (*graph.Document, 
 	return loadDoc(opts, graphPath)
 }
 
-// levelHint는 저레벨 문서에서 정점을 못 찾은 오류에 레벨 사실을 덧붙인다.
-// package 문서에 심볼 ID가 없는 것은 "코드에 없다"가 아니라 "그 레벨이라
-// 못 봤다"다 — 둘을 구분하지 않으면 소비자가 존재하는 코드를 없다고 믿는다.
-func levelHint(doc *graph.Document, err error) error {
+// levelHint는 symbol보다 거친 문서에서 정점을 못 찾은 오류에 레벨 사실과
+// 효과 있는 해결책을 덧붙인다. 그 문서에 ID가 없는 것은 "코드에 없다"가
+// 아니라 "그 레벨이라 못 봤다"일 수 있다 — 둘을 구분하지 않으면 소비자가
+// 존재하는 코드를 없다고 믿는다. 저장 문서(--graph)에는 --level이 듣지 않으므로
+// 다시 저장하는 길을 알린다 — 무시되는 플래그를 권하면 같은 오류가 되풀이된다.
+func levelHint(doc *graph.Document, graphPath string, err error) error {
 	if !errors.Is(err, analysis.ErrNotFound) || doc.Level.Rank() >= graph.LevelSymbol.Rank() {
 		return err
 	}
-	return fmt.Errorf("%w (document is %s level; type and symbol IDs need --level symbol)",
-		err, doc.Level)
+	remedy := "re-run with --level symbol"
+	if graphPath != "" {
+		remedy = "save the document with 'gartograph graph --level symbol --out FILE' or drop --graph"
+	}
+	return fmt.Errorf("%w (document is %s level; finer-grained IDs are absent: %s)",
+		err, doc.Level, remedy)
 }
 
 // fail은 에러를 출력하고 종료 코드 2를 돌려준다.
@@ -851,7 +859,7 @@ func cmdQuery(args []string, stdout, stderr io.Writer) int {
 	}
 	res, err := analysis.Query(doc, positional[0], *depth, *maxN)
 	if err != nil {
-		return fail(stderr, levelHint(doc, err))
+		return fail(stderr, levelHint(doc, *graphPath, err))
 	}
 	sortNeighborsJSON(res)
 	out, _ := json.MarshalIndent(res, "", "  ")
@@ -890,6 +898,11 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	// --level과 상관없이 가장 세밀한 레벨을 고른다. 저장 문서(--graph)는
 	// 있는 레벨 그대로 쓴다.
 	if fileMode {
+		// 덮어쓰기 전에 검증한다 — 오타가 파일 모드에서만 조용히 통과하면
+		// ID 모드와 같은 플래그의 계약이 갈린다.
+		if _, err := graph.ParseLevel(*level); err != nil {
+			return fail(stderr, err)
+		}
 		*level = string(graph.LevelSymbol)
 	}
 	doc, err := loadIDDoc(opts, *graphPath, *level)
@@ -907,7 +920,7 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 		}
 		res, err := analysis.AffectedByFiles(doc, changed, positional, *depth, *maxN)
 		if err != nil {
-			return fail(stderr, levelHint(doc, err))
+			return fail(stderr, levelHint(doc, *graphPath, err))
 		}
 		if err := emitJSON(stdout, res); err != nil {
 			return fail(stderr, err)
@@ -916,7 +929,7 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	}
 	res, err := analysis.FindImpact(doc, positional[0], *depth, *maxN)
 	if err != nil {
-		return fail(stderr, levelHint(doc, err))
+		return fail(stderr, levelHint(doc, *graphPath, err))
 	}
 	if err := emitJSON(stdout, res); err != nil {
 		return fail(stderr, err)
@@ -944,7 +957,7 @@ func cmdPath(args []string, stdout, stderr io.Writer) int {
 	}
 	res, err := analysis.Path(doc, positional[0], positional[1])
 	if err != nil {
-		return fail(stderr, levelHint(doc, err))
+		return fail(stderr, levelHint(doc, *graphPath, err))
 	}
 	if err := emitJSON(stdout, res); err != nil {
 		return fail(stderr, err)
@@ -972,7 +985,7 @@ func cmdShared(args []string, stdout, stderr io.Writer) int {
 	}
 	res, err := analysis.Shared(doc, positional)
 	if err != nil {
-		return fail(stderr, levelHint(doc, err))
+		return fail(stderr, levelHint(doc, *graphPath, err))
 	}
 	if err := emitJSON(stdout, res); err != nil {
 		return fail(stderr, err)

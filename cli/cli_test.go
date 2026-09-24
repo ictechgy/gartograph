@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -155,6 +156,64 @@ func TestIDCommandsLevelFlag(t *testing.T) {
 	}
 	if code, _, _ := run(t, "path", "a", "b", "--dir", dir, "--level", "nope"); code != 2 {
 		t.Fatalf("bad level must exit 2, got %d", code)
+	}
+	// 파일 모드는 symbol로 덮어쓰지만, 오타는 ID 모드처럼 거부해야 한다.
+	if code, _, _ := run(t, "impact", "--files", "lib/lib.go",
+		"--dir", dir, "--level", "nope"); code != 2 {
+		t.Fatalf("bad level in file mode must exit 2, got %d", code)
+	}
+}
+
+// TestIDCommandsLevelHintSavedGraph는 저장 문서에서 못 찾은 ID의 힌트가
+// 무시되는 --level이 아니라 다시 저장하는 길을 알리는지 확인한다.
+func TestIDCommandsLevelHintSavedGraph(t *testing.T) {
+	dir := deadFixture(t)
+	saved := filepath.Join(t.TempDir(), "pkg.json")
+	if code, _, errb := run(t, "graph", "--dir", dir, "--out", saved); code != 0 {
+		t.Fatalf("graph --out failed: %d %s", code, errb)
+	}
+	for _, args := range [][]string{
+		{"query", "example.com/fixture/lib.Run"},
+		{"impact", "example.com/fixture/lib.Run"},
+		{"path", "example.com/fixture/lib.Run", "example.com/fixture/lib"},
+		{"shared", "example.com/fixture/lib.Run", "example.com/fixture/lib"},
+	} {
+		code, _, errb := run(t, append(args, "--graph", saved)...)
+		if code != 2 || !strings.Contains(errb, "drop --graph") {
+			t.Fatalf("%v: expected saved-graph hint, got %d %s", args, code, errb)
+		}
+	}
+}
+
+// TestIDCommandsPackageAnswersAcrossLevels는 패키지 ID의 답(경로·집합·의존자)이
+// package와 symbol 수확에서 같은지 확인한다. symbol이 기본이 되어도 기존
+// 패키지 질의가 달라지면 안 된다 — contains는 의존이 아니다. limitations는
+// 수확 레벨마다 못 본 영역이 달라 비교에서 뺀다.
+func TestIDCommandsPackageAnswersAcrossLevels(t *testing.T) {
+	dir := deadFixture(t)
+	for _, args := range [][]string{
+		{"query", "example.com/fixture/lib"},
+		{"impact", "example.com/fixture/lib"},
+		{"path", "example.com/fixture", "example.com/fixture/lib"},
+		{"shared", "example.com/fixture", "example.com/fixture/lib"},
+	} {
+		answers := map[string]map[string]any{}
+		for _, level := range []string{"package", "symbol"} {
+			code, out, errb := run(t, append(args, "--dir", dir, "--level", level)...)
+			if code != 0 {
+				t.Fatalf("%v at %s: %d %s", args, level, code, errb)
+			}
+			var res map[string]any
+			if err := json.Unmarshal([]byte(out), &res); err != nil {
+				t.Fatalf("%v at %s: not JSON: %v", args, level, err)
+			}
+			delete(res, "limitations")
+			answers[level] = res
+		}
+		if !reflect.DeepEqual(answers["package"], answers["symbol"]) {
+			t.Fatalf("%v: package answer changed across levels:\npackage %v\nsymbol  %v",
+				args, answers["package"], answers["symbol"])
+		}
 	}
 }
 
