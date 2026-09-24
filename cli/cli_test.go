@@ -2188,6 +2188,12 @@ func (Orphan) String() string { return "orphan" }
 	if strings.Contains(out, "receiver type is reachable") {
 		t.Fatalf("rta report must not claim the receiver rule: %s", out)
 	}
+	// 문구를 빼는 근거: RTA는 SSA 전체 프로그램으로 외부 호출을 직접 봐서 이 메서드들을 살린다.
+	for _, alive := range []string{lib + ".(Patterns).Set", lib + ".(ParseError).Error", lib + ".quote"} {
+		if strings.Contains(out, `"`+alive+`"`) {
+			t.Fatalf("rta must keep %s reachable through external calls: %s", alive, out)
+		}
+	}
 }
 
 // TestDeadExternalDispatchOldDocument는 satisfies 사실이 없는 옛 저장 문서가

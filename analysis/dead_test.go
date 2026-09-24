@@ -230,6 +230,20 @@ func TestSharedIgnoresExternalDispatch(t *testing.T) {
 			t.Fatalf("shared must not include dispatch-only methods, got %v", res.Shared)
 		}
 	}
+	// path·impact도 의존 간선만 따른다 — 외부 디스패치 걸음을 경로·의존자로 내면 안 된다.
+	path, err := Path(d, "p.main", "p.(T).Error")
+	if err != nil || path.Found {
+		t.Fatalf("path must not traverse the synthetic dispatch hop, got %+v err=%v", path, err)
+	}
+	imp, err := FindImpact(d, "p.(T).Error", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range imp.Dependers {
+		if e.ID == "p.T" {
+			t.Fatalf("impact must not list the receiver as a dispatch depender, got %+v", imp.Dependers)
+		}
+	}
 	if _, found := IsExternalDispatch(d, "p.T", "p.(T).Error"); !found {
 		t.Fatal("receiver→method hop must be recognised as external dispatch")
 	}
