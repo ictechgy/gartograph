@@ -127,7 +127,8 @@ type Vertex struct {
 	// const가 아닌 정점이나 값을 수확하지 않은 옛 문서는 비어 있다.
 	Value string `json:"value,omitempty"`
 	// Satisfies는 method 정점이 모듈 밖에서 선언된 인터페이스의 메서드를
-	// 구현한다는 사실이다 — 인터페이스를 "경로.이름"(universe는 "error")으로
+	// 구현한다는 사실이다 — 명명 인터페이스는 "경로.이름"(universe는 "error"),
+	// 의존 소스의 이름 없는 표기는 go/types 정규 표기("interface{Unwrap() error}")로
 	// 정렬해 담는다. 모듈 밖 코드(fmt, flag, encoding/json 등)의 호출 지점은
 	// 그래프에 없으므로, 이 사실 없이는 error.Error·flag.Value.Set 같은
 	// 메서드가 살아 있어도 unreachable로 보인다. 판정은 analysis가 한다.
