@@ -77,8 +77,12 @@ gartograph schema --out go-schema-facts.json
 # Check layer rules from .gartograph.yml
 gartograph rules --strict
 
-# Ask about one vertex: what it uses, what uses it (JSON for agents)
+# Ask about one vertex: what it uses, what uses it (JSON for agents).
+# query/impact/path/shared harvest at symbol level by default, so package,
+# type, function, and method IDs all resolve; --level package is faster
+# on large repos but only package IDs exist there.
 gartograph query github.com/ictechgy/gartograph/cli --depth 2
+gartograph query 'github.com/ictechgy/gartograph/graph.(Document).Sort'
 
 # Reverse transitive closure: what breaks if this vertex changes
 gartograph impact github.com/ictechgy/gartograph/graph --depth 2

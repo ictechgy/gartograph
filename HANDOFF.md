@@ -2,7 +2,19 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — 외부 인터페이스 디스패치 dead 오탐 수정 (2026-09-24)
+## 최근 완료 — ID 명령 기본 수확 레벨 수정 (2026-09-24, fix/query-default-level)
+
+`query`·`impact`·`path`·`shared`가 `--level` 없이 package 레벨로 수확해
+`--graph` 없이는 메서드·타입 ID가 `vertex not found`였다(추정이던 원인 확인).
+- 기본 `--level symbol` + `--level package` 선택지(`idLevelFlag`·`loadIDDoc`).
+  `impact --since/--files`는 여전히 symbol 강제.
+- 패키지 ID 답은 symbol 문서에서도 같다 — `Adjacency`가 contains를 뺀다.
+  이 저장소에서 네 명령의 package/symbol 출력 diff 0으로 확인.
+- 비용: 이 저장소 warm 수확 0.05s → 0.33s. 큰 저장소는 `--level package`.
+- 저레벨 문서에서 못 찾은 ID는 `levelHint`가 "document is package level"을
+  덧붙인다 — 없는 것과 못 본 것의 구분.
+
+## 이전 완료 — 외부 인터페이스 디스패치 dead 오탐 수정 (2026-09-24)
 
 **PR #13(`68efa43`)로 머지 완료.** 외부 벤치(graphify 대조, 원본 grep 판정)에서
 자기 저장소 `dead` 11건 중 7건이 오탐이었다 — 모듈 밖 인터페이스로만 불리는
@@ -41,8 +53,6 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 - 이름 없는 인터페이스 디스패치(errors.Is/As/Unwrap의
   `interface{ Unwrap() error }`) — 의존 패키지 TypesInfo에서 익명 인터페이스
   수집. 지금은 limitation 문구로만 알린다.
-- `query <메서드ID>`는 `--graph` 없이 메서드 정점을 못 찾는다(수정 전
-  바이너리도 동일, 기본 수확 레벨 문제로 추정 — 미확인).
 - 비공개 외부 인터페이스(context.stringer 등)가 satisfies에 섞이는 triage 노이즈.
 
 ## 현재 상태 (2026-09-24)
