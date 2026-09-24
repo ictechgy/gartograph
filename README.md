@@ -306,9 +306,13 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
   keeps its `satisfies` list as a triage fact, and `dead --explain` marks
   the receiver → method hop as `(external dispatch: …)` because no graph
   edge backs it. The rule applies to `dead` only — `shared`, `path`, and
-  `impact` follow dependency edges. Dispatch through reflection, anonymous
-  interfaces (`errors.Is/As/Unwrap`), or generic interfaces is still
-  invisible and the report says so.
+  `impact` follow dependency edges. Anonymous interfaces in dependency
+  source (`errors.Is/As/Unwrap`'s `interface{ Unwrap() error }`, function-
+  local interface types, interface-literal parameters) count too, named by
+  their go/types form; literals that use type parameters or unexported
+  local types cannot be resolved and are counted in limitations. Dispatch
+  through reflection or generic interfaces is still invisible and the
+  report says so.
 - Optional fields are omitted when empty (`omitempty`).
 
 ## Graph document

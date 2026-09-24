@@ -2,7 +2,25 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — ID 명령 기본 수확 레벨 수정 (2026-09-24, fix/query-default-level)
+## 최근 완료 — 이름 없는 인터페이스 디스패치 수확 (2026-09-24, fix/anonymous-interface-dispatch)
+
+`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`처럼 의존 코드 안에만 있는
+이름 없는 인터페이스로 불리는 메서드가 dead로 나왔다(go-mssqldb 5건).
+- `source/anoniface.go`: 모듈 밖 패키지 GoFiles를 정규식 사전 필터 후 파싱해
+  패키지 스코프 type 선언이 아닌 모든 인터페이스 표기(단언·type switch·인자 타입·
+  함수 안 type 선언)를 모은다. 비공개 메서드를 직접 선언한 표기는 구문 단계에서
+  뺀다(밖에서 구현 불가 — unresolved 수치를 부풀리지 않게).
+- 해석: 원 파일 import(실제 패키지 이름으로 명시) + 원 패키지 dot import를 가진
+  합성 파일을 이미 로드된 `types.Package`를 돌려주는 importer로 타입체크.
+  **새로 로드하면 다른 객체라 Implements가 항상 거짓** — 그래서 합성.
+  오류가 표기 범위 안이면 unresolved로 센다(타입 파라미터·비공개 로컬 타입).
+- Satisfies 이름은 `types.TypeString(iface, nil)` — "interface{Unwrap() error}".
+- limitation은 결과("unreachable로 보일 수 있다")가 아니라 문서 사실("satisfies
+  사실이 없다")로 — RTA는 의존 SSA로 같은 메서드를 살려서 결과 문구는 거짓이 된다.
+- 실측: go-mssqldb 185→180(정확히 Unwrap 4 + Is 1), actionlint 37→37, 자기
+  저장소 6→6. 시간 변화 노이즈 범위. unresolved: 벤치 0, 자기 저장소 1(x/tools 제네릭).
+
+## 이전 완료 — ID 명령 기본 수확 레벨 수정 (2026-09-24, PR #15 머지)
 
 `query`·`impact`·`path`·`shared`가 `--level` 없이 package 레벨로 수확해
 `--graph` 없이는 메서드·타입 ID가 `vertex not found`였다(추정이던 원인 확인).
@@ -55,9 +73,6 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 `schema`는 발행본에 없는 main 기능이다.
 
 다음 후보:
-- 이름 없는 인터페이스 디스패치(errors.Is/As/Unwrap의
-  `interface{ Unwrap() error }`) — 의존 패키지 TypesInfo에서 익명 인터페이스
-  수집. 지금은 limitation 문구로만 알린다.
 - 비공개 외부 인터페이스(context.stringer 등)가 satisfies에 섞이는 triage 노이즈.
 - (미확인, 리뷰 LOW) `objectID` 충돌 가능성 — 경로에 `.`이 든 패키지
   `example.com/x.y`와 패키지 `example.com/x`의 심볼 `y`가 같은 ID. 재현

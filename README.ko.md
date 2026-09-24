@@ -246,8 +246,11 @@ gartograph dead   --baseline .dead-baseline.json --strict
   보고된 메서드는 `satisfies` 목록을 triage 사실로 유지하고, `dead --explain`은
   리시버→메서드 걸음에 그래프 간선이 없으므로 `(external dispatch: …)`로 표시합니다.
   이 규칙은 `dead` 전용이며 `shared`·`path`·`impact`는 의존 간선만 따릅니다.
-  reflection·이름 없는 인터페이스(`errors.Is/As/Unwrap`)·제네릭 인터페이스 경유
-  디스패치는 여전히 안 보이고 보고가 그 사실을 밝힙니다.
+  의존 소스의 이름 없는 인터페이스(`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`,
+  함수 안 인터페이스 타입, 인자 타입 리터럴)도 go/types 표기 이름으로 셉니다.
+  타입 파라미터·비공개 로컬 타입을 쓰는 표기는 풀지 못하고 limitation에 그 수가
+  실립니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히 안 보이고
+  보고가 그 사실을 밝힙니다.
 
 ## 그래프 문서
 

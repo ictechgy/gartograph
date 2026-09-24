@@ -60,8 +60,13 @@ import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상
 문서 간선으로 긋지 마세요 — 메서드→리시버 references와 맞물려 cycles에
 가짜 2-순환이 생깁니다. 이 규칙은 `dead`·`explain` 전용입니다 —
 `shared`·`path`·`impact`는 의존 간선만 따릅니다(`DependencyReachable`).
-reflection·이름 없는 인터페이스(`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`)·
-제네릭 인터페이스 경유 디스패치는 여전히 안 보이고, 메서드 보고에 그 limitation이 실립니다.
+이름 없는 인터페이스(`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`)는
+export data에 없어서 의존 소스를 직접 훑어 해석합니다(`source/anoniface.go`) —
+원 파일 import와 원 패키지 dot import를 가진 합성 파일로 타입체크해야 이미
+로드된 `types.Package`와 같은 객체가 되어 `Implements`가 성립합니다.
+타입 파라미터·비공개 로컬 타입을 쓰는 표기는 풀지 못하고 그 수를 limitation으로
+셉니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히 안 보이고,
+메서드 보고에 그 limitation이 실립니다.
 
 ## 절대 하지 말 것
 
