@@ -42,10 +42,14 @@ gartograph graph --level symbol --out .gartograph/graph.json
 gartograph cycles --level symbol --strict     # 순환 검사 — 패키지 순환은 Go가 금지하므로
                                               # 실전 검사는 type/symbol 레벨
 gartograph dead                               # main·init에서 도달 불가 심볼 보고
+                                              # 심볼 레벨은 struct 필드까지 —
+                                              # 참조 안 된 멤버는 kind "field"로 보고
 gartograph dead --retain-public               # 라이브러리: 공개 API 보존
 gartograph dead --root my/pkg.Setup           # 추가 보존 루트
 gartograph dead --explain my/pkg.F            # 왜 살아 있나 — 도달 경로 출력
 gartograph dead --algo rta                    # RTA 정밀도 — 소스 필요, --graph와 불가
+# 소스 레벨 보존: 선언(struct 필드 포함) 위의
+# //deadcode:keep 또는 //gartograph:keep이 보존 루트가 됩니다.
 
 # isthmus bridge-facts 문서 생성(platform "go")
 # Go는 cgo를 unscanned-ffi-interop limitation으로만 신고 — 채널 사실 없음.
@@ -62,7 +66,9 @@ gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 # (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·
 #  인터페이스 메서드 추가·struct 필드 계약 파괴·공개 상수 값 변경)
-gartograph metrics                             # Ca/Ce/불안정성 + orphan 패키지
+gartograph metrics                             # Ca/Ce/불안정성 + 추상성(A)·주 계열
+                                               # 거리(D=|A+I-1|) + orphan 패키지
+                                               # (A/D는 타입 레벨 수확이 필요)
 gartograph mapping                             # 패키지→컴포넌트 매핑 보기
 gartograph init                                # .gartograph.yml 스캐폴딩
 gartograph mcp --level symbol                  # MCP stdio로 에이전트에 서빙
@@ -134,6 +140,11 @@ independent: [web, cli]   # web과 cli는 어느 방향으로도 서로 도달 �
   `moreUnstable`입니다. 컴포넌트는 자기보다 불안정한(I = Ce/(Ca+Ce),
   `metrics`가 보고하는 같은 수치) 컴포넌트에 의존할 수 없습니다.
   위반은 `rule: "stability"`와 사유에 두 불안정도 값을 싣습니다.
+- `limits`는 컴포넌트 덩치 상한입니다 — dependency-cruiser의
+  `max-dependencies` 계약입니다. `maxOut`은 의존 가능한 다른 컴포넌트
+  수(Ce), `maxIn`은 나를 의존할 수 있는 수(Ca)를 제한합니다. 상한 초과는
+  간선 하나의 위반이 아니라 컴포넌트 수준의 사실입니다 — 위반은
+  `rule: "limit"`, `name: "maxIn"|"maxOut"`, 실제 수치를 싣습니다.
 - `exclude`는 규칙이 아니라 수확 필터입니다 — 패턴에 맞는 패키지
   (컴포넌트와 같은 글롭 의미론 — 주 모듈은 상대 경로, 외부는 전체 경로)는
   정점이 되지 않고, 그쪽으로의 import는 `limitations`에 셉니다.
@@ -154,6 +165,9 @@ fileRules:
     reason: "테스트 헬퍼는 프로덕션에 새면 안 됨"
 
 stability: true                     # 의존은 더 안정된 컴포넌트 방향으로만
+limits:                             # 방향이 아니라 덩치 상한
+  - {component: web, maxOut: 4}     # web은 최대 4개 컴포넌트까지만 의존
+  - {component: db, maxIn: 2}       # db는 최대 2개 컴포넌트가 의존 가능
 exclude: [gen/**, testdata/**]      # 이 패키지들은 수확하지 않음
 ```
 
@@ -198,7 +212,18 @@ gartograph dead   --baseline .dead-baseline.json --strict
 
 - 결정적 JSON — 같은 입력, 같은 바이트.
 - `query`는 `depth`·`truncated`와 이웃 간선 종류 전부를 싣습니다.
-- `dead`는 finding마다 `state`+`reason`을, 보고에 사용한 `roots`를 항상 싣습니다.
+- `dead`는 finding마다 `state`+`reason`+`exported`를, 보고에 사용한
+  `roots`를 항상 싣습니다. `exported`가 triage 축입니다 — 비공개
+  unreachable은 저장소 안에 닫혀 있고, 공개 unreachable은 외부 호출자·
+  reflection·플러그인이 쓸 수 있습니다. 도구는 확신도를 매기지 않고
+  사실을 싣습니다.
+- `dead`는 struct 필드(`kind: "field"`)도 보고합니다 — 이름 있는 접근
+  (`x.F`, `T{F: v}`, 위치 리터럴, 승격 경로, `==`)이 없는 필드는
+  unreachable입니다. reflection·직렬화·통째 복사는 그래프에 안 보이므로
+  필드 보고가 나오면 해당 limitation이 함께 실립니다.
+- `//deadcode:keep`·`//gartograph:keep`을 선언(함수·메서드·var·const·
+  타입·struct 필드)에 붙이면 문서의 `roots`에 보존 루트로 남습니다 —
+  보존 의도가 CLI 플래그가 아니라 선언 옆에 삽니다.
 - `limitations`는 매 실행에서 실제로 세어 만듭니다(생략한 외부 참조 수,
   `reflect` 사용, `//go:linkname`) — 없으면 키가 빠집니다.
 - 삭제 판정은 없습니다. `unreachable`은 그래프 사실이지 "지워도 됨"이 아닙니다.

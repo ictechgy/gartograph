@@ -54,12 +54,16 @@ gartograph graph --level symbol --out .gartograph/graph.json
 gartograph cycles --level symbol --strict
 
 # Report symbols unreachable from retention roots (main, init)
+# Symbol level includes struct fields — unreferenced members are reported
+# with kind "field" (see limitations for reflection/serialization blind spots)
 gartograph dead                           # symbol level, always
 gartograph dead --retain-public           # libraries: keep exported API
 gartograph dead --root my/pkg.Setup       # extra retention root
 gartograph dead --explain my/pkg.F        # why alive? show a reachability path
 gartograph dead --algo rta                # RTA precision: needs source, not --graph
 gartograph dead --algo rta --explain my/pkg.F   # path on the RTA call graph itself
+# Source-level keep: //deadcode:keep or //gartograph:keep on a declaration
+# (also on a struct field) marks it as a retention root in the document.
 
 # Emit an isthmus bridge-facts document (platform "go")
 # Go reports cgo via unscanned-ffi-interop limitations — no channel facts.
@@ -92,7 +96,10 @@ gartograph unused-deps --strict
 # broken, exported const value changed
 gartograph diff old.json new.json --strict
 
-# Coupling metrics (Ca/Ce/instability) + orphan packages
+# Coupling metrics (Ca/Ce/instability) + abstractness (A) and
+# main-sequence distance (D = |A+I-1|) + orphan packages.
+# Harvested at type level so A has a denominator; a package-level saved
+# document omits A/D and says so in limitations.
 gartograph metrics                # component-level when .gartograph.yml exists
 gartograph mapping                # how packages resolve to components
 
@@ -179,6 +186,11 @@ independent: [web, cli]   # web and cli must not reach each other either way
   component with higher instability (I = Ce/(Ca+Ce), the same number
   `metrics` reports). Violations carry `rule: "stability"` and both
   instability values in the reason.
+- `limits` caps component size: `maxOut` bounds how many *other* components
+  it may depend on (Ce), `maxIn` bounds how many may depend on it (Ca) —
+  dependency-cruiser's `max-dependencies` contract. Exceeding a limit is a
+  component-level fact, not an edge violation — violations carry
+  `rule: "limit"`, `name: "maxIn"|"maxOut"`, and the observed count.
 - `exclude` is a harvest-time filter, not a rule: packages matching its
   patterns (same glob semantics as components — module-relative for the
   main module, full import path otherwise) never become vertices, and
@@ -203,6 +215,9 @@ fileRules:
     reason: "test helpers must not leak into production code"
 
 stability: true                     # deps must point toward more stable components
+limits:                             # size caps, not direction
+  - {component: web, maxOut: 4}     # web may depend on at most 4 components
+  - {component: db, maxIn: 2}       # at most 2 components may depend on db
 exclude: [gen/**, testdata/**]      # these packages are never harvested
 ```
 
@@ -253,8 +268,19 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
 - Deterministic JSON: sorted keys, sorted arrays — same input, same bytes.
 - `query` reports `depth`, `truncated`, and every edge kind between
   neighbors (`edges: ["call", "implements"]`).
-- `dead` reports `state` + `reason` per finding and always includes the
-  `roots` it used — reachability depends on them.
+- `dead` reports `state` + `reason` + `exported` per finding and always
+  includes the `roots` it used — reachability depends on them. `exported`
+  is the triage axis: an unexported unreachable symbol is confined to the
+  repo, while an exported one may have external callers, reflection, or
+  plugin use — classify on the fact, the tool does not grade confidence.
+- `dead` also reports struct fields (`kind: "field"`) — a field with no
+  named access (`x.F`, `T{F: v}`, positional literal, promotion path,
+  `==`) is unreachable. Reflection, serialization, and whole-struct copies
+  are invisible — the report carries that limitation when fields appear.
+- `//deadcode:keep` and `//gartograph:keep` on a declaration (function,
+  method, var, const, type, or struct field) mark it as a retention root
+  in `roots` — the keep intent lives next to the declaration, not in a
+  CLI flag.
 - `limitations` is counted per run (omitted external imports/references,
   `reflect` use, `//go:linkname`, packages without type info) — absent
   means nothing to report, not a boilerplate warning.
