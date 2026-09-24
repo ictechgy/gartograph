@@ -24,7 +24,7 @@ type Finding struct {
 	Kind     graph.VertexKind `json:"kind"`
 	Package  string           `json:"package,omitempty"`
 	Position *graph.Position  `json:"position,omitempty"`
-	Exported bool             `json:"exported,omitempty"`
+	Exported bool             `json:"exported"`
 	State    string           `json:"state"`
 	Reason   string           `json:"reason"`
 }

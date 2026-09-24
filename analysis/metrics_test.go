@@ -162,3 +162,35 @@ func TestMetricsAbstractnessDistance(t *testing.T) {
 		t.Fatalf("isolated component must omit D (I undefined): %+v", util)
 	}
 }
+
+// TestMetricsDistanceUnrounded는 D가 반올림 전의 A·I로 계산되는지
+// 확인한다 — A=I=1/3이면 실제 D는 |2/3−1| = 0.333이지만 반올림된
+// 피연산자(0.333+0.333)로 계산하면 0.334가 나온다.
+func TestMetricsDistanceUnrounded(t *testing.T) {
+	d := &graph.Document{
+		Module: "m",
+		Vertices: []graph.Vertex{
+			{ID: "m/a", Kind: graph.KindPackage, Name: "a"},
+			{ID: "m/b", Kind: graph.KindPackage, Name: "b"},
+			{ID: "m/c", Kind: graph.KindPackage, Name: "c"},
+			{ID: "m/d", Kind: graph.KindPackage, Name: "d"},
+			{ID: "m/c.Iface", Kind: graph.KindType, Package: "m/c", Interface: true},
+			{ID: "m/c.S1", Kind: graph.KindType, Package: "m/c"},
+			{ID: "m/c.S2", Kind: graph.KindType, Package: "m/c"},
+		},
+		Edges: []graph.Edge{
+			{From: "m/a", To: "m/c", Kind: graph.EdgeImport},
+			{From: "m/b", To: "m/c", Kind: graph.EdgeImport},
+			{From: "m/c", To: "m/d", Kind: graph.EdgeImport},
+		},
+	}
+	cfg := &config.File{Components: map[string][]string{
+		"a": {"a"}, "b": {"b"}, "c": {"c"}, "d": {"d"},
+	}}
+	// c: Ca=2, Ce=1 → I=1/3. 타입 3 중 인터페이스 1 → A=1/3.
+	rep := Metrics(d, cfg)
+	c := metricOf(rep, "c")
+	if c.Distance == nil || *c.Distance != 0.333 {
+		t.Fatalf("D must be computed from unrounded operands (0.333): %+v", c)
+	}
+}
