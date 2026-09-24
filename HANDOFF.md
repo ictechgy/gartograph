@@ -6,19 +6,23 @@
 
 `errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`처럼 의존 코드 안에만 있는
 이름 없는 인터페이스로 불리는 메서드가 dead로 나왔다(go-mssqldb 5건).
-- `source/anoniface.go`: 모듈 밖 패키지 GoFiles를 정규식 사전 필터 후 파싱해
-  패키지 스코프 type 선언이 아닌 모든 인터페이스 표기(단언·type switch·인자 타입·
-  함수 안 type 선언)를 모은다. 비공개 메서드를 직접 선언한 표기는 구문 단계에서
-  뺀다(밖에서 구현 불가 — unresolved 수치를 부풀리지 않게).
-- 해석: 원 파일 import(실제 패키지 이름으로 명시) + 원 패키지 dot import를 가진
-  합성 파일을 이미 로드된 `types.Package`를 돌려주는 importer로 타입체크.
-  **새로 로드하면 다른 객체라 Implements가 항상 거짓** — 그래서 합성.
-  오류가 표기 범위 안이면 unresolved로 센다(타입 파라미터·비공개 로컬 타입).
-- Satisfies 이름은 `types.TypeString(iface, nil)` — "interface{Unwrap() error}".
-- limitation은 결과("unreachable로 보일 수 있다")가 아니라 문서 사실("satisfies
-  사실이 없다")로 — RTA는 의존 SSA로 같은 메서드를 살려서 결과 문구는 거짓이 된다.
+- `source/anoniface.go`: 의존 패키지(`dependencyPackages`)의 `p.Syntax`에서
+  패키지 스코프 명명 선언이 아닌 인터페이스 표기(단언·type switch·인자 타입·함수 안
+  type 선언·패키지 스코프 별칭)를 모아 `p.TypesInfo`로 읽는다. 심볼 레벨 로드는
+  의존도 소스에서 타입체크한다(이 저장소 181/181 패키지에 Syntax·TypesInfo 실측).
+  타입 제약 전용(`!IsMethodSet`)·메서드 없는 인터페이스는 뺀다.
+- Satisfies 이름은 파라미터 이름 없는 메서드 집합("interface{Unwrap() error}",
+  비공개 메서드는 패키지 경로 한정) — TypeString은 파라미터 이름이 섞여 같은
+  인터페이스가 둘로 갈렸다.
+- 문서 필드 `anonymousDispatch`(수확 표시). dead 문구가 이것을 보고 고른다 —
+  명명 satisfies만 있는 v0.7 이전 문서에 "이름 없는 것도 셌다"고 하면 거짓.
+- **버린 설계: 합성 파일 재해석**(1차 구현). 의존이 export data뿐이라는 전제가
+  틀렸다. 리뷰가 재현한 결함: 함수 안 타입·타입 파라미터·비공개 선언에 가려진
+  이름이 다른 타입으로 풀림(거짓 사실), 승격된 비공개 메서드로 봉인된 인터페이스
+  누락(과소 근사), 패키지 스코프 별칭 누락. TypesInfo 직접 사용으로 전부 해소.
 - 실측: go-mssqldb 185→180(정확히 Unwrap 4 + Is 1), actionlint 37→37, 자기
-  저장소 6→6. 시간 변화 노이즈 범위. unresolved: 벤치 0, 자기 저장소 1(x/tools 제네릭).
+  저장소 6→6. 시간 변화 노이즈 범위, 두 번 수확 바이트 동일.
+- 리뷰: code-reviewer MEDIUM 4·LOW 6 — 처리표는 PR #16 코멘트.
 
 ## 이전 완료 — ID 명령 기본 수확 레벨 수정 (2026-09-24, PR #15 머지)
 

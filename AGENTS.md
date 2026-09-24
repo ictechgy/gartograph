@@ -61,12 +61,13 @@ import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상
 가짜 2-순환이 생깁니다. 이 규칙은 `dead`·`explain` 전용입니다 —
 `shared`·`path`·`impact`는 의존 간선만 따릅니다(`DependencyReachable`).
 이름 없는 인터페이스(`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`)는
-export data에 없어서 의존 소스를 직접 훑어 해석합니다(`source/anoniface.go`) —
-원 파일 import와 원 패키지 dot import를 가진 합성 파일로 타입체크해야 이미
-로드된 `types.Package`와 같은 객체가 되어 `Implements`가 성립합니다.
-타입 파라미터·비공개 로컬 타입을 쓰는 표기는 풀지 못하고 그 수를 limitation으로
-셉니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히 안 보이고,
-메서드 보고에 그 limitation이 실립니다.
+패키지 스코프 명명 목록에 없어서 의존 패키지 AST의 인터페이스 표기를 그 패키지의
+`TypesInfo`로 읽습니다(`source/anoniface.go`) — 심볼 레벨 로드가 의존도 소스에서
+타입체크하므로 다시 파싱·해석하지 마세요. 합성 해석은 가려진 이름을 다른 타입으로,
+봉인(승격된 비공개) 메서드를 다른 패키지 소속으로 풀어 거짓·누락 사실을 만듭니다.
+이 수확을 한 문서는 `anonymousDispatch: true`를 싣고, 표시 없는 옛 문서에는
+dead가 재수확을 권합니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히
+안 보이고, 메서드 보고에 그 limitation이 실립니다.
 
 ## 절대 하지 말 것
 

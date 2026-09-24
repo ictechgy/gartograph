@@ -308,11 +308,12 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
   edge backs it. The rule applies to `dead` only — `shared`, `path`, and
   `impact` follow dependency edges. Anonymous interfaces in dependency
   source (`errors.Is/As/Unwrap`'s `interface{ Unwrap() error }`, function-
-  local interface types, interface-literal parameters) count too, named by
-  their go/types form; literals that use type parameters or unexported
-  local types cannot be resolved and are counted in limitations. Dispatch
-  through reflection or generic interfaces is still invisible and the
-  report says so.
+  local interface types, interface-literal parameters, package-scope
+  aliases) count too, named by their method set without parameter names
+  (`interface{Unwrap() error}`). Documents harvested this way carry
+  `anonymousDispatch: true`; older saved documents get a re-harvest
+  limitation instead. Dispatch through reflection or generic interfaces is
+  still invisible and the report says so.
 - Optional fields are omitted when empty (`omitempty`).
 
 ## Graph document

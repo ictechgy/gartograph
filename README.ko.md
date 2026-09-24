@@ -247,10 +247,11 @@ gartograph dead   --baseline .dead-baseline.json --strict
   리시버→메서드 걸음에 그래프 간선이 없으므로 `(external dispatch: …)`로 표시합니다.
   이 규칙은 `dead` 전용이며 `shared`·`path`·`impact`는 의존 간선만 따릅니다.
   의존 소스의 이름 없는 인터페이스(`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`,
-  함수 안 인터페이스 타입, 인자 타입 리터럴)도 go/types 표기 이름으로 셉니다.
-  타입 파라미터·비공개 로컬 타입을 쓰는 표기는 풀지 못하고 limitation에 그 수가
-  실립니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히 안 보이고
-  보고가 그 사실을 밝힙니다.
+  함수 안 인터페이스 타입, 인자 타입 리터럴, 패키지 스코프 별칭)도 파라미터
+  이름 없는 메서드 집합 이름(`interface{Unwrap() error}`)으로 셉니다. 이렇게
+  수확한 문서는 `anonymousDispatch: true`를 싣고, 표시 없는 옛 저장 문서에는
+  재수확 권고가 붙습니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히
+  안 보이고 보고가 그 사실을 밝힙니다.
 
 ## 그래프 문서
 
