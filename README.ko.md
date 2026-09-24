@@ -262,7 +262,10 @@ type 정점은 `interface: true` 또는 `fields`(선언 순서의 `"name:Type"` 
 답니다 — `diff`가 인터페이스 메서드 추가와 struct 필드 계약 파괴를
 breaking으로 분류하는 재료입니다.
 모듈 밖 인터페이스를 구현하는 method 정점은 `satisfies`(정렬된 인터페이스 이름)와
-`receiver`(리시버 타입 정점 ID)를 답니다. 문서는 이름 없는 인터페이스까지 수확했으면
+`receiver`(리시버 타입 정점 ID)를 답니다. 모듈 코드가 이름으로 쓸 수 없는 명명
+인터페이스(비공개 `context.stringer`, `internal/` 경로 등)는 다른 인터페이스(공개 명명·
+`error`·이름 없는 표기)가 그 메서드를 설명하지 못할 때만 싣습니다 — 목록이 비지
+않으므로 도달성은 같습니다. 문서는 이름 없는 인터페이스까지 수확했으면
 `anonymousDispatch: true`를 싣습니다(심볼 레벨 수확, 옛 문서엔 없음).
 간선 종류: `import`/`contains`/`embeds`/`implements`/`references`/`call`/
 `signature`(선언 시그니처 안의 타입 참조 — `contains`와 달리 의존 관계).

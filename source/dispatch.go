@@ -10,6 +10,7 @@ package source
 import (
 	"go/types"
 	"sort"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -17,10 +18,14 @@ import (
 // externalIface는 모듈 밖에서 선언된, 메서드가 있는 인터페이스 하나다.
 // names는 사전 필터용 메서드 이름 목록이다 — types.Implements를 모든
 // 타입×인터페이스 조합에 부르지 않기 위해 이름 포함 여부부터 본다.
+// hidden은 모듈 코드가 이름으로 쓸 수 없는 명명 인터페이스(비공개 이름 —
+// context.stringer — 또는 internal 경로) 표시다 — satisfies
+// 목록 정리(pruneHidden)의 재료다.
 type externalIface struct {
-	name  string
-	iface *types.Interface
-	names []string
+	name   string
+	iface  *types.Interface
+	names  []string
+	hidden bool
 }
 
 // markExternalDispatch는 모듈 안 구체 타입의 메서드 중 외부 인터페이스를
@@ -44,9 +49,47 @@ func (h *harvester) markExternalDispatch(internal []*packages.Package) {
 	for _, named := range concreteTypes(internal) {
 		h.markTypeDispatch(named, ifaces, index)
 	}
+	h.finalizeSatisfies(index, hiddenNames(ifaces))
+}
+
+// finalizeSatisfies는 정점마다 satisfies를 정리(pruneHidden)하고 정렬한다 —
+// 정렬은 결정적 출력 계약이다.
+func (h *harvester) finalizeSatisfies(index map[string]int, hidden map[string]bool) {
 	for _, i := range index {
-		sort.Strings(h.doc.Vertices[i].Satisfies)
+		v := &h.doc.Vertices[i]
+		v.Satisfies = pruneHidden(v.Satisfies, hidden)
+		sort.Strings(v.Satisfies)
 	}
+}
+
+// hiddenNames는 비공개 명명 인터페이스 이름 집합이다.
+func hiddenNames(ifaces []externalIface) map[string]bool {
+	out := map[string]bool{}
+	for _, ext := range ifaces {
+		if ext.hidden {
+			out[ext.name] = true
+		}
+	}
+	return out
+}
+
+// pruneHidden은 hidden이 아닌 인터페이스(공개 명명·error·이름 없는 표기)가 하나라도
+// 설명하는 메서드에서 hidden 명명 인터페이스를 뺀다. 비공개 인터페이스도 선언 패키지 안의
+// 실제 디스패치 지점이지만, 같은 메서드를 공개 인터페이스가 이미 설명하면 도달성에
+// 더하는 것이 없다(목록이 비지 않으니 리시버 규칙은 그대로다) — context.stringer·
+// runtime.stringer가 fmt.Stringer 옆에 늘 붙어 triage 목록만 부풀렸다.
+// 비공개만 설명하는 메서드에는 그대로 남긴다 — 빼면 그 메서드가 죽는다.
+func pruneHidden(satisfies []string, hidden map[string]bool) []string {
+	var visible []string
+	for _, s := range satisfies {
+		if !hidden[s] {
+			visible = append(visible, s)
+		}
+	}
+	if len(visible) == 0 {
+		return satisfies
+	}
+	return visible
 }
 
 // markTypeDispatch는 한 구체 타입이 만족하는 외부 인터페이스마다
@@ -193,10 +236,20 @@ func externalInterfaces(internal []*packages.Package) []externalIface {
 			if !ok || iface.NumMethods() == 0 {
 				continue
 			}
-			out = append(out, newExternalIface(pkg.Path()+"."+name, iface))
+			ext := newExternalIface(pkg.Path()+"."+name, iface)
+			ext.hidden = !tn.Exported() || isInternalPath(pkg.Path())
+			out = append(out, ext)
 		}
 	}
 	return out
+}
+
+// isInternalPath는 경로에 internal 세그먼트가 있는지 본다. Go import 규칙상 모듈
+// 밖의 internal 패키지는 모듈 코드가 import할 수 없어, 공개 이름이어도 비공개
+// 인터페이스와 같은 triage 노이즈다(internal/bisect.Writer 등).
+func isInternalPath(path string) bool {
+	return path == "internal" || strings.HasPrefix(path, "internal/") ||
+		strings.Contains(path, "/internal/") || strings.HasSuffix(path, "/internal")
 }
 
 // newExternalIface는 사전 필터용 메서드 이름을 채운 externalIface를 만든다.

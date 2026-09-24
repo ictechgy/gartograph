@@ -341,7 +341,12 @@ also carry `interface: true` or `fields` (declared `"name:Type"` list) so
 `diff` can classify interface method additions and struct-field contract
 breaks as breaking. Method vertices implementing interfaces declared
 outside the module carry `satisfies` (sorted interface names) and
-`receiver` (the receiver type vertex ID). Edge `kind`:
+`receiver` (the receiver type vertex ID). Named interfaces module code
+cannot name (unexported like `context.stringer`, or under an `internal/`
+path) are listed only when no other interface (exported named, `error`, or
+an anonymous method set) explains the method — the list stays non-empty,
+so reachability is unchanged.
+Edge `kind`:
 `import`/`contains`/`embeds`/`implements`/`references`/`call`/`signature`
 (signature = type references inside declaration signatures; a dependency
 edge, unlike `contains` which is ownership).

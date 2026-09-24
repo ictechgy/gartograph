@@ -2,7 +2,19 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — 이름 없는 인터페이스 디스패치 수확 (2026-09-24, fix/anonymous-interface-dispatch)
+## 최근 완료 — satisfies의 비공개 인터페이스 노이즈 정리 (2026-09-25, fix/satisfies-unexported-noise)
+
+`context.stringer | fmt.Stringer | runtime.stringer`처럼 비공개 명명 인터페이스가
+공개 인터페이스 옆에 늘 붙어 triage 목록을 부풀렸다.
+- 규칙(`pruneHidden`): 공개 인터페이스(error·이름 없는 표기 포함)가 하나라도 있으면
+  비공개 명명 인터페이스를 뺀다. 비공개만 있으면 그대로 — 빼면 그 메서드가 죽는다.
+  hidden 판정은 수집 시점 `TypeName.Exported()` + internal 경로 세그먼트
+  (`externalIface.hidden`) — 이름 문자열 파싱 아님(이름 없는 표기에도 소문자 경로가 든다).
+- 사전 실측: 비공개만으로 살아 있는 메서드는 세 저장소 모두 0건 → 도달성 불변.
+  사후 실측: dead finding 목록 세 저장소 모두 동일, satisfies 항목 자기 저장소
+  12→8, go-mssqldb 258→230, actionlint 84→36(internal 경로 포함, 리뷰 LOW 반영).
+
+## 이전 완료 — 이름 없는 인터페이스 디스패치 수확 (2026-09-24, PR #16 머지)
 
 `errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`처럼 의존 코드 안에만 있는
 이름 없는 인터페이스로 불리는 메서드가 dead로 나왔다(go-mssqldb 5건).
@@ -80,7 +92,6 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 `schema`는 발행본에 없는 main 기능이다.
 
 다음 후보:
-- 비공개 외부 인터페이스(context.stringer 등)가 satisfies에 섞이는 triage 노이즈.
 - (미확인, 리뷰 LOW) `objectID` 충돌 가능성 — 경로에 `.`이 든 패키지
   `example.com/x.y`와 패키지 `example.com/x`의 심볼 `y`가 같은 ID. 재현
   사례 없음. ID 명령이 symbol 기본이 되어 부딪힐 확률만 늘었다.

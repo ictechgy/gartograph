@@ -133,6 +133,9 @@ type Vertex struct {
 	// 정렬해 담는다. 모듈 밖 코드(fmt, flag, encoding/json 등)의 호출 지점은
 	// 그래프에 없으므로, 이 사실 없이는 error.Error·flag.Value.Set 같은
 	// 메서드가 살아 있어도 unreachable로 보인다. 판정은 analysis가 한다.
+	// 비공개·internal 경로 명명 인터페이스(context.stringer 등)는 다른 인터페이스
+	// (공개 명명·error·이름 없는 표기)가 같은 메서드를 설명하지 못할 때만 싣는다 — 목록이 비지 않는 한 도달성은 같고, 늘 붙는
+	// 비공개 이름은 triage만 흐린다.
 	Satisfies []string `json:"satisfies,omitempty"`
 	// Receiver는 Satisfies가 있는 method 정점의 리시버 타입 정점 ID다 —
 	// "리시버 타입이 도달하면 외부 디스패치로 이 메서드도 도달할 수 있다"를
