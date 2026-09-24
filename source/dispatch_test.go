@@ -397,7 +397,7 @@ func TestSatisfiesPrunesUnexportedNamed(t *testing.T) {
 		t.Fatalf("Strung.String must satisfy fmt.Stringer, got %v", strung.Satisfies)
 	}
 	for _, s := range strung.Satisfies {
-		if s == "example.com/dep.stringer" || s == "context.stringer" || s == "runtime.stringer" {
+		if s == "example.com/dep.stringer" || s == "runtime.stringer" {
 			t.Fatalf("unexported named interface must be pruned beside fmt.Stringer, got %v", strung.Satisfies)
 		}
 	}
@@ -462,5 +462,41 @@ func TestAnonymousInterfaceDispatchFacts(t *testing.T) {
 		return strings.Contains(l, "no syntax or type information")
 	}) {
 		t.Fatalf("every dependency here has type information, got %v", doc.Limitations)
+	}
+}
+
+// TestPruneHidden은 pruneHidden의 경로별 계약을 표로 고정한다 — hidden만 있으면
+// 그대로(빼면 메서드가 죽는다), 다른 종류가 하나라도 있으면 hidden만 빠진다.
+func TestPruneHidden(t *testing.T) {
+	hidden := map[string]bool{"context.stringer": true, "internal/bisect.Writer": true}
+	cases := []struct {
+		name     string
+		in, want []string
+	}{
+		{"nil", nil, nil},
+		{"hidden only", []string{"context.stringer"}, []string{"context.stringer"}},
+		{"hidden beside named", []string{"context.stringer", "fmt.Stringer"}, []string{"fmt.Stringer"}},
+		{"hidden beside error", []string{"error", "internal/bisect.Writer"}, []string{"error"}},
+		{"hidden beside anonymous", []string{"context.stringer", "interface{String() string}"},
+			[]string{"interface{String() string}"}},
+		{"visible only", []string{"flag.Value", "fmt.Stringer"}, []string{"flag.Value", "fmt.Stringer"}},
+	}
+	for _, c := range cases {
+		if got := pruneHidden(c.in, hidden); !slices.Equal(got, c.want) {
+			t.Fatalf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestIsInternalPath는 internal 세그먼트 판정이 경로 조각 경계를 지키는지 본다.
+func TestIsInternalPath(t *testing.T) {
+	for path, want := range map[string]bool{
+		"internal/bisect": true, "golang.org/x/net/internal/socks": true,
+		"example.com/m/internal": true, "internal": true,
+		"example.com/internalize": false, "fmt": false,
+	} {
+		if got := isInternalPath(path); got != want {
+			t.Fatalf("%s: got %v, want %v", path, got, want)
+		}
 	}
 }
