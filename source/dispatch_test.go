@@ -243,6 +243,21 @@ func Shadow(x any) {
 	}
 }
 
+// LocalUse가 PkgUse보다 먼저 훑인다 — 같은 출력 이름의 로컬 표기가 구현 가능한
+// 패키지 표기를 밀어내면 안 된다.
+func LocalUse(x any) {
+	type Token string
+	if u, ok := x.(interface{ Use(Token) }); ok {
+		u.Use("")
+	}
+}
+
+func PkgUse(x any) {
+	if u, ok := x.(interface{ Use(Token) }); ok {
+		u.Use(0)
+	}
+}
+
 func Sum[T interface {
 	~int
 	Constrain()
@@ -303,6 +318,10 @@ type Shadowed struct{}
 
 func (Shadowed) UseShadow(dep.Token) {}
 
+type PkgUser struct{}
+
+func (PkgUser) Use(dep.Token) {}
+
 type Constrained int
 
 func (Constrained) Constrain() {}
@@ -326,6 +345,7 @@ func main() {
 	dep.Named2(Hander{})
 	dep.Shadow(Shadowed{})
 	dep.Sum(Constrained(0))
+	dep.PkgUse(PkgUser{})
 	_ = errors.Is(WrapErr{}, nil)
 }
 `,
@@ -349,6 +369,7 @@ func TestAnonymousInterfaceDispatchFacts(t *testing.T) {
 		{m + ".(Mine).Hook", "interface{Hook(); example.com/dep.sealed()}", m + ".Mine"},
 		{m + ".(Al).AliasCall", "interface{AliasCall()}", m + ".Al"},
 		{m + ".(Hander).Hand", "interface{Hand(string) error}", m + ".Hander"},
+		{m + ".(PkgUser).Use", "interface{Use(example.com/dep.Token)}", m + ".PkgUser"},
 	}
 	for _, c := range cases {
 		v, ok := doc.VertexByID(c.id)
