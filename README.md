@@ -333,7 +333,13 @@ rapid type analysis — narrower, source-only, and it under-approximates:
 the report says so in `limitations`.
 
 Vertex IDs: `pkg/path` for packages, `pkg/path.Name` for package-level
-symbols, `pkg/path.(Recv).Name` for methods. Vertex `kind`:
+symbols, `pkg/path.(Recv).Name` for methods. All blank `var _`/`const _`
+declarations of a package share one retention-root vertex `pkg/path._`
+(initializers run at program init, and `var _ I = (*T)(nil)` uses `T` and
+`I`), like `init`. A package path with a dot (`example.com/m/x.y`) can equal
+a symbol ID (`y` in `example.com/m/x`); such symbols get no vertex and no
+edges rather than borrowing the package vertex, and `limitations` counts
+them. Vertex `kind`:
 `module`/`package`/`type`/`func`/`method`/`var`/`const`. Vertices carry
 `generated: true` when they come from files marked
 `// Code generated ... DO NOT EDIT.` — marked, never hidden. Type vertices

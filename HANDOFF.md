@@ -2,7 +2,24 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — satisfies의 비공개 인터페이스 노이즈 정리 (2026-09-25, fix/satisfies-unexported-noise)
+## 최근 완료 — 정점 ID 충돌·빈 식별자 초기화식 (2026-09-25, fix/object-id-collision)
+
+리뷰 LOW로 남았던 `objectID` 충돌을 재현했다(fixture `idCollisionFixture`).
+- **점 경로 충돌(재현)**: 패키지 `example.com/m/x.y`와 `x`의 심볼 `y`가 같은 ID.
+  심볼 정점이 조용히 사라지고, 그 간선이 패키지 정점에 얹혀 `x → x.y contains`
+  (패키지가 패키지를 담음)·`x.Use → x.y call`(함수가 패키지를 호출) 같은 거짓
+  사실이 됐다. 외부 디스패치 `Receiver`도 패키지를 가리킬 수 있었다.
+  수정: `packageIDs`와 겹치는 심볼은 정점·간선·루트·Receiver를 만들지 않고
+  `idCollisions`/`collidedEdges`로 세어 limitation. 규칙 — 수확기 간선 중 패키지
+  ID에 닿아도 되는 것은 그 패키지가 자기 심볼을 담는 contains뿐.
+- **빈 식별자 초기화식(재현 중 발견)**: `var _ = first()`·`var _ I = T{}`의 참조가
+  `_` 정점 부재로 limitation 없이 버려져 first·T·I가 dead로 보고됐다. 수정:
+  패키지당 보존 루트 정점 `pkg._`(init과 같은 방식). `func _()`·`type _` 본문은
+  실행·참조되지 않으므로 제외.
+- 실측: go-mssqldb 180·actionlint 37·자기 저장소 6 불변(벤치에 충돌·빈 초기화
+  전용 심볼 없음).
+
+## 이전 완료 — satisfies의 비공개 인터페이스 노이즈 정리 (2026-09-25, PR #17 머지)
 
 `context.stringer | fmt.Stringer | runtime.stringer`처럼 비공개 명명 인터페이스가
 공개 인터페이스 옆에 늘 붙어 triage 목록을 부풀렸다.
@@ -92,9 +109,11 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 `schema`는 발행본에 없는 main 기능이다.
 
 다음 후보:
-- (미확인, 리뷰 LOW) `objectID` 충돌 가능성 — 경로에 `.`이 든 패키지
-  `example.com/x.y`와 패키지 `example.com/x`의 심볼 `y`가 같은 ID. 재현
-  사례 없음. ID 명령이 symbol 기본이 되어 부딪힐 확률만 늘었다.
+- 정점 ID 형식 자체의 모호성 — `pkg.Name`과 점 경로 패키지가 겹칠 수 있다.
+  지금은 충돌 심볼을 빼고 limitation으로 센다. 근본 해결은 ID 형식 변경(문서 v3,
+  계열·isthmus 소비자 계약)이라 사용자 결정 대상.
+- 같은 패키지의 여러 `init`·빈 선언은 정점 하나로 합쳐져 위치가 첫 선언만 남는다
+  (둘 다 보존 루트라 도달성 영향 없음).
 
 ## 현재 상태 (2026-09-24)
 
