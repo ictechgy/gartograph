@@ -32,6 +32,7 @@ func (h *harvester) markExternalDispatch(internal []*packages.Package) {
 	for _, l := range anon.limitations() {
 		h.doc.Limitation(l)
 	}
+	h.doc.AnonymousDispatch = true
 	ifaces := append(externalInterfaces(internal), anon.ifaces...)
 	if len(ifaces) == 0 {
 		return
