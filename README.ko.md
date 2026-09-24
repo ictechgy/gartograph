@@ -223,7 +223,10 @@ gartograph dead   --baseline .dead-baseline.json --strict
   필드 보고가 나오면 해당 limitation이 함께 실립니다.
 - `//deadcode:keep`·`//gartograph:keep`을 선언(함수·메서드·var·const·
   타입·struct 필드)에 붙이면 문서의 `roots`에 보존 루트로 남습니다 —
-  보존 의도가 CLI 플래그가 아니라 선언 옆에 삽니다.
+  보존 의도가 CLI 플래그가 아니라 선언 옆에 삽니다. 표지는 주석 줄의
+  첫 토큰이어야 합니다(`//deadcode:keep` 또는 `// deadcode:keep <사유>`).
+  선언 위 doc 주석이나 struct 필드 줄에 두세요 — `func` 몸체 뒤의
+  trailing 주석은 그 선언에 붙지 않습니다.
 - `limitations`는 매 실행에서 실제로 세어 만듭니다(생략한 외부 참조 수,
   `reflect` 사용, `//go:linkname`) — 없으면 키가 빠집니다.
 - 삭제 판정은 없습니다. `unreachable`은 그래프 사실이지 "지워도 됨"이 아닙니다.

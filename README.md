@@ -280,7 +280,10 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
 - `//deadcode:keep` and `//gartograph:keep` on a declaration (function,
   method, var, const, type, or struct field) mark it as a retention root
   in `roots` — the keep intent lives next to the declaration, not in a
-  CLI flag.
+  CLI flag. The marker must be the first token of its comment line
+  (`//deadcode:keep` or `// deadcode:keep <reason>`); put it on the doc
+  comment above the declaration or on a field line inside a struct —
+  a trailing comment after a `func` body does not attach to it.
 - `limitations` is counted per run (omitted external imports/references,
   `reflect` use, `//go:linkname`, packages without type info) — absent
   means nothing to report, not a boilerplate warning.

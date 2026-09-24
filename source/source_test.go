@@ -477,3 +477,165 @@ func Use() string {
 		t.Fatal("untouched field must not gain a reference")
 	}
 }
+
+// TestGenericFieldRef는 제네릭 struct의 인스턴스 경유 필드 참조가
+// origin 필드 정점으로 해석되는지 확인한다 — Pair[int]의 필드 객체는
+// 선언의 Var와 다른 인스턴스 객체로 돌아오므로 Origin() 대응이 없으면
+// 살아 있는 필드가 unreachable로 오보된다.
+func TestGenericFieldRef(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func main() { lib.Use() }
+`,
+		"lib/lib.go": `package lib
+
+type Pair[T any] struct {
+	Key  T
+	dead bool
+}
+
+func Use() int {
+	p := Pair[int]{Key: 1}
+	q := Pair[string]{}
+	q.Key = "x"
+	return p.Key + len(q.Key)
+}
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: "symbol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keyRef, deadRef bool
+	for _, e := range doc.Edges {
+		if e.Kind != graph.EdgeReferences {
+			continue
+		}
+		if e.To == "example.com/fixture/lib.(Pair).Key" {
+			keyRef = true
+		}
+		if e.To == "example.com/fixture/lib.(Pair).dead" {
+			deadRef = true
+		}
+	}
+	if !keyRef {
+		t.Fatal("field refs through generic instances must resolve to the origin field vertex")
+	}
+	if deadRef {
+		t.Fatal("unreferenced generic field must not gain a reference")
+	}
+}
+
+// TestNestedStructFields는 위치 리터럴과 == 비교가 중첩 struct의 잎
+// 필드까지 참조로 긋는지 확인한다 — 겉 필드만 밟으면 실제로 쓰인 잎
+// 필드가 unreachable로 오보된다.
+func TestNestedStructFields(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func main() { lib.Use() }
+`,
+		"lib/lib.go": `package lib
+
+type Inner struct {
+	Leaf int
+	miss bool
+}
+
+type Outer struct {
+	In  Inner
+	Arr [2]Inner
+	Tag string
+}
+
+func Use() bool {
+	var a, b Outer
+	_ = Outer{In: Inner{}, Tag: "x"}
+	return a == b
+}
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: "symbol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := map[string]bool{}
+	for _, e := range doc.Edges {
+		if e.Kind == graph.EdgeReferences && e.From == "example.com/fixture/lib.Use" {
+			refs[e.To] = true
+		}
+	}
+	// a == b와 Outer{...} 위치 리터럴은 In의 잎 Leaf까지 읽고 쓴다.
+	if !refs["example.com/fixture/lib.(Inner).Leaf"] {
+		t.Fatalf("nested leaf field must be referenced: %v", refs)
+	}
+	if !refs["example.com/fixture/lib.(Inner).miss"] {
+		t.Fatalf("array-element leaf field must be referenced: %v", refs)
+	}
+}
+
+// TestEmbeddedFieldKeep은 임베드 필드 줄의 keep 표지가 루트로 기록되는지
+// 확인한다 — Names가 비는 임베드는 이름 매칭으로는 잡히지 않는다.
+func TestEmbeddedFieldKeep(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+func main() {}
+`,
+		"lib/lib.go": `package lib
+
+type Base struct{ X int }
+
+type Wrap struct {
+	//deadcode:keep
+	Base
+	extra int
+}
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: "symbol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := map[string]bool{}
+	for _, r := range doc.Roots {
+		roots[r] = true
+	}
+	if !roots["example.com/fixture/lib.(Wrap).Base"] {
+		t.Fatalf("keep on embedded field must root it: %v", doc.Roots)
+	}
+	if roots["example.com/fixture/lib.(Wrap).extra"] {
+		t.Fatal("unannotated field must not become a root")
+	}
+}
+
+// TestKeepNotSubstring은 keep 표지가 줄 첫 토큰일 때만 루트가 되는지
+// 확인한다 — 지시문을 인용하는 문장 주석까지 루트로 만들면 보존 의도가
+// 아닌 우연이 dead 결과를 조용히 바꾼다.
+func TestKeepNotSubstring(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+func main() {}
+`,
+		"lib/lib.go": `package lib
+
+// see the deadcode:keep convention in docs/contrib
+func Mentioned() {}
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: "symbol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range doc.Roots {
+		if r == "example.com/fixture/lib.Mentioned" {
+			t.Fatalf("quoted directive must not become a root: %v", doc.Roots)
+		}
+	}
+}
