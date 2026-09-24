@@ -9,6 +9,7 @@ coverage/
 .idea/
 .vscode/
 .serena/
+.omc/
 
 # gartograph 자기분석 산출물 — .gartograph.yml 설정은 루트에 있고 여기는 출력 디렉터리다
 /.gartograph/
