@@ -612,9 +612,10 @@ func hasFieldFinding(findings []analysis.Finding) bool {
 func externalDispatchLimitation(doc *graph.Document) string {
 	for _, v := range doc.Vertices {
 		if len(v.Satisfies) > 0 {
-			return "methods implementing named interfaces declared outside the module count as " +
-				"reachable while their receiver type is reachable; dispatch via reflection, " +
-				"anonymous interfaces (e.g. errors.Is/As/Unwrap), or generic interfaces is invisible to this graph"
+			return "methods implementing interfaces declared outside the module (named, or anonymous " +
+				"literals in dependency source such as errors' interface{ Unwrap() error }) count as " +
+				"reachable while their receiver type is reachable; dispatch via reflection or generic " +
+				"interfaces is invisible to this graph"
 		}
 	}
 	return "no vertex carries external-dispatch facts (satisfies); methods called only through " +
