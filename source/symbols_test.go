@@ -698,3 +698,32 @@ func TestExplainRoots(t *testing.T) {
 		t.Fatalf("explain roots must add one synthetic initializer per package, got %v", got)
 	}
 }
+
+// TestInitializerRootCountsExternalRefsOnce는 초기화 루트 순회가 모듈 밖 참조를 다시
+// 세지 않는지 확인한다 — 같은 외부 참조를 가진 두 초기화식(루트를 만드는 것과 만들지
+// 않는 것)의 limitation 문장이 같아야 한다. 지역 변수가 패키지 변수와 이름이 같아도
+// 모듈 참조로 세지 않아 빈 루트를 만들지 않는다.
+func TestInitializerRootCountsExternalRefsOnce(t *testing.T) {
+	extRefs := func(src string) (string, *graph.Document) {
+		doc := loadSymbol(t, testutil.WriteModule(t, map[string]string{"main.go": src}))
+		for _, l := range doc.Limitations {
+			if strings.Contains(l, "references to symbols outside the module") {
+				return l, doc
+			}
+		}
+		return "", doc
+	}
+	const head = "package main\n\nimport \"sort\"\n\nconst three = 3\n\nvar y = 3\n\n"
+	withRoot, doc := extRefs(head + "var z = sort.SearchInts(nil, three)\n\nfunc main() {}\n")
+	if _, ok := doc.VertexByID("example.com/fixture._"); !ok {
+		t.Fatal("an initializer calling out with a module reference must create the init root")
+	}
+	withoutRoot, _ := extRefs(head + "var z = sort.SearchInts(nil, 3)\n\nfunc main() {}\n")
+	if withRoot == "" || withRoot != withoutRoot {
+		t.Fatalf("the init-root pass must not recount external refs:\n%q\n%q", withRoot, withoutRoot)
+	}
+	_, shadow := extRefs(head + "var z = sort.SearchInts(nil, func() int { y := 2; return y }())\n\nfunc main() {}\n")
+	if _, ok := shadow.VertexByID("example.com/fixture._"); ok {
+		t.Fatal("a local variable shadowing a package variable is not a module reference")
+	}
+}

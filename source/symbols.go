@@ -487,28 +487,52 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
 // 읽지 않아도 초기화 때 실행된다 — 변수에서만 간선을 그으면 register가 dead로
 // 보고된다. 빈 선언은 이미 pkg._가 가져간다. 호출이 없는 초기화식(함수 값 표 등)은
 // 실행되는 코드가 없어 변수를 거쳐서만 닿게 둔다 — 쓰이지 않는 표의 핸들러를 살리지 않게.
+// 순회는 초기화 식만이다(선언 타입 제외). 호출이 있는 식은 그 식 전체(같은 식 안의
+// 함수 값·리터럴 본문 포함)가 루트에 붙는다 — "살아 있다" 쪽 과대 근사다.
+// 모듈 밖 참조는 변수 쪽 순회가 이미 셌다 — 두 번 세면 limitation 수치가 부풀어서
+// 이 순회의 증가분은 되돌린다.
 func (h *harvester) initializerEdges(p *packages.Package, s *ast.ValueSpec) {
 	if len(s.Names) == 0 || s.Names[0].Name == "_" || !executesCall(p, s.Values) ||
-		!h.referencesModule(p, s) {
+		!h.referencesModule(p, s.Values) {
 		return
 	}
 	h.blankVertex(p, s.Names[0])
-	h.inspect(p, s, p.PkgPath+"._")
+	counted := h.extRefs
+	for _, v := range s.Values {
+		h.inspect(p, v, p.PkgPath+"._")
+	}
+	h.extRefs = counted
 }
 
-// referencesModule은 스펙이 문서 정점인 모듈 심볼을 하나라도 참조하는지 본다.
+// referencesModule은 식들이 문서 정점인 모듈 심볼을 하나라도 참조하는지 본다.
 // var ErrX = errors.New("x")처럼 외부 호출만 하는 초기화식은 루트에서 그을 간선이
 // 없다 — 빈 루트 정점을 만들면 흔한 관용구마다 정점·루트 노이즈가 된다.
-func (h *harvester) referencesModule(p *packages.Package, s *ast.ValueSpec) bool {
+// 판정은 실제로 간선을 긋는 refObject와 같은 기준이다 — 지역 변수가 패키지 변수와
+// 이름이 같아도 모듈 참조로 세지 않는다.
+func (h *harvester) referencesModule(p *packages.Package, exprs []ast.Expr) bool {
 	found := false
-	ast.Inspect(s, func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok && !found {
-			obj := p.TypesInfo.Uses[id]
-			found = obj != nil && obj.Pkg() != nil && h.vertices[h.id(obj)]
-		}
-		return !found
-	})
+	for _, e := range exprs {
+		ast.Inspect(e, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && !found {
+				found = h.isVertexObject(p.TypesInfo.Uses[id])
+			}
+			return !found
+		})
+	}
 	return found
+}
+
+// isVertexObject는 객체가 문서 정점(패키지 수준 심볼·메서드·필드)인지 본다.
+func (h *harvester) isVertexObject(obj types.Object) bool {
+	if obj == nil || obj.Pkg() == nil {
+		return false
+	}
+	if v, ok := obj.(*types.Var); ok {
+		if _, isField := h.fieldRef(v); isField {
+			return true
+		}
+	}
+	return isPackageLevel(obj) && h.vertices[h.id(obj)]
 }
 
 // executesCall은 식들이 초기화 때 사용자 코드를 호출하는지 본다. 형 변환(T(x))과
