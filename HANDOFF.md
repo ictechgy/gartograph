@@ -10,6 +10,11 @@
 스택 순회 — 재귀 없음). 선택 필드(omitempty)는 여전히 키가 빠진다. 곁다리: 보고서 직렬화
 오류를 무시하던 `out, _ :=` 네 곳을 `emitJSON`으로 전파. 옛 `TestCyclesJSON`이 "null"
 문자열로 통과하던 약한 검사를 봉투 파싱으로 교체. `export`(graph 문서)는 범위 밖.
+- 리뷰 반영(MEDIUM 2): 최상위 nil 목록(MCP `gartograph_cycles`)과 맵 값 안의 nil 목록
+  (`mapping`의 빈 컴포넌트, MCP summary의 limitations)도 채운다(`fillMapLists`). 얕은 복사라
+  호출자 값을 바꿀 수 있다는 점·인터페이스에 담긴 구조체 값은 못 채운다는 제약을 주석에 명시.
+- 자기 분석 기준선 변화: `cli`가 `reflect`를 import해 "1 packages import reflect" limitation이
+  cycles/dead/query 출력에 늘 붙는다(사실이라 결함 아님).
 
 ## 이전 완료 — RTA의 인터페이스 메서드 판정 (2026-09-25, PR #26 머지)
 
