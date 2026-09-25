@@ -2,7 +2,18 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — 초기화 루트(pkg._) 정리 (2026-09-25, fix/init-root-cleanup)
+## 최근 완료 — RTA의 인터페이스 메서드 판정 (2026-09-25, fix/rta-interface-methods)
+
+인터페이스 메서드 정점은 추상이라 SSA 함수가 없어 `--algo rta`에서 늘 unreachable이었다
+(PR #24 리뷰가 찾은 기존 결함 — actionlint `(Pass).VisitStep` 등 실제 호출되는 메서드).
+- `DeadRTA`: 추상 메서드(`isAbstractMethod` — 소유자가 인터페이스)는 RTA가 도달한 함수에서
+  그 메서드로 가는 수확 그래프의 call·references 간선이 있으면 도달(`abstractCallEdges`).
+  죽은 코드에서만 불리면 여전히 보고된다.
+- explain도 같은 간선을 본다(`WithAbstractCalls`) — 판정과 경로가 어긋나지 않게.
+- 실측(main 대비): 새 보고 0건, go-mssqldb RTA 195→176, actionlint 42→24(사라진 것은 모두
+  인터페이스 메서드). CHA·`--tests`는 동일.
+
+## 이전 완료 — 초기화 루트(pkg._) 정리 (2026-09-25, PR #25 머지)
 
 HANDOFF 선택 과제 두 개 + 조사 중 발견한 노이즈 하나.
 - 노이즈(발견): 열거형의 `const ( _ = iota )`처럼 흔한 빈 선언이 간선 없는 `pkg._`
@@ -36,8 +47,6 @@ SSA 패키지 Members에는 메서드가 없어, 문서 루트인 메서드(keep
 - `withRoots`: RTAReachable·RTAAdjacency 둘 다 문서 루트 자신을 도달 집합에 넣는다.
 - 실측: `--algo rta --retain-public` go-mssqldb 106→58, actionlint 26→2(공개 메서드 루트가 이제 RTA 루트, 크래시 없음).
   기본 모드는 동일.
-- 남은 기존 결함(범위 밖): 인터페이스 메서드 정점은 `--algo rta`에서 늘 unreachable
-  (추상 메서드에 SSA 함수 없음 — 예: actionlint `(Pass).VisitStep`).
 
 ## 이전 완료 — 인터페이스 메서드 집합 사실(모듈 밖 임베드) (2026-09-25, PR #23 머지)
 
