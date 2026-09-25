@@ -30,3 +30,61 @@ func TestInterfaceMethodsCanonical(t *testing.T) {
 		t.Fatalf("embedded external methods and qualified unexported methods expected, got %q", c)
 	}
 }
+
+// TestInterfaceTypeSets는 제약 인터페이스의 타입 원소가 typeSet 사실로 실리는지 확인한다 —
+// 원소마다 한 항목, 유니언 항은 정렬된 정규 표기라 순서·별칭(byte/uint8) 차이에 흔들리지
+// 않는다. 메서드만 있는 인터페이스는 typeSet이 없다.
+func TestInterfaceTypeSets(t *testing.T) {
+	doc := loadSymbol(t, testutil.WriteModule(t, map[string]string{"a/a.go": `package a
+
+type Number interface{ ~int64 | ~int }
+
+type Bytes interface {
+	~[]byte | string
+	Len() int
+}
+
+type Plain interface{ Do() }
+
+type signed interface{ ~int | ~int64 }
+type float interface{ ~float64 }
+
+type Wrapped interface{ signed }
+
+type Either interface{ signed | float }
+
+type Eq interface {
+	comparable
+	error
+}
+
+// 틸드 없는 단일 항 인터페이스(유니언이 아니라 타입 자체로 기록된다)와 임베드 사슬도
+// 유니언 항으로 펼친다.
+type myInt interface{ int }
+type Single interface{ myInt | ~string }
+
+type integer interface{ signed }
+type Chained interface{ integer | ~string }
+`}))
+	if !doc.InterfaceTypeSets {
+		t.Fatal("documents must carry the interfaceTypeSets marker")
+	}
+	for id, want := range map[string][]string{
+		"example.com/fixture/a.Number": {"~int | ~int64"},
+		"example.com/fixture/a.Bytes":  {"string | ~[]uint8"},
+		"example.com/fixture/a.Plain":  nil,
+		// 비공개 제약을 임베드하면 그 원소를 펼친다.
+		"example.com/fixture/a.Wrapped": {"~int | ~int64"},
+		// 유니언의 인터페이스 항도 펼친다.
+		"example.com/fixture/a.Either": {"~float64 | ~int | ~int64"},
+		// comparable은 특수 항목, 메서드만 있는 error 임베드는 원소가 없다.
+		"example.com/fixture/a.Eq":      {"comparable"},
+		"example.com/fixture/a.Single":  {"int | ~string"},
+		"example.com/fixture/a.Chained": {"~int | ~int64 | ~string"},
+	} {
+		v, _ := doc.VertexByID(id)
+		if !slices.Equal(v.TypeSet, want) {
+			t.Fatalf("%s: typeSet %q, want %q", id, v.TypeSet, want)
+		}
+	}
+}

@@ -128,6 +128,11 @@ type Vertex struct {
 	// 빈 인터페이스는 omitempty로 빠지므로 "몰랐다"와의 구분은 문서의
 	// InterfaceMethodSets가 한다.
 	Methods []string `json:"methods,omitempty"`
+	// TypeSet은 제약 인터페이스의 명시적 타입 원소(~int | ~int64 같은 유니언, 비인터페이스
+	// 타입)를 원소마다 한 항목으로 정렬해 담는다. 유니언 항도 정렬된 정규 표기라 순서·별칭
+	// 차이에 흔들리지 않는다. 메서드 집합만으로는 제약의 좁힘·넓힘이 안 보인다 — diff의
+	// breaking 재료다. 부재의 뜻은 문서의 InterfaceTypeSets가 가른다.
+	TypeSet []string `json:"typeSet,omitempty"`
 	// Value는 const 정점의 상수 값을 Go 리터럴 형태로 담는다 —
 	// 상수는 컴파일 시 소비자 코드에 인라인되므로 값 변경은 재컴파일을
 	// 깨지는 않아도 API 계약의 변경이다. diff의 breaking 분류 재료다.
@@ -192,6 +197,9 @@ type Document struct {
 	// InterfaceMethodSets는 인터페이스 정점의 Methods를 수확했다는 표시다 — 이 표시가
 	// 있는 문서에서 Methods가 없으면 "메서드 없음"이고, 없는 옛 문서에서는 "몰랐다"다.
 	InterfaceMethodSets bool `json:"interfaceMethodSets,omitempty"`
+	// InterfaceTypeSets는 인터페이스 정점의 TypeSet을 수확했다는 표시다 — 있으면 TypeSet
+	// 부재는 "타입 원소 없음", 없는 옛 문서에서는 "몰랐다"다.
+	InterfaceTypeSets bool `json:"interfaceTypeSets,omitempty"`
 	// InitializerRoots는 패키지 초기화 루트(pkg._ — 빈 선언과 호출하는 변수 초기화식)를
 	// 수확했다는 표시다. 이 표시가 없는 옛 문서에서는 초기화식에서만 쓰는 심볼이 거짓으로
 	// dead일 수 있다 — dead가 재수확을 권하는 근거다.

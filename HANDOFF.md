@@ -2,7 +2,30 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — CHA 팬아웃: struct 임베드 인터페이스·제네릭 인스턴스 (2026-09-25, fix/cha-embedded-generic-dispatch)
+## 최근 완료 — 제약 인터페이스 타입 집합 (2026-09-25, feature/constraint-type-sets)
+
+메서드 집합 사실만으로는 제약 인터페이스의 좁힘·넓힘(`~int | ~int64` → `~int`)이 안 보였다
+(PR #23 README에 한계로 적었던 것).
+- 인터페이스 정점 `typeSet`: **실효** 타입 원소(교집합)를 원소마다 한 항목으로 — 임베드한
+  인터페이스(이름 있는·비공개 제약 포함)는 펼쳐 합치고, 유니언 안 인터페이스 항(`signed | float`)은
+  그 항으로 치환 — 2차 리뷰 반영으로 유니언 하나짜리뿐 아니라 틸드 없는 단일 항(`interface{ int }` —
+  go/types가 유니언이 아니라 타입으로 기록)·임베드 사슬(`interface{ signed }`)도 펼친다
+  (`flattenElements`·`expandInterfaceTerm`, 방문 집합으로 순환 임베드에서 종료). `comparable`은
+  특수 항목, 메서드만 있는 임베드(error)는 원소 없음. 유니언 항은 정규 표기로 정렬(순서·별칭 무시). 명시적 스택(재귀 없음). 문서 표시
+  `interfaceTypeSets`. 리뷰(REQUEST CHANGES) 반영 — 처음엔 임베드를 건너뛰어 공개 제약이 쓰는
+  비공개 제약의 변경을 놓쳤고, `interface{ cmp.Ordered }`로 바꾸는 동치 리팩터가 "-> []" 거짓
+  breaking이었다.
+- diff(`diffTypeSets`): 두 문서 모두 표시가 있으면 공개 제약의 타입 집합 변경을 breaking.
+  좁히면 인스턴스화, 넓히면 허용 연산에 기댄 제네릭 본문이 깨질 수 있어 방향 구분 없이.
+- diff 출력: 항목은 따옴표로 감싸 "; "로 잇고 빈 집합은 "any (no type elements)"(공집합 아님).
+  한쪽 문서에만 표시가 있으면 "were not compared" note.
+- 참고(기존 signature 규칙): 공개 제약이 쓰는 비공개 헬퍼의 이름만 바꾸면 타입 집합은 같지만
+  "exported signature … no longer references …" breaking이 한 줄 나온다(선언이 참조하는 타입 소실).
+- 남은 한계: 여러 원소 교집합의 동치 재작성(`~int | ~string; ~int` → `~int`)은 여전히 변경으로
+  보고된다(드묾). 인라인 제약(`[D decimal.Decimal | decimal.NullDecimal]`)은 인터페이스 정점이
+  아니라 대상 밖.
+
+## 이전 완료 — CHA 팬아웃: struct 임베드 인터페이스·제네릭 인스턴스 (2026-09-25, PR #29 머지)
 
 PR #26 리뷰가 찾은 CHA 기존 거짓 dead 2건.
 - struct에 임베드한 인터페이스로 부르는 호출(`h.SEM()` — 수신자는 struct, 메서드는
