@@ -33,6 +33,10 @@ type harvester struct {
 	// packageIDs는 수확 전부터 있던 패키지 정점 ID다 — 심볼 ID가 이와 겹치면
 	// disambiguate가 접미사를 붙인다(h.id).
 	packageIDs map[string]bool
+	// concrete는 모듈의 구체 명명 타입이다 — 제네릭 인터페이스 인스턴스 호출의 구현자를
+	// 호출 지점에서 찾는 재료. instanceImpls는 그 결과 캐시(인스턴스 타입·메서드 → 구현 ID들).
+	concrete      []*types.Named
+	instanceImpls map[string][]string
 	// initRoots는 초기화 루트 정점 ID → doc.Vertices 인덱스다(위치 갱신용).
 	initRoots      map[string]int
 	generatedFiles map[string]bool // 파일 → 생성 파일 여부 캐시
@@ -50,7 +54,8 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		impls:    make(map[string][]string),
 		fieldIDs: make(map[types.Object]string),
 
-		packageIDs: make(map[string]bool),
+		packageIDs:    make(map[string]bool),
+		instanceImpls: make(map[string][]string),
 
 		initRoots:      make(map[string]int),
 		generatedFiles: make(map[string]bool),
@@ -289,6 +294,7 @@ func (h *harvester) addStructuralEdges(internal []*packages.Package) {
 			h.embedEdges(tn, named, p.Fset)
 		}
 	}
+	h.concrete = concrete
 	h.implementsEdges(concrete, ifaces)
 }
 
@@ -776,16 +782,53 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 			pos := position(p, ce.Pos())
 			h.edge(from, id, graph.EdgeCall, pos)
 			h.promotedFields(sel, from, pos)
-			if isInterface(sel.Recv()) {
-				for _, impl := range h.impls[id] {
-					h.edge(from, impl, graph.EdgeCall, pos)
-				}
+			for _, impl := range h.dispatchTargets(sel, fn, id) {
+				h.edge(from, impl, graph.EdgeCall, pos)
 			}
 		} else if fn, ok := p.TypesInfo.Uses[f.Sel].(*types.Func); ok && fn.Pkg() != nil {
 			// pkg.F() — 패키지 한정 선택자는 Selections가 아니라 Uses로 해석된다.
 			h.edge(from, h.id(fn), graph.EdgeCall, position(p, ce.Pos()))
 		}
 	}
+}
+
+// dispatchTargets는 인터페이스 메서드 선택의 CHA 구현 목록이다. 수신자가 인터페이스인
+// 경우뿐 아니라, struct에 임베드한 인터페이스에서 승격된 메서드(s.M() — 수신자는 struct,
+// 메서드는 인터페이스 소속)도 동적 디스패치다. 미리 계산한 impls가 비면 인스턴스화된 제네릭
+// 인터페이스(G[int])일 수 있다 — 원형은 타입 파라미터 때문에 Implements를 물을 수 없어
+// impls가 비므로, 호출 지점의 인스턴스로 구현자를 찾는다. 모듈 밖 인터페이스(io.Closer 등)는
+// 팬아웃하지 않는다 — 메서드 정점이 없고, satisfies·receiver 규칙이 리시버 도달성으로 더
+// 정밀하게 다룬다(모든 모듈 구현자로 퍼뜨리면 죽은 구현까지 살린다).
+func (h *harvester) dispatchTargets(sel *types.Selection, fn *types.Func, id string) []string {
+	recv := fn.Signature().Recv()
+	if !h.vertices[id] || (!isInterface(sel.Recv()) && (recv == nil || !types.IsInterface(recv.Type()))) {
+		return nil
+	}
+	if impls := h.impls[id]; len(impls) > 0 || recv == nil {
+		return impls
+	}
+	return h.instanceImplementers(recv.Type(), fn.Name())
+}
+
+// instanceImplementers는 (인스턴스화된) 인터페이스 타입을 만족하는 모듈 구체 타입의 그
+// 이름 메서드 ID들이다. 호출 지점마다 모든 구체 타입을 훑지 않도록 결과를 캐시한다.
+func (h *harvester) instanceImplementers(iface types.Type, name string) []string {
+	key := types.TypeString(iface, nil) + "\x00" + name
+	if out, ok := h.instanceImpls[key]; ok {
+		return out
+	}
+	var out []string
+	it, _ := iface.Underlying().(*types.Interface)
+	for _, t := range h.concrete {
+		if it == nil || (!types.Implements(t, it) && !types.Implements(types.NewPointer(t), it)) {
+			continue
+		}
+		if m, ok := types.NewMethodSet(types.NewPointer(t)).Lookup(nil, name).Obj().(*types.Func); ok {
+			out = append(out, h.id(m))
+		}
+	}
+	h.instanceImpls[key] = out
+	return out
 }
 
 // sigTypeEdges는 선언의 타입 표현식 안 타입 참조를 signature 간선으로 긋는다.
@@ -824,6 +867,12 @@ func (h *harvester) selectorEdge(p *packages.Package, sel *ast.SelectorExpr, fro
 		pos := position(p, sel.Pos())
 		h.refObject(s.Obj(), from, pos)
 		h.promotedFields(s, from, pos)
+		// 인터페이스 메서드 값(f := i.M)도 나중에 불린다 — 호출처럼 구현으로 퍼뜨린다.
+		if fn, ok := s.Obj().(*types.Func); ok && s.Kind() == types.MethodVal && fn.Pkg() != nil {
+			for _, impl := range h.dispatchTargets(s, fn, h.id(fn)) {
+				h.edge(from, impl, graph.EdgeReferences, pos)
+			}
+		}
 		return
 	}
 	h.refObject(p.TypesInfo.Uses[sel.Sel], from, position(p, sel.Pos()))

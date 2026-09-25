@@ -2804,3 +2804,59 @@ func TestJSONEmptyListsAreArrays(t *testing.T) {
 		}
 	}
 }
+
+// TestDeadCHAEmbeddedAndGenericInterfaceDispatch는 CHA 팬아웃이 struct에 임베드한 인터페이스로
+// 부르는 호출(s.SEM())과 제네릭 인터페이스 인스턴스 경유 호출(g.Get() — g G[int])에서도
+// 구현 메서드로 퍼지는지 확인한다 — 둘 다 구현이 거짓으로 dead였다.
+func TestDeadCHAEmbeddedAndGenericInterfaceDispatch(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "io"
+
+type SE interface{ SEM() }
+
+type Holder struct{ SE }
+
+type G[X any] interface{ Get() X }
+
+type T struct{}
+
+func (T) SEM()     {}
+func (T) Get() int { return 0 }
+
+// Unused는 모듈 밖 인터페이스(io.Closer)를 만족하지만 쓰이지 않는다 — 모듈 밖 인터페이스
+// 호출은 모든 모듈 구현자로 퍼뜨리지 않는다(satisfies 규칙이 리시버 도달성으로 다룬다).
+type Unused struct{}
+
+func (Unused) Close() error { return nil }
+
+type Closing struct{ io.Closer }
+
+func main() {
+	h := Holder{SE: T{}}
+	h.SEM()
+	var g G[int] = T{}
+	_ = g.Get()
+	f := g.Get
+	_ = f
+	c := Closing{}
+	if c.Closer != nil {
+		_ = c.Close()
+	}
+}
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead failed: %d %s", code, errb)
+	}
+	for _, alive := range []string{"example.com/fixture.(T).SEM", "example.com/fixture.(T).Get"} {
+		if strings.Contains(out, `"id": "`+alive+`"`) {
+			t.Fatalf("%s is reached through interface dispatch but was reported: %s", alive, out)
+		}
+	}
+	if !strings.Contains(out, `"id": "example.com/fixture.(Unused).Close"`) {
+		t.Fatalf("a call through an external interface must not keep every module implementer alive: %s", out)
+	}
+}
