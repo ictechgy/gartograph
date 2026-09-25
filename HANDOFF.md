@@ -34,7 +34,7 @@ PR #20 리뷰가 찾은 기존 결함: 수확기는 메서드 contains를 패키
   (리뷰 확인). 그 규칙은 `pkg._`를 걷어낸 문서로 `TestRTARootsEverySyntheticInit`가 지킨다.
 - 곁다리: PR #19가 남긴 고아 테스트 헬퍼 `containsLimitation`을 `dead --tests`가 잡아 제거.
 
-## 이전 완료 — diff·baseline의 충돌 ID 짝짓기 (2026-09-25, fix/collision-id-pairing)
+## 이전 완료 — diff·baseline의 충돌 ID 짝짓기 (2026-09-25, PR #20 머지)
 
 충돌 접미사는 수확 패키지 집합에 따라 붙고 떨어져서, 형제 `x.V2/` 추가만으로 `diff
 --strict`가 거짓 breaking(`x.V2` 제거·kind 변경)을, `--tests` 유무가 다른 baseline이
