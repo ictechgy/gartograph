@@ -60,6 +60,7 @@ func (d *Document) View(l Level) (*Document, error) {
 		// 수확 사실이라 투영해도 그대로다.
 		AnonymousDispatch:   d.AnonymousDispatch,
 		InterfaceMethodSets: d.InterfaceMethodSets,
+		InitializerRoots:    d.InitializerRoots,
 	}
 	alive := make(map[string]bool)
 	for _, v := range d.Vertices {

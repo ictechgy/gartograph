@@ -512,6 +512,10 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 	if *algo != "rta" && hasMethodFinding(findings) {
 		limitations = append(limitations, externalDispatchLimitation(doc))
 	}
+	// RTA는 모든 합성 init을 루트로 삼아 이 표시와 무관하다.
+	if *algo != "rta" {
+		limitations = append(limitations, initializerRootsLimitation(doc, findings)...)
+	}
 	if hasFieldFinding(findings) {
 		limitations = append(limitations,
 			"field reachability counts named accesses (x.F, T{F: v}, positional literals); "+
@@ -603,6 +607,18 @@ func hasFieldFinding(findings []analysis.Finding) bool {
 		}
 	}
 	return false
+}
+
+// initializerRootsLimitation은 초기화 루트 표시(initializerRoots)가 없는 문서의 CHA dead
+// 보고에 붙는 재수확 권고다. "이전 문서"라고 단정하지 않고 표시가 없다는 사실만 말한다 —
+// 표시 도입 전 개발 빌드가 만든 문서에는 pkg._가 일부 있을 수 있다. 보고가 없으면 조용하다.
+func initializerRootsLimitation(doc *graph.Document, findings []analysis.Finding) []string {
+	if len(findings) == 0 || doc.InitializerRoots {
+		return nil
+	}
+	return []string{"this document lacks the initializerRoots marker (harvested before package-initialization " +
+		"roots were complete): symbols used only by blank declarations or calling variable initializers may " +
+		"appear unreachable — re-harvest"}
 }
 
 // externalDispatchLimitation은 CHA dead의 메서드 보고에 붙는 외부 디스패치

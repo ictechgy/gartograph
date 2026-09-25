@@ -272,9 +272,11 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		roots, unknown := analysis.RetentionRoots(s.doc, a.RetainPublic, a.Roots)
 		reachable := analysis.Reachable(s.doc, roots)
 		findings := analysis.Dead(s.doc, reachable)
+		limitations := append(append([]string(nil), s.doc.Limitations...),
+			initializerRootsLimitation(s.doc, findings)...)
 		return marshal(deadReport{
 			Roots: roots, UnknownRoots: unknown,
-			Unreachable: findings, Limitations: s.doc.Limitations,
+			Unreachable: findings, Limitations: limitations,
 		})
 	case "gartograph_rules":
 		if s.cfgPath == "" {

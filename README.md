@@ -344,7 +344,12 @@ the report says so in `limitations`.
 
 Vertex IDs: `pkg/path` for packages, `pkg/path.Name` for package-level
 symbols, `pkg/path.(Recv).Name` for methods. Each package has at most one
-package-initialization root vertex `pkg/path._`, like `init`: it references
+package-initialization root vertex `pkg/path._` (kind `var`, positioned at a
+hand-written contributing declaration when there is one, so it is
+`generated` only if all contributions are), like `init`, created only when
+the contributing declarations reference module symbols (an iota-skipping
+`const ( _ = iota )` creates none); documents carry `initializerRoots: true`,
+and `dead` on an older saved document suggests re-harvesting. It references
 what blank `var _`/`const _` declarations use (`var _ I = (*T)(nil)` uses
 `T` and `I`) and what named variable initializers that execute a call use
 (`var registered = register()` runs `register` at init even if `registered`

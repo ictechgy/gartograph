@@ -2649,3 +2649,40 @@ func main() {}
 		t.Fatalf("rta explain must route from the root method: %s", out)
 	}
 }
+
+// TestDeadOldDocumentWithoutInitRoots는 초기화 루트 수확 이전 문서로 dead를 돌리면
+// 재수확을 권하는지 확인한다 — 그 문서에는 pkg._가 없어 초기화식에서만 쓰는 심볼이
+// 거짓으로 dead일 수 있다.
+func TestDeadOldDocumentWithoutInitRoots(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc main() {}\n\nfunc unused() {}\n",
+	})
+	code, out, errb := run(t, "graph", "--level", "symbol", "--format", "json", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("graph failed: %d %s", code, errb)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["initializerRoots"] != true {
+		t.Fatalf("symbol harvest must mark initializer roots: %v", doc["initializerRoots"])
+	}
+	fresh := filepath.Join(t.TempDir(), "new.json")
+	raw, _ := json.Marshal(doc)
+	if err := os.WriteFile(fresh, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := run(t, "dead", "--graph", fresh); strings.Contains(out, "lacks the initializerRoots marker") {
+		t.Fatalf("a current document must not get the re-harvest note: %s", out)
+	}
+	delete(doc, "initializerRoots")
+	old := filepath.Join(t.TempDir(), "old.json")
+	raw, _ = json.Marshal(doc)
+	if err := os.WriteFile(old, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := run(t, "dead", "--graph", old); !strings.Contains(out, "lacks the initializerRoots marker") {
+		t.Fatalf("an old document must get the re-harvest note: %s", out)
+	}
+}
