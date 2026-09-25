@@ -289,40 +289,38 @@ func isExportedName(name string) bool {
 }
 
 // diffIfaceMethods는 인터페이스에 새 메서드가 생긴 변경을 breaking으로 잡는다.
-// 추가된 contains 간선이 "양쪽 문서에 모두 있는 인터페이스 정점"에서
-// "메서드 정점"으로 향할 때다 — 새 인터페이스의 메서드는 신규 API이지
-// breaking이 아니므로 From이 old에 있어야 한다.
+// 새 메서드 정점의 소유자를 ID("pkgpath.(I).M")에서 찾는다 — 수확기는 메서드 contains를
+// 패키지에서 긋기 때문에, 인터페이스 타입에서 나가는 contains를 찾으면 실제 문서에서
+// 이 판정이 한 번도 작동하지 않는다. 새 인터페이스의 메서드는 신규 API이지 breaking이
+// 아니므로 소유 인터페이스가 옛 문서에도 있어야 한다.
 func diffIfaceMethods(d *Diff, old, new *graph.Document) {
-	newV := verticesByID(new)
 	oldV := indexVertices(old)
-	oldE := indexEdges(old)
-	newE := indexEdges(new)
-	for _, k := range sortedEdgeKeys(newE) {
-		e := newE[k]
-		if e.Kind != graph.EdgeContains {
+	newByID := verticesByID(new)
+	for _, v := range new.Vertices {
+		if v.Kind != graph.KindMethod || oldV[vertexKey(v)] != nil {
 			continue
 		}
-		if _, existed := oldE[k]; existed {
-			continue
-		}
-		tv, ok := newV[e.From]
-		if !ok || !tv.Interface {
-			continue
-		}
-		if _, inOld := oldV[vertexKey(*tv)]; !inOld {
-			continue
-		}
-		mv, ok := newV[e.To]
-		if !ok || mv.Kind != graph.KindMethod {
-			continue
-		}
-		if !tv.Exported {
+		owner := ownerVertex(newByID, v.ID)
+		if owner == nil || !owner.Interface || !owner.Exported || oldV[vertexKey(*owner)] == nil {
 			continue
 		}
 		d.Breaking = append(d.Breaking, fmt.Sprintf(
 			"exported interface %s gained method %s — implementers no longer satisfy it",
-			e.From, mv.Name))
+			owner.ID, v.Name))
 	}
+}
+
+// ownerVertex는 멤버 정점의 소유 타입 정점을 찾는다. 소유 타입 ID가 패키지 경로와
+// 겹치면 문서에는 충돌 접미사가 붙은 형태로 있다.
+func ownerVertex(byID map[string]*graph.Vertex, memberID string) *graph.Vertex {
+	owner, ok := graph.MethodOwner(memberID)
+	if !ok {
+		return nil
+	}
+	if v := byID[owner]; v != nil && v.Kind == graph.KindType {
+		return v
+	}
+	return byID[owner+graph.CollisionSuffix]
 }
 
 // recordSignatureChange는 exported 심볼의 signature 간선 목표 차이를 적는다.

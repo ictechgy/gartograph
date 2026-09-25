@@ -173,8 +173,9 @@ func TestDiffInterfaceGainedMethod(t *testing.T) {
 			{ID: "m/a.I", Kind: graph.KindType, Exported: true, Interface: true},
 			{ID: "m/a.(I).Do", Kind: graph.KindMethod, Package: "m/a", Exported: true},
 		},
+		// 수확기는 메서드 contains를 패키지에서 긋는다 — 판정은 이 모양에서 돌아야 한다.
 		Edges: []graph.Edge{
-			{From: "m/a.I", To: "m/a.(I).Do", Kind: graph.EdgeContains},
+			{From: "m/a", To: "m/a.(I).Do", Kind: graph.EdgeContains},
 		},
 	}
 	new := &graph.Document{
@@ -187,9 +188,9 @@ func TestDiffInterfaceGainedMethod(t *testing.T) {
 			{ID: "m/a.(J).New", Kind: graph.KindMethod, Package: "m/a", Exported: true},
 		},
 		Edges: []graph.Edge{
-			{From: "m/a.I", To: "m/a.(I).Do", Kind: graph.EdgeContains},
-			{From: "m/a.I", To: "m/a.(I).Run", Kind: graph.EdgeContains},
-			{From: "m/a.J", To: "m/a.(J).New", Kind: graph.EdgeContains},
+			{From: "m/a", To: "m/a.(I).Do", Kind: graph.EdgeContains},
+			{From: "m/a", To: "m/a.(I).Run", Kind: graph.EdgeContains},
+			{From: "m/a", To: "m/a.(J).New", Kind: graph.EdgeContains},
 		},
 	}
 	d := DiffDocuments(old, new)
