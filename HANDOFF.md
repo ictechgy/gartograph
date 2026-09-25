@@ -2,7 +2,21 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — universe 타입 임베드 수확 패닉 (2026-09-25, fix/universe-embed-panic)
+## 최근 완료 — CHA 팬아웃: struct 임베드 인터페이스·제네릭 인스턴스 (2026-09-25, fix/cha-embedded-generic-dispatch)
+
+PR #26 리뷰가 찾은 CHA 기존 거짓 dead 2건.
+- struct에 임베드한 인터페이스로 부르는 호출(`h.SEM()` — 수신자는 struct, 메서드는
+  인터페이스 소속): 팬아웃 조건을 수신자가 아니라 **메서드의 리시버**가 인터페이스인지로.
+- 제네릭 인터페이스 인스턴스 경유 호출(`g.Get()`, `g G[int]`): 원형은 타입 파라미터 때문에
+  Implements를 물을 수 없어 impls가 비었다 — 호출 지점의 인스턴스로 구현자를 찾고 캐시
+  (`instanceImplementers`, `h.concrete`).
+- 인터페이스 메서드 값(`f := i.M`)도 구현으로 references 팬아웃(전엔 호출만).
+- **모듈 밖 인터페이스는 팬아웃하지 않는다**(`!h.vertices[id]`) — 처음 구현에서 io.Closer
+  호출이 모든 모듈 구현자로 퍼져 go-mssqldb 테스트 전용 `memoryBuffer`가 살아났다(정밀도
+  손실). satisfies·receiver 규칙이 리시버 도달성으로 더 정밀하게 다룬다. 회귀 테스트로 고정.
+- 실측: 벤치 세 저장소 CHA·`--tests`·RTA main과 동일(해당 패턴 없음), fixture로 수정 전 실패.
+
+## 이전 완료 — universe 타입 임베드 수확 패닉 (2026-09-25, PR #30 머지)
 
 PR #28 리뷰가 찾은 main의 크래시: `type E interface{ error; Code() int }`·`interface{ comparable }`·
 `struct{ error }`처럼 universe 타입을 임베드하면 type·symbol 수확이 nil 역참조로 패닉했다
@@ -43,9 +57,6 @@ PR #28 리뷰가 찾은 main의 크래시: `type E interface{ error; Code() int 
   판정하는 규칙과 같다). explain의 그래프 도달 집합은 CLI의 실제 루트로 계산.
 - 남은 것(리뷰 LOW, 기존 결함): RTA explain은 익명 클로저를 거치는 경로를 못 찾는다(클로저
   SSA 함수에 Object가 없어 이름이 없음) — 판정은 살렸는데 "no path"가 날 수 있다.
-- **리뷰가 찾은 CHA 기존 거짓 dead 2건(다음 작업)**: struct에 임베드한 인터페이스로 부르는
-  호출(`s.SEM()` — `sel.Recv()`가 인터페이스가 아니라 CHA 팬아웃이 안 됨), 제네릭 인터페이스
-  인스턴스 경유 호출(`G[int].Get`)의 구현 메서드가 CHA에서 unreachable.
 
 ## 이전 완료 — 초기화 루트(pkg._) 정리 (2026-09-25, PR #25 머지)
 
