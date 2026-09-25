@@ -752,3 +752,24 @@ func TestInitRootCleanup(t *testing.T) {
 		t.Fatalf("a hand-written contribution must win the position: %+v %+v", blank, blank.Position)
 	}
 }
+
+// TestBlankExternalRefsCountedRegardlessOfOrder는 모듈 심볼을 참조하지 않는 빈 선언의
+// 외부 참조도 세는지, 그 수가 같은 패키지 다른 빈 선언의 순서에 흔들리지 않는지 확인한다.
+func TestBlankExternalRefsCountedRegardlessOfOrder(t *testing.T) {
+	count := func(body string) string {
+		doc := loadSymbol(t, testutil.WriteModule(t, map[string]string{
+			"main.go": "package main\n\nimport \"errors\"\n\nfunc f() int { return 1 }\n\n" + body + "\nfunc main() {}\n",
+		}))
+		for _, l := range doc.Limitations {
+			if strings.Contains(l, "references to symbols outside the module") {
+				return l
+			}
+		}
+		return ""
+	}
+	externalFirst := count("var _ = errors.New(\"x\")\nvar _ = f()\n")
+	moduleFirst := count("var _ = f()\nvar _ = errors.New(\"x\")\n")
+	if externalFirst == "" || externalFirst != moduleFirst {
+		t.Fatalf("external refs of blank declarations must not depend on order:\n%q\n%q", externalFirst, moduleFirst)
+	}
+}

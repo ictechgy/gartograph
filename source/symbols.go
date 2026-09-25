@@ -62,7 +62,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		}
 	}
 	wantSymbols := level == graph.LevelSymbol
-	doc.InterfaceMethodSets = true // fillTypeShape가 type 레벨부터 인터페이스 Methods를 채운다
+	doc.InterfaceMethodSets = true     // fillTypeShape가 type 레벨부터 인터페이스 Methods를 채운다
 	doc.InitializerRoots = wantSymbols // specEdges가 심볼 레벨에서 pkg._를 수확한다
 
 	h.addSymbolVertices(internal, wantSymbols)
@@ -419,7 +419,7 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 // 정점을 공유한다. var _ = f()·var x = f()는 프로그램 초기화 때 실행되고
 // var _ I = (*T)(nil)은 T·I를 쓴다 — 정점이 없으면 그 참조가 조용히 버려져
 // 초기화식에서만 쓰는 심볼이 unreachable로 보고된다. 이름으로 구분할 수 없어
-// init처럼 한 정점으로 모이고 위치는 처음 본 선언이다.
+// init처럼 한 정점으로 모이고, 위치는 손으로 쓴 기여 선언이 있으면 그쪽이다(preferHandWritten).
 func (h *harvester) blankVertex(p *packages.Package, name *ast.Ident) {
 	id := p.PkgPath + "._"
 	pos := position(p, name.Pos())
@@ -508,16 +508,17 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
 				continue
 			}
 			id := h.id(obj)
-			if name.Name == "_" && h.referencesModule(p, specExprs(s)) {
-				h.blankVertex(p, name)
+			from := id
+			if name.Name == "_" {
+				from = h.blankSource(p, s, name)
 			}
 			if keep {
 				h.root(id)
 			}
 			if s.Type != nil {
-				h.sigTypeEdges(p, s.Type, id)
+				h.sigTypeEdges(p, s.Type, from)
 			}
-			h.inspect(p, s, id)
+			h.inspect(p, s, from)
 		}
 		h.initializerEdges(p, s)
 	}
@@ -543,6 +544,18 @@ func (h *harvester) initializerEdges(p *packages.Package, s *ast.ValueSpec) {
 		h.inspect(p, v, p.PkgPath+"._")
 	}
 	h.extRefs = counted
+}
+
+// blankSource는 빈 선언의 간선 출발점을 정한다. 모듈 심볼을 참조하면 초기화 루트를
+// 만들어 그 ID를, 아니면 패키지 ID를 돌려준다 — 모듈 목표가 없어 간선은 생기지 않고
+// 모듈 밖 참조만 세어진다. 출발 정점이 없으면 edge가 세지 않아, 외부 참조 수가 같은
+// 패키지의 다른 빈 선언이 루트를 먼저 만들었는지(선언 순서)에 따라 달라졌다.
+func (h *harvester) blankSource(p *packages.Package, s *ast.ValueSpec, name *ast.Ident) string {
+	if h.referencesModule(p, specExprs(s)) {
+		h.blankVertex(p, name)
+		return p.PkgPath + "._"
+	}
+	return p.PkgPath
 }
 
 // specExprs는 값 스펙의 선언 타입과 초기화 식을 모은다 — 빈 선언은 타입만으로도
