@@ -661,9 +661,13 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 			return 0
 		}
 		for i, p := range path {
-			if i == 0 {
+			switch {
+			case i == 0:
 				fmt.Fprintf(stdout, "root: %s\n", p)
-			} else {
+			case strings.HasSuffix(p, source.PackageInitSuffix):
+				// 문서 정점이 아니다 — 표시하지 않으면 소비자가 없는 정점을 찾는다.
+				fmt.Fprintf(stdout, "  -> %s (package initializer; not a graph vertex)\n", p)
+			default:
 				fmt.Fprintf(stdout, "  -> %s\n", p)
 			}
 		}

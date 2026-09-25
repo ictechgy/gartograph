@@ -91,9 +91,14 @@ func newRTANamer(doc *graph.Document, roots map[string]bool) rtaNamer {
 	return rtaNamer{packageIDs: ids, roots: roots}
 }
 
-// name은 함수의 정점 ID를 돌려준다. 합성 init은 Object가 없지만 패키지 변수
-// 초기화식을 실행하므로, 그 패키지의 빈 식별자 루트(pkg._)가 있으면 그 ID로
-// 옮긴다 — 판정은 살렸는데 explain이 "no path"라고 하는 모순을 막는다.
+// PackageInitSuffix는 RTA 인접 맵에서 합성 패키지 init을 가리키는 순회용 ID의
+// 접미사다("pkgpath#init"). 문서 정점이 아니다 — 합성 init은 패키지 변수 초기화식과
+// import한 패키지의 init을 실행하므로, 빼면 판정은 살린 함수를 explain이 "no path"라고
+// 한다. '#'는 import 경로·식별자에 없어 어떤 정점 ID와도 겹치지 않는다.
+const PackageInitSuffix = "#init"
+
+// name은 함수의 정점 ID를 돌려준다. 합성 init은 Object가 없다 — 그 패키지의 빈
+// 식별자 루트(pkg._)가 있으면 그 ID로(루트와 짝지어진다), 없으면 순회용 ID로 옮긴다.
 func (n rtaNamer) name(fn *ssa.Function) (string, bool) {
 	if fn == nil {
 		return "", false
@@ -102,8 +107,11 @@ func (n rtaNamer) name(fn *ssa.Function) (string, bool) {
 		return disambiguate(objectID(obj), n.packageIDs), true
 	}
 	if fn.Pkg != nil && fn.Pkg.Func("init") == fn {
-		blank := fn.Pkg.Pkg.Path() + "._"
-		return blank, n.roots[blank]
+		path := fn.Pkg.Pkg.Path()
+		if blank := path + "._"; n.roots[blank] {
+			return blank, true
+		}
+		return path + PackageInitSuffix, true
 	}
 	return "", false
 }

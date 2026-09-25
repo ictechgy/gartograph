@@ -2495,3 +2495,24 @@ func main() { x.Use(); xy.Other() }
 		}
 	}
 }
+
+// TestDeadRTAExplainTransitiveInit은 빈 식별자 루트가 없는 패키지의 합성 init을
+// 거쳐 도달한 초기화식도 RTA explain이 경로를 보이는지 확인한다 — 판정은 살렸는데
+// "no path"라고 하면 모순이다. 합성 init은 문서 정점이 아니라서 그렇게 표시한다.
+func TestDeadRTAExplainTransitiveInit(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport _ \"example.com/fixture/q\"\n\nfunc main() {}\n",
+		"q/q.go":  "package q\n\nimport \"example.com/fixture/r\"\n\nvar _ = r.X\n",
+		"r/r.go":  "package r\n\nvar X = rreg()\n\nfunc rreg() int { return 1 }\n",
+	})
+	const target = "example.com/fixture/r.rreg"
+	code, out, errb := run(t, "dead", "--dir", dir, "--algo", "rta", "--format", "json")
+	if code != 0 || strings.Contains(out, `"`+target+`"`) {
+		t.Fatalf("rta must keep rreg reachable through package initializers: %d %s %s", code, out, errb)
+	}
+	_, out, _ = run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", target)
+	if !strings.Contains(out, "example.com/fixture/r#init (package initializer") ||
+		!strings.Contains(out, "-> "+target) {
+		t.Fatalf("rta explain must route through the synthetic initializer: %s", out)
+	}
+}
