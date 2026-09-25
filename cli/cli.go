@@ -512,6 +512,12 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 	if *algo != "rta" && hasMethodFinding(findings) {
 		limitations = append(limitations, externalDispatchLimitation(doc))
 	}
+	// RTA는 모든 합성 init을 루트로 삼아 이 표시와 무관하다.
+	if *algo != "rta" && len(findings) > 0 && !doc.InitializerRoots {
+		limitations = append(limitations,
+			"this document predates package-initialization roots (pkg._): symbols used only by blank "+
+				"declarations or calling variable initializers may appear unreachable — re-harvest")
+	}
 	if hasFieldFinding(findings) {
 		limitations = append(limitations,
 			"field reachability counts named accesses (x.F, T{F: v}, positional literals); "+

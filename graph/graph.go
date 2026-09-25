@@ -192,6 +192,10 @@ type Document struct {
 	// InterfaceMethodSets는 인터페이스 정점의 Methods를 수확했다는 표시다 — 이 표시가
 	// 있는 문서에서 Methods가 없으면 "메서드 없음"이고, 없는 옛 문서에서는 "몰랐다"다.
 	InterfaceMethodSets bool `json:"interfaceMethodSets,omitempty"`
+	// InitializerRoots는 패키지 초기화 루트(pkg._ — 빈 선언과 호출하는 변수 초기화식)를
+	// 수확했다는 표시다. 이 표시가 없는 옛 문서에서는 초기화식에서만 쓰는 심볼이 거짓으로
+	// dead일 수 있다 — dead가 재수확을 권하는 근거다.
+	InitializerRoots bool `json:"initializerRoots,omitempty"`
 }
 
 // Limitation은 분석이 보지 못한 것을 그 입력에서 실제로 세어 적는다.
