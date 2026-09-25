@@ -215,15 +215,20 @@ func fieldTypes(st *types.Struct) []types.Type {
 func methodSetName(iface *types.Interface) string {
 	methods := make([]string, iface.NumMethods())
 	for i := range methods {
-		m := iface.Method(i)
-		name := m.Name()
-		if !m.Exported() && m.Pkg() != nil {
-			name = m.Pkg().Path() + "." + name
-		}
-		sig := types.TypeString(unnamedSignature(m.Signature()), nil)
-		methods[i] = name + strings.TrimPrefix(sig, "func")
+		methods[i] = methodEntry(iface.Method(i))
 	}
 	return "interface{" + strings.Join(methods, "; ") + "}"
+}
+
+// methodEntry는 인터페이스 메서드 하나를 "Name(params) results"로 적는다 — 파라미터
+// 이름을 빼야 이름만 바뀐 같은 메서드가 다른 항목이 되지 않는다. 비공개 메서드는
+// 패키지 경로로 한정한다 — 다른 패키지의 같은 이름은 다른 메서드다.
+func methodEntry(m *types.Func) string {
+	name := m.Name()
+	if !m.Exported() && m.Pkg() != nil {
+		name = m.Pkg().Path() + "." + name
+	}
+	return name + strings.TrimPrefix(types.TypeString(unnamedSignature(m.Signature()), nil), "func")
 }
 
 // unnamedSignature는 파라미터·결과 이름을 뺀 같은 서명을 만든다.
