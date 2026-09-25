@@ -35,13 +35,26 @@ func RTAReachable(opts Options, doc *graph.Document, roots map[string]bool) (map
 	if err != nil {
 		return nil, err
 	}
-	reach := namer.reachable(res)
-	// 루트는 정의상 도달한다 — 인스턴스 없는 제네릭 메서드처럼 SSA 함수가 없는 루트도
-	// "루트이면서 unreachable"로 보고되면 모순이다.
+	return withRoots(namer.reachable(res), roots), nil
+}
+
+// isGenericBody는 인스턴스 없는 제네릭 본문(타입 파라미터를 가진 함수)인지 본다.
+// 이런 본문을 RTA 루트로 넣으면 x/tools rta가 타입 파라미터를 품은 타입(any(&x) 등)에서
+// 패닉한다("ForEachElement called on type containing *types.TypeParam"). 그래서 루트로
+// 넣지 않는다 — 루트 자신은 withRoots로 살아 있고, 그 피호출자는 RTA의 과소 근사
+// limitation("uninstantiated types")이 말한다.
+func isGenericBody(fn *ssa.Function) bool {
+	return fn.TypeParams().Len() > 0
+}
+
+// withRoots는 도달 집합에 루트 자신을 넣는다 — 루트는 정의상 도달하고, SSA 함수가 없는
+// 루트(pkg._ 같은 합성 정점)도 "루트이면서 unreachable"로 보고되면 모순이다.
+// RTAReachable과 RTAAdjacency가 같은 답을 내도록 둘 다 쓴다.
+func withRoots(reach, roots map[string]bool) map[string]bool {
 	for r := range roots {
 		reach[r] = true
 	}
-	return reach, nil
+	return reach
 }
 
 // RTAAdjacency는 RTA 호출 그래프의 정점 ID 인접 맵과 도달 집합을 돌려준다.
@@ -64,7 +77,7 @@ func RTAAdjacency(opts Options, doc *graph.Document, roots map[string]bool) (map
 	for from, l := range adj {
 		adj[from] = uniqueSorted(l)
 	}
-	return adj, namer.reachable(res), nil
+	return adj, withRoots(namer.reachable(res), roots), nil
 }
 
 // uniqueSorted는 목록을 정렬하고 중복을 없앤다 — 합성 init과 사용자 함수가 같은
@@ -176,7 +189,7 @@ func (n rtaNamer) packageRootFns(sp *ssa.Package) []*ssa.Function {
 	for _, member := range sp.Members {
 		switch m := member.(type) {
 		case *ssa.Function:
-			if id, named := n.name(m); m == sp.Func("init") || (named && n.roots[id]) {
+			if id, named := n.name(m); m == sp.Func("init") || (named && n.roots[id] && !isGenericBody(m)) {
 				out = append(out, m)
 			}
 		case *ssa.Type:
@@ -186,19 +199,19 @@ func (n rtaNamer) packageRootFns(sp *ssa.Package) []*ssa.Function {
 	return out
 }
 
-// methodRootFns는 타입의 메서드 중 문서 루트(keep 표지 등)인 것의 SSA 함수를 고른다.
-// 패키지 Members에는 메서드가 없어서, 이것 없이는 루트 메서드가 RTA에서 unreachable로
-// 보고되는 모순이 생긴다. 포인터 메서드 집합이 값·포인터 리시버를 다 담는다.
-// 제네릭 타입은 인스턴스 없이 메서드 함수가 없고, 인터페이스는 구현이 없어 건너뛴다.
+// methodRootFns는 타입이 선언한 메서드 중 문서 루트(keep 표지 등)인 것의 SSA 함수를
+// 고른다. 패키지 Members에는 메서드가 없어서, 이것 없이는 루트 메서드가 RTA에서
+// unreachable로 보고되는 모순이 생긴다. 메서드 집합(MethodValue)이 아니라 선언
+// 메서드(FuncValue)를 쓴다 — 승격·간접 wrapper가 아니라 선언 함수가 루트다.
+// 제네릭 타입(isGenericBody)과 인터페이스(추상 메서드)는 건너뛴다.
 func (n rtaNamer) methodRootFns(prog *ssa.Program, t types.Type) []*ssa.Function {
 	named, ok := t.(*types.Named)
-	if !ok || named.TypeParams().Len() > 0 || types.IsInterface(named) {
+	if !ok || types.IsInterface(named) || named.TypeParams().Len() > 0 {
 		return nil
 	}
 	var out []*ssa.Function
-	mset := prog.MethodSets.MethodSet(types.NewPointer(named))
-	for i := 0; i < mset.Len(); i++ {
-		fn := prog.MethodValue(mset.At(i))
+	for i := 0; i < named.NumMethods(); i++ {
+		fn := prog.FuncValue(named.Method(i))
 		if id, ok := n.name(fn); ok && n.roots[id] {
 			out = append(out, fn)
 		}
