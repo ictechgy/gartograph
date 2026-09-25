@@ -57,6 +57,14 @@ type Eq interface {
 	comparable
 	error
 }
+
+// 틸드 없는 단일 항 인터페이스(유니언이 아니라 타입 자체로 기록된다)와 임베드 사슬도
+// 유니언 항으로 펼친다.
+type myInt interface{ int }
+type Single interface{ myInt | ~string }
+
+type integer interface{ signed }
+type Chained interface{ integer | ~string }
 `}))
 	if !doc.InterfaceTypeSets {
 		t.Fatal("documents must carry the interfaceTypeSets marker")
@@ -70,7 +78,9 @@ type Eq interface {
 		// 유니언의 인터페이스 항도 펼친다.
 		"example.com/fixture/a.Either": {"~float64 | ~int | ~int64"},
 		// comparable은 특수 항목, 메서드만 있는 error 임베드는 원소가 없다.
-		"example.com/fixture/a.Eq": {"comparable"},
+		"example.com/fixture/a.Eq":      {"comparable"},
+		"example.com/fixture/a.Single":  {"int | ~string"},
+		"example.com/fixture/a.Chained": {"~int | ~int64 | ~string"},
 	} {
 		v, _ := doc.VertexByID(id)
 		if !slices.Equal(v.TypeSet, want) {

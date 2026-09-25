@@ -182,30 +182,47 @@ func interfaceMethods(iface *types.Interface) []string {
 
 // interfaceTypeSet은 제약 인터페이스의 실효 타입 원소를 정렬된 항목으로 적는다 — 원소마다
 // 한 항목이고 항목들은 교집합이다. 임베드한 인터페이스(이름 있는 제약·비공개 포함)는 그
-// 원소를 펼쳐 합친다 — 공개 제약이 비공개 제약을 임베드하면 그쪽 변경도 공개 계약의
-// 변경이고, interface{ cmp.Ordered }로 바꾸는 동치 리팩터가 거짓 변경이 되지 않는다.
-// 유니언은 항을 정렬해 " | "로 잇고, 유니언 안의 인터페이스 항은 펼친다(unionEntry).
-// comparable은 특수 항목으로 남기고, 메서드만 있는 임베드(error 등)는 원소가 없다.
-// 재귀 대신 명시적 스택이다(cycles 자기 분석). 원소가 없으면 nil.
+// 원소를 펼쳐 합친다(flattenElements) — 공개 제약이 비공개 제약을 임베드하면 그쪽 변경도
+// 공개 계약의 변경이고, interface{ cmp.Ordered }로 바꾸는 동치 리팩터가 거짓 변경이 되지
+// 않는다. 유니언은 항을 정렬해 " | "로 잇고, 인터페이스 항은 펼친다(unionEntry). comparable은
+// 특수 항목으로 남기고, 메서드만 있는 임베드(error 등)는 원소가 없다. 원소가 없으면 nil.
 func interfaceTypeSet(iface *types.Interface) []string {
 	var out []string
-	stack := embeddedElements(iface)
-	for len(stack) > 0 {
-		et := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+	for _, et := range flattenElements(iface) {
 		switch {
 		case isComparable(et):
 			out = append(out, "comparable")
 		case isUnion(et):
 			out = append(out, unionEntry(et.(*types.Union)))
-		case types.IsInterface(et):
-			stack = append(stack, embeddedElements(et.Underlying().(*types.Interface))...)
 		default:
 			out = append(out, canonicalType(et))
 		}
 	}
 	sort.Strings(out)
 	return slices.Compact(out)
+}
+
+// flattenElements는 인터페이스의 타입 원소를 임베드 사슬까지 펼친다 — 임베드한 인터페이스는
+// 그 원소로 대체되고, 유니언·comparable·비인터페이스 타입만 남는다. 명시적 스택과 방문 집합을
+// 쓴다 — 재귀는 cycles 자기 분석에 걸리고, 오류 패키지의 순환 임베드에서 멈춰야 한다.
+func flattenElements(iface *types.Interface) []types.Type {
+	var out []types.Type
+	seen := map[*types.Interface]bool{iface: true}
+	stack := embeddedElements(iface)
+	for len(stack) > 0 {
+		et := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		inner, ok := et.Underlying().(*types.Interface)
+		if isComparable(et) || isUnion(et) || !ok {
+			out = append(out, et)
+			continue
+		}
+		if !seen[inner] {
+			seen[inner] = true
+			stack = append(stack, embeddedElements(inner)...)
+		}
+	}
+	return out
 }
 
 // embeddedElements는 인터페이스의 명시적 임베드 원소들이다.
@@ -229,23 +246,19 @@ func isUnion(t types.Type) bool {
 	return ok
 }
 
-// unionEntry는 유니언의 항을 정규 표기로 정렬해 잇는다. 인터페이스 항(signed | float)은
-// 그 인터페이스가 유니언 하나로만 이뤄졌으면 그 항들로 펼친다 — 이름 있는 제약의 변경이
-// 그것을 항으로 쓰는 공개 제약의 변경으로 보이게. 여러 원소(교집합)인 인터페이스 항은 유니언
-// 항으로 펼칠 수 없어 이름을 남긴다.
+// unionEntry는 유니언의 항을 정규 표기로 정렬해 잇는다. 인터페이스 항(signed | float,
+// interface{ int } 같은 틸드 없는 단일 항, interface{ signed } 같은 사슬)은 펼친 원소가
+// 하나(comparable 제외)면 그 원소의 항으로 바꾼다 — 이름 있는 제약의 변경이 그것을 항으로
+// 쓰는 공개 제약의 변경으로 보이게. 여러 원소(교집합)인 인터페이스 항은 유니언 항으로 펼칠
+// 수 없어 이름을 남긴다.
 func unionEntry(u *types.Union) string {
 	var terms []string
-	stack := []*types.Term{}
-	for i := 0; i < u.Len(); i++ {
-		stack = append(stack, u.Term(i))
-	}
+	stack := unionTerms(u)
 	for len(stack) > 0 {
 		term := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if inner := soleUnion(term.Type()); inner != nil {
-			for i := 0; i < inner.Len(); i++ {
-				stack = append(stack, inner.Term(i))
-			}
+		if expanded, ok := expandInterfaceTerm(term.Type()); ok {
+			stack = append(stack, expanded...)
 			continue
 		}
 		terms = append(terms, termString(term))
@@ -254,14 +267,30 @@ func unionEntry(u *types.Union) string {
 	return strings.Join(slices.Compact(terms), " | ")
 }
 
-// soleUnion은 메서드 없이 유니언 원소 하나로만 이뤄진 인터페이스면 그 유니언을 돌려준다.
-func soleUnion(t types.Type) *types.Union {
-	iface, ok := types.Unalias(t).Underlying().(*types.Interface)
-	if !ok || iface.NumMethods() != 0 || iface.NumEmbeddeds() != 1 {
-		return nil
+// unionTerms는 유니언의 항 목록이다.
+func unionTerms(u *types.Union) []*types.Term {
+	out := make([]*types.Term, u.Len())
+	for i := range out {
+		out[i] = u.Term(i)
 	}
-	u, _ := types.Unalias(iface.EmbeddedType(0)).(*types.Union)
-	return u
+	return out
+}
+
+// expandInterfaceTerm은 인터페이스 항을 펼친 원소가 하나(comparable 제외)면 그 항들을
+// 돌려준다 — 유니언이면 그 항, 비인터페이스 타입이면 틸드 없는 항 하나.
+func expandInterfaceTerm(t types.Type) ([]*types.Term, bool) {
+	iface, ok := types.Unalias(t).Underlying().(*types.Interface)
+	if !ok || iface.NumMethods() != 0 {
+		return nil, false
+	}
+	els := flattenElements(iface)
+	if len(els) != 1 || isComparable(els[0]) {
+		return nil, false
+	}
+	if u, ok := els[0].(*types.Union); ok {
+		return unionTerms(u), true
+	}
+	return []*types.Term{types.NewTerm(false, els[0])}, true
 }
 
 // termString은 유니언 항 하나의 정규 표기다(~ 포함).
