@@ -522,13 +522,20 @@ func TestDiffConstraintTypeSet(t *testing.T) {
 	}
 	d := DiffDocuments(mk(true, "~int | ~int64"), mk(true, "~int"))
 	if !slices.Equal(d.Breaking, []string{
-		"exported constraint m/a.Number changed type set: [~int | ~int64] -> [~int] — instantiations or generic code may no longer compile"}) {
+		`exported constraint m/a.Number changed type set: "~int | ~int64" -> "~int" — instantiations or generic code may no longer compile`}) {
 		t.Fatalf("a narrowed exported constraint must be breaking: %q", d.Breaking)
 	}
 	if d := DiffDocuments(mk(true, "~int"), mk(true, "~int")); len(d.Breaking) != 0 {
 		t.Fatalf("an unchanged type set is not breaking: %q", d.Breaking)
 	}
-	if d := DiffDocuments(mk(false), mk(true, "~int")); len(d.Breaking) != 0 {
-		t.Fatalf("without the marker on both documents type sets are not compared: %q", d.Breaking)
+	if d := DiffDocuments(mk(false), mk(true, "~int")); len(d.Breaking) != 0 ||
+		!slices.ContainsFunc(d.Notes, func(n string) bool { return strings.Contains(n, "were not compared") }) {
+		t.Fatalf("without the marker on both documents type sets are not compared, and the diff says so: %q %q",
+			d.Breaking, d.Notes)
+	}
+	if d := DiffDocuments(mk(true, "~int"), mk(true)); !slices.ContainsFunc(d.Breaking, func(b string) bool {
+		return strings.Contains(b, `"~int" -> any (no type elements)`)
+	}) {
+		t.Fatalf("an emptied type set renders as unconstrained, not as an empty set: %q", d.Breaking)
 	}
 }

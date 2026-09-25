@@ -45,6 +45,18 @@ type Bytes interface {
 }
 
 type Plain interface{ Do() }
+
+type signed interface{ ~int | ~int64 }
+type float interface{ ~float64 }
+
+type Wrapped interface{ signed }
+
+type Either interface{ signed | float }
+
+type Eq interface {
+	comparable
+	error
+}
 `}))
 	if !doc.InterfaceTypeSets {
 		t.Fatal("documents must carry the interfaceTypeSets marker")
@@ -53,6 +65,12 @@ type Plain interface{ Do() }
 		"example.com/fixture/a.Number": {"~int | ~int64"},
 		"example.com/fixture/a.Bytes":  {"string | ~[]uint8"},
 		"example.com/fixture/a.Plain":  nil,
+		// 비공개 제약을 임베드하면 그 원소를 펼친다.
+		"example.com/fixture/a.Wrapped": {"~int | ~int64"},
+		// 유니언의 인터페이스 항도 펼친다.
+		"example.com/fixture/a.Either": {"~float64 | ~int | ~int64"},
+		// comparable은 특수 항목, 메서드만 있는 error 임베드는 원소가 없다.
+		"example.com/fixture/a.Eq": {"comparable"},
 	} {
 		v, _ := doc.VertexByID(id)
 		if !slices.Equal(v.TypeSet, want) {

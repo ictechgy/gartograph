@@ -11,6 +11,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
 	"sort"
 	"strings"
 
@@ -179,37 +180,96 @@ func interfaceMethods(iface *types.Interface) []string {
 	return out
 }
 
-// interfaceTypeSet은 제약 인터페이스의 명시적 타입 원소를 정렬된 항목으로 적는다 — 유니언은
-// 항을 정렬해 " | "로 잇고(~ 포함), 비인터페이스 타입 원소는 그 타입이다. 임베드한
-// 인터페이스는 건너뛴다 — 그 타입 집합은 그 인터페이스 정점의 사실이다. 원소가 없으면 nil.
+// interfaceTypeSet은 제약 인터페이스의 실효 타입 원소를 정렬된 항목으로 적는다 — 원소마다
+// 한 항목이고 항목들은 교집합이다. 임베드한 인터페이스(이름 있는 제약·비공개 포함)는 그
+// 원소를 펼쳐 합친다 — 공개 제약이 비공개 제약을 임베드하면 그쪽 변경도 공개 계약의
+// 변경이고, interface{ cmp.Ordered }로 바꾸는 동치 리팩터가 거짓 변경이 되지 않는다.
+// 유니언은 항을 정렬해 " | "로 잇고, 유니언 안의 인터페이스 항은 펼친다(unionEntry).
+// comparable은 특수 항목으로 남기고, 메서드만 있는 임베드(error 등)는 원소가 없다.
+// 재귀 대신 명시적 스택이다(cycles 자기 분석). 원소가 없으면 nil.
 func interfaceTypeSet(iface *types.Interface) []string {
 	var out []string
-	for i := 0; i < iface.NumEmbeddeds(); i++ {
-		switch et := iface.EmbeddedType(i).(type) {
-		case *types.Union:
-			out = append(out, unionEntry(et))
+	stack := embeddedElements(iface)
+	for len(stack) > 0 {
+		et := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		switch {
+		case isComparable(et):
+			out = append(out, "comparable")
+		case isUnion(et):
+			out = append(out, unionEntry(et.(*types.Union)))
+		case types.IsInterface(et):
+			stack = append(stack, embeddedElements(et.Underlying().(*types.Interface))...)
 		default:
-			if !types.IsInterface(et) {
-				out = append(out, canonicalType(et))
-			}
+			out = append(out, canonicalType(et))
 		}
 	}
 	sort.Strings(out)
+	return slices.Compact(out)
+}
+
+// embeddedElements는 인터페이스의 명시적 임베드 원소들이다.
+func embeddedElements(iface *types.Interface) []types.Type {
+	out := make([]types.Type, iface.NumEmbeddeds())
+	for i := range out {
+		out[i] = types.Unalias(iface.EmbeddedType(i))
+	}
 	return out
 }
 
-// unionEntry는 유니언의 항을 정규 표기로 정렬해 잇는다.
+// isComparable은 universe comparable인지 본다.
+func isComparable(t types.Type) bool {
+	n, ok := t.(*types.Named)
+	return ok && n.Obj().Pkg() == nil && n.Obj().Name() == "comparable"
+}
+
+// isUnion은 유니언 원소인지 본다.
+func isUnion(t types.Type) bool {
+	_, ok := t.(*types.Union)
+	return ok
+}
+
+// unionEntry는 유니언의 항을 정규 표기로 정렬해 잇는다. 인터페이스 항(signed | float)은
+// 그 인터페이스가 유니언 하나로만 이뤄졌으면 그 항들로 펼친다 — 이름 있는 제약의 변경이
+// 그것을 항으로 쓰는 공개 제약의 변경으로 보이게. 여러 원소(교집합)인 인터페이스 항은 유니언
+// 항으로 펼칠 수 없어 이름을 남긴다.
 func unionEntry(u *types.Union) string {
-	terms := make([]string, u.Len())
-	for i := range terms {
-		term := u.Term(i)
-		terms[i] = canonicalType(term.Type())
-		if term.Tilde() {
-			terms[i] = "~" + terms[i]
+	var terms []string
+	stack := []*types.Term{}
+	for i := 0; i < u.Len(); i++ {
+		stack = append(stack, u.Term(i))
+	}
+	for len(stack) > 0 {
+		term := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if inner := soleUnion(term.Type()); inner != nil {
+			for i := 0; i < inner.Len(); i++ {
+				stack = append(stack, inner.Term(i))
+			}
+			continue
 		}
+		terms = append(terms, termString(term))
 	}
 	sort.Strings(terms)
-	return strings.Join(terms, " | ")
+	return strings.Join(slices.Compact(terms), " | ")
+}
+
+// soleUnion은 메서드 없이 유니언 원소 하나로만 이뤄진 인터페이스면 그 유니언을 돌려준다.
+func soleUnion(t types.Type) *types.Union {
+	iface, ok := types.Unalias(t).Underlying().(*types.Interface)
+	if !ok || iface.NumMethods() != 0 || iface.NumEmbeddeds() != 1 {
+		return nil
+	}
+	u, _ := types.Unalias(iface.EmbeddedType(0)).(*types.Union)
+	return u
+}
+
+// termString은 유니언 항 하나의 정규 표기다(~ 포함).
+func termString(term *types.Term) string {
+	if term.Tilde() {
+		return "~" + canonicalType(term.Type())
+	}
+	return canonicalType(term.Type())
 }
 
 // structFields는 struct의 필드를 "name:Type" 형태로 선언 순서대로 적는다.

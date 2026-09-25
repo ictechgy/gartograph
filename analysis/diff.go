@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -309,6 +310,10 @@ func isExportedName(name string) bool {
 // 소비자의 인스턴스화가, 넓히면 그 제약을 쓰는 소비자 제네릭 본문(허용 연산)이 깨질 수 있다.
 // 두 문서 모두 표시(InterfaceTypeSets)가 있어야 비교한다 — 옛 문서의 부재는 "몰랐다"다.
 func diffTypeSets(d *Diff, old, new *graph.Document) {
+	if old.InterfaceTypeSets != new.InterfaceTypeSets {
+		d.Notes = append(d.Notes, "one document lacks interface type sets (interfaceTypeSets) — "+
+			"constraint type sets were not compared; re-harvest both to compare them")
+	}
 	if !old.InterfaceTypeSets || !new.InterfaceTypeSets {
 		return
 	}
@@ -319,9 +324,24 @@ func diffTypeSets(d *Diff, old, new *graph.Document) {
 		if ov == nil || !ov.Interface || !nv.Interface || !nv.Exported || slices.Equal(ov.TypeSet, nv.TypeSet) {
 			continue
 		}
-		d.Breaking = append(d.Breaking, fmt.Sprintf("exported constraint %s changed type set: %v -> %v — "+
-			"instantiations or generic code may no longer compile", nv.ID, ov.TypeSet, nv.TypeSet))
+		d.Breaking = append(d.Breaking, fmt.Sprintf("exported constraint %s changed type set: %s -> %s — "+
+			"instantiations or generic code may no longer compile", nv.ID, renderTypeSet(ov.TypeSet),
+			renderTypeSet(nv.TypeSet)))
 	}
+}
+
+// renderTypeSet은 타입 집합 항목(교집합)을 따옴표로 감싸 "; "로 잇는다 — 항목 안에도
+// 공백과 " | "가 있어 경계를 보이게 한다. 항목이 없으면 제약이 없다는 뜻(any)이지 공집합이
+// 아니다.
+func renderTypeSet(set []string) string {
+	if len(set) == 0 {
+		return "any (no type elements)"
+	}
+	quoted := make([]string, len(set))
+	for i, e := range set {
+		quoted[i] = strconv.Quote(e)
+	}
+	return strings.Join(quoted, "; ")
 }
 
 // diffIfaceMethods는 공개 인터페이스의 메서드 집합이 늘어난 변경을 breaking으로 잡는다
