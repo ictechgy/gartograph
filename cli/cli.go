@@ -501,7 +501,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		for _, r := range roots {
 			rootSet[r] = true
 		}
-		rtaSet, err := source.RTAReachable(*opts, rootSet)
+		rtaSet, err := source.RTAReachable(*opts, doc, rootSet)
 		if err != nil {
 			return fail(stderr, err)
 		}
@@ -647,7 +647,7 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 		for _, r := range roots {
 			rootSet[r] = true
 		}
-		adj, _, err := source.RTAAdjacency(opts, rootSet)
+		adj, _, err := source.RTAAdjacency(opts, doc, rootSet)
 		if err != nil {
 			return fail(stderr, err)
 		}

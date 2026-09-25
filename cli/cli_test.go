@@ -2459,11 +2459,17 @@ func main() {}
 	if strings.Contains(out, `"`+m+`.first"`) {
 		t.Fatalf("rta must keep a function called by a blank initializer: %s", out)
 	}
+	// 판정이 살렸으면 explain도 경로를 보여야 한다 — 합성 init은 pkg._로 옮겨진다.
+	_, out, _ = run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", m+".first")
+	if !strings.Contains(out, "root: "+m+"._") {
+		t.Fatalf("rta explain must show the blank-initializer root: %s", out)
+	}
 }
 
-// TestDeadRTAExplainSkipsCollidingID는 RTA 인접 맵이 점 경로 패키지와 ID가
-// 겹치는 함수를 경로에 싣지 않는지 확인한다 — "함수가 패키지를 호출한다"는 거짓이다.
-func TestDeadRTAExplainSkipsCollidingID(t *testing.T) {
+// TestDeadCollidingSymbol은 점 경로 패키지와 ID가 겹치는 함수가 접미사 ID로 남아
+// 그 피호출자가 dead로 보고되지 않고, CHA·RTA explain이 접미사 ID 경로를 보이며
+// 패키지 정점으로 "호출"하지 않는지 확인한다.
+func TestDeadCollidingSymbol(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
 		"go.mod": "module example.com/m\n\ngo 1.27\n",
 		"main.go": `package main
@@ -2475,11 +2481,17 @@ import (
 
 func main() { x.Use(); xy.Other() }
 `,
-		"x/x.go":    "package x\n\nfunc y() {}\n\nfunc Use() { y() }\n",
+		"x/x.go":    "package x\n\nfunc y() { helper() }\n\nfunc helper() {}\n\nfunc Use() { y() }\n",
 		"x.y/xy.go": "package xy\n\nfunc Other() {}\n",
 	})
-	_, out, _ := run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/m/x.y")
-	if strings.Contains(out, "-> example.com/m/x.y\n") {
-		t.Fatalf("rta explain must not route a call to a package vertex: %s", out)
+	for _, algo := range []string{"cha", "rta"} {
+		code, out, errb := run(t, "dead", "--dir", dir, "--algo", algo)
+		if code != 0 || strings.Contains(out, "example.com/m/x.helper") {
+			t.Fatalf("%s: callee of a colliding function must stay reachable: %d %s %s", algo, code, out, errb)
+		}
+		_, out, _ = run(t, "dead", "--dir", dir, "--algo", algo, "--explain", "example.com/m/x.helper")
+		if !strings.Contains(out, "-> example.com/m/x.y#symbol") || strings.Contains(out, "-> example.com/m/x.y\n") {
+			t.Fatalf("%s: explain must route through the suffixed ID, not the package: %s", algo, out)
+		}
 	}
 }

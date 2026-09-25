@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/ictechgy/gartograph/graph"
+	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/callgraph/rta"
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
@@ -24,80 +26,119 @@ import (
 // 반환 집합에는 루트 자신도 포함된다 — 도달성 집합의 의미와 같다.
 // var·const·type 정점은 호출 그래프의 노드가 아니므로 집합에 나타나지
 // 않는다 — 비호출 심볼의 판정은 그래프 도달성이 담당한다.
-func RTAReachable(opts Options, roots map[string]bool) (map[string]bool, error) {
-	res, _, err := analyzeRTA(opts, roots)
+// doc은 ID 규칙의 기준이다 — 수확 문서와 같은 패키지 ID 집합으로 이름을 지어야
+// 접미사가 붙은 충돌 ID(collisionSuffix)가 두 그래프에서 같다.
+func RTAReachable(opts Options, doc *graph.Document, roots map[string]bool) (map[string]bool, error) {
+	namer := newRTANamer(doc, roots)
+	res, err := analyzeRTA(opts, namer)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]bool, len(res.Reachable))
-	for fn := range res.Reachable {
-		if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
-			out[objectID(obj)] = true
-		}
-	}
-	return out, nil
+	return namer.reachable(res), nil
 }
 
 // RTAAdjacency는 RTA 호출 그래프의 정점 ID 인접 맵과 도달 집합을 돌려준다.
 // 도달성만으로는 "왜 살아 있다고 봤나"에 답할 수 없다 — dead --explain
 // --algo rta가 CHA 수확 그래프가 아니라 실제 판정을 내린 그래프 위의
 // 경로를 보여주기 위한 장치다.
-func RTAAdjacency(opts Options, roots map[string]bool) (map[string][]string, map[string]bool, error) {
-	res, pkgPaths, err := analyzeRTA(opts, roots)
+func RTAAdjacency(opts Options, doc *graph.Document, roots map[string]bool) (map[string][]string, map[string]bool, error) {
+	namer := newRTANamer(doc, roots)
+	res, err := analyzeRTA(opts, namer)
 	if err != nil {
 		return nil, nil, err
 	}
-	reach := make(map[string]bool, len(res.Reachable))
-	for fn := range res.Reachable {
-		if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
-			reach[objectID(obj)] = true
-		}
-	}
 	adj := map[string][]string{}
 	for fn, node := range res.CallGraph.Nodes {
-		if fn == nil || node == nil {
-			continue
-		}
-		fromObj := fn.Object()
-		if fromObj == nil || fromObj.Pkg() == nil {
-			continue
-		}
-		from := objectID(fromObj)
-		// 점 경로 패키지와 ID가 겹치는 함수는 문서에서 그 ID가 패키지 정점이다 —
-		// 경로에 실으면 "함수가 패키지를 호출한다"가 된다(수확기와 같은 규칙).
-		if pkgPaths[from] {
-			continue
-		}
-		seen := map[string]bool{}
-		for _, e := range node.Out {
-			if e.Callee == nil || e.Callee.Func == nil {
-				continue
-			}
-			toObj := e.Callee.Func.Object()
-			if toObj == nil || toObj.Pkg() == nil {
-				continue
-			}
-			to := objectID(toObj)
-			if !seen[to] && !pkgPaths[to] {
-				seen[to] = true
-				adj[from] = append(adj[from], to)
-			}
+		if from, ok := namer.name(fn); ok && node != nil {
+			adj[from] = append(adj[from], namer.callees(node)...)
 		}
 	}
 	// 결정성 — 맵 순회에 출력 순서를 맡기면 같은 입력이 다른 경로를 낸다.
-	for _, l := range adj {
-		sort.Strings(l)
+	for from, l := range adj {
+		adj[from] = uniqueSorted(l)
 	}
-	return adj, reach, nil
+	return adj, namer.reachable(res), nil
+}
+
+// uniqueSorted는 목록을 정렬하고 중복을 없앤다 — 합성 init과 사용자 함수가 같은
+// 정점 ID로 모일 수 있다.
+func uniqueSorted(in []string) []string {
+	sort.Strings(in)
+	out := in[:0]
+	for i, s := range in {
+		if i == 0 || s != in[i-1] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// rtaNamer는 SSA 함수를 문서 정점 ID로 옮긴다 — 수확과 같은 ID 규칙(disambiguate)을
+// 써야 두 그래프가 같은 정점을 가리킨다.
+type rtaNamer struct {
+	packageIDs map[string]bool
+	roots      map[string]bool
+}
+
+// newRTANamer는 문서의 패키지 정점 ID와 루트로 이름 규칙을 만든다.
+func newRTANamer(doc *graph.Document, roots map[string]bool) rtaNamer {
+	ids := map[string]bool{}
+	for _, v := range doc.Vertices {
+		if v.Kind == graph.KindPackage {
+			ids[v.ID] = true
+		}
+	}
+	return rtaNamer{packageIDs: ids, roots: roots}
+}
+
+// name은 함수의 정점 ID를 돌려준다. 합성 init은 Object가 없지만 패키지 변수
+// 초기화식을 실행하므로, 그 패키지의 빈 식별자 루트(pkg._)가 있으면 그 ID로
+// 옮긴다 — 판정은 살렸는데 explain이 "no path"라고 하는 모순을 막는다.
+func (n rtaNamer) name(fn *ssa.Function) (string, bool) {
+	if fn == nil {
+		return "", false
+	}
+	if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
+		return disambiguate(objectID(obj), n.packageIDs), true
+	}
+	if fn.Pkg != nil && fn.Pkg.Func("init") == fn {
+		blank := fn.Pkg.Pkg.Path() + "._"
+		return blank, n.roots[blank]
+	}
+	return "", false
+}
+
+// callees는 호출 그래프 노드의 피호출 정점 ID를 돌려준다.
+func (n rtaNamer) callees(node *callgraph.Node) []string {
+	var out []string
+	for _, e := range node.Out {
+		if e.Callee == nil {
+			continue
+		}
+		if to, ok := n.name(e.Callee.Func); ok {
+			out = append(out, to)
+		}
+	}
+	return out
+}
+
+// reachable은 RTA 도달 함수의 정점 ID 집합이다.
+func (n rtaNamer) reachable(res *rta.Result) map[string]bool {
+	out := make(map[string]bool, len(res.Reachable))
+	for fn := range res.Reachable {
+		if id, ok := n.name(fn); ok {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // analyzeRTA는 SSA를 만들고 주어진 루트에서 RTA를 실행한다.
 // 도달 집합과 인접 맵의 두 소비자가 같은 분석 결과를 나누기 위한 단위다.
-// 두 번째 값은 프로그램의 패키지 경로 집합이다 — 심볼 ID와 겹치는 경로를 거르는 재료.
-func analyzeRTA(opts Options, roots map[string]bool) (*rta.Result, map[string]bool, error) {
+func analyzeRTA(opts Options, namer rtaNamer) (*rta.Result, error) {
 	pkgs, err := loadSSA(opts)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	prog, ssaPkgs := ssautil.AllPackages(pkgs, ssa.InstantiateGenerics)
 	prog.Build()
@@ -105,29 +146,25 @@ func analyzeRTA(opts Options, roots map[string]bool) (*rta.Result, map[string]bo
 	var rootFns []*ssa.Function
 	for _, sp := range ssaPkgs {
 		if sp != nil && sp.Pkg != nil {
-			rootFns = append(rootFns, packageRootFns(sp, roots)...)
+			rootFns = append(rootFns, namer.packageRootFns(sp)...)
 		}
 	}
-	pkgPaths := map[string]bool{}
-	for _, sp := range prog.AllPackages() {
-		pkgPaths[sp.Pkg.Path()] = true
-	}
-	return rta.Analyze(rootFns, true), pkgPaths, nil
+	return rta.Analyze(rootFns, true), nil
 }
 
 // packageRootFns는 SSA 패키지에서 루트 정점에 해당하는 함수를 고른다.
-// 빈 식별자 루트(pkg._)가 있으면 합성 init을 더한다 — 패키지 변수 초기화식은
-// 합성 init이 실행하고, 그 함수는 Object가 없어 ID로 짝지을 수 없다.
-func packageRootFns(sp *ssa.Package, roots map[string]bool) []*ssa.Function {
+// 빈 식별자 루트(pkg._)가 있으면 합성 init이 name으로 그 ID가 되어 함께 잡힌다 —
+// 패키지 변수 초기화식은 합성 init이 실행한다.
+func (n rtaNamer) packageRootFns(sp *ssa.Package) []*ssa.Function {
 	var out []*ssa.Function
 	for _, member := range sp.Members {
 		fn, ok := member.(*ssa.Function)
-		if ok && fn.Object() != nil && roots[objectID(fn.Object())] {
+		if !ok {
+			continue
+		}
+		if id, named := n.name(fn); named && n.roots[id] {
 			out = append(out, fn)
 		}
-	}
-	if init := sp.Func("init"); init != nil && roots[sp.Pkg.Path()+"._"] {
-		out = append(out, init)
 	}
 	return out
 }
