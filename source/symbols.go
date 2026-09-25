@@ -167,13 +167,13 @@ func interfaceMethods(iface *types.Interface) []string {
 
 // structFields는 struct의 필드를 "name:Type" 형태로 선언 순서대로 적는다.
 // unkeyed composite literal은 필드 목록·순서·타입이 계약이라 이 셋이
-// 곧 호환성 판정의 단위다. 타입 문자열은 패키지 경로 정규화를 써서
-// 같은 이름의 다른 타입을 섞지 않는다.
+// 곧 호환성 판정의 단위다. 타입은 정규 표기(canonicalType)다 — 경로로 한정해
+// 같은 이름의 다른 타입을 섞지 않고, 별칭·byte 표기 차이로 거짓 변경을 내지 않는다.
 func structFields(st *types.Struct) []string {
 	out := make([]string, st.NumFields())
 	for i := range out {
 		f := st.Field(i)
-		out[i] = f.Name() + ":" + types.TypeString(f.Type(), nil)
+		out[i] = f.Name() + ":" + canonicalType(f.Type())
 	}
 	return out
 }

@@ -223,27 +223,18 @@ func methodSetName(iface *types.Interface) string {
 // methodEntry는 인터페이스 메서드 하나를 "Name(params) results"로 적는다 — 파라미터
 // 이름을 빼야 이름만 바뀐 같은 메서드가 다른 항목이 되지 않는다. 비공개 메서드는
 // 패키지 경로로 한정한다 — 다른 패키지의 같은 이름은 다른 메서드다.
+// 타입은 정규 표기(canonicalType)다 — 별칭·byte/uint8·타입 파라미터 이름 차이가 같은
+// 메서드를 다른 항목으로 만들지 않게.
 func methodEntry(m *types.Func) string {
-	name := m.Name()
-	if !m.Exported() && m.Pkg() != nil {
-		name = m.Pkg().Path() + "." + name
+	var b strings.Builder
+	for _, part := range methodEntryParts(m) {
+		if s, ok := part.(string); ok {
+			b.WriteString(s)
+		} else {
+			b.WriteString(canonicalType(part.(types.Type)))
+		}
 	}
-	return name + strings.TrimPrefix(types.TypeString(unnamedSignature(m.Signature()), nil), "func")
-}
-
-// unnamedSignature는 파라미터·결과 이름을 뺀 같은 서명을 만든다.
-func unnamedSignature(sig *types.Signature) *types.Signature {
-	return types.NewSignatureType(nil, nil, nil,
-		unnamedTuple(sig.Params()), unnamedTuple(sig.Results()), sig.Variadic())
-}
-
-// unnamedTuple은 튜플의 각 변수를 이름 없는 변수로 바꾼다.
-func unnamedTuple(t *types.Tuple) *types.Tuple {
-	vars := make([]*types.Var, t.Len())
-	for i := range vars {
-		vars[i] = types.NewParam(token.NoPos, nil, "", t.At(i).Type())
-	}
-	return types.NewTuple(vars...)
+	return b.String()
 }
 
 // interfaceLiterals는 파일에서 메서드·임베드 요소가 있는 인터페이스 표기를 모은다.
