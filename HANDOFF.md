@@ -2,7 +2,20 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — 정점 ID 충돌·빈 식별자 초기화식 (2026-09-25, fix/object-id-collision)
+## 최근 완료 — diff·baseline의 충돌 ID 짝짓기 (2026-09-25, fix/collision-id-pairing)
+
+충돌 접미사는 수확 패키지 집합에 따라 붙고 떨어져서, 형제 `x.V2/` 추가만으로 `diff
+--strict`가 거짓 breaking(`x.V2` 제거·kind 변경)을, `--tests` 유무가 다른 baseline이
+fresh/stale을 냈다(PR #19 3차 리뷰 LOW).
+- 규칙을 `graph`로 옮김: `graph.CollisionSuffix`·`graph.CanonicalID`(source가 붙이고
+  analysis가 뗀다).
+- diff: 문서 사이 짝짓기는 `vertexKey`(패키지는 ID 그대로, 심볼은 정규 ID — 한 문서에
+  패키지 x.y와 심볼 x.y#symbol이 함께 있을 수 있어 범주를 키에 넣음), 한 문서 안
+  조회는 `verticesByID`, 출력은 새 문서의 실제 ID. 간선 키도 끝점을 정규화.
+- baseline: `FindingBaselineKey`·`CycleBaselineKey`·`ViolationBaselineKey`(From/To)가
+  정규 ID. 파일은 항목을 저장하고 키는 비교 시 계산하므로 옛 baseline에도 적용된다.
+
+## 이전 완료 — 정점 ID 충돌·빈 식별자 초기화식 (2026-09-25, PR #19 머지)
 
 리뷰 LOW로 남았던 `objectID` 충돌을 재현했다(fixture `idCollisionFixture`).
 - **점 경로 충돌(재현)**: 패키지 `example.com/m/x.y`와 `x`의 심볼 `y`가 같은 ID.
@@ -126,10 +139,6 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 `schema`는 발행본에 없는 main 기능이다.
 
 다음 후보:
-- 충돌 ID는 수확된 패키지 집합에 따라 달라진다(3차 리뷰 LOW) — 형제 `x.V2/` 추가만으로
-  `diff`가 `x.V2` 제거·`x.V2#symbol` 추가(거짓 breaking)를, `--tests` 유무가 다른
-  baseline이 fresh/stale을 낸다. README에 명시만 했다. 고치려면 diff·baseline이
-  `ID`와 `ID#symbol`을 (Package·Name·Kind)로 짝지어야 한다.
 - RTA의 합성 init 루트 여부가 그 패키지의 `var _` 유무에 좌우된다(3차 리뷰 LOW) —
   원칙적으로는 deadcode처럼 main 패키지의 합성 init을 루트로 삼아야 한다(모든
   import의 init을 전이 실행). 아래 "이름 있는 변수 초기화식" 후보와 같은 뿌리.

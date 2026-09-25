@@ -263,8 +263,8 @@ gartograph dead   --baseline .dead-baseline.json --strict
 심볼 ID(`example.com/m/x`의 `y`·`test`)와 같아질 수 있습니다 — 그렇게 겹치는 심볼
 ID에만 `#symbol` 접미사가 붙습니다(`example.com/m/x.y#symbol`). `#`는 import 경로에
 쓸 수 없어 패키지는 경로 그대로이고 다른 ID는 바뀌지 않습니다. 접미사는 수확된 패키지
-집합에 따라 붙으므로 `--tests`·`--deps`·`exclude` 설정이나 형제 `x.y/` 디렉터리 추가로
-같은 심볼의 ID가 달라질 수 있습니다 — 문서·baseline은 같은 방식으로 수확해 비교하세요.
+집합(형제 `x.y/` 디렉터리, `--tests`·`--deps`·`exclude`)에 따라 붙으므로 `diff`와
+baseline은 `ID`와 `ID#symbol`을 같은 심볼로 짝짓습니다.
 `dead --algo rta --explain`은 합성 패키지 초기화 함수 `pkgpath#init`(그래프 정점 아님)을
 거칠 수 있습니다. `// Code generated ... DO NOT EDIT.`
 마커 파일 출신 정점은 `generated: true`를 답니다 — 숨기지 않고 표시합니다.
