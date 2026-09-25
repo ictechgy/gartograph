@@ -291,7 +291,8 @@ breaking으로 분류하는 재료입니다.
 문서는 `interfaceMethodSets: true`를 싣습니다 — 이 표시가 없으면 목록 부재는 "몰랐다",
 있으면 "메서드 없음"입니다. `fields`·`methods`의 타입은 정규 표기입니다(별칭을 풀고
 `byte`→`uint8`, 타입 파라미터는 선언 위치 `P0`…) — 표기만 바뀐 리팩터가 거짓 breaking이 되지
-않게. 제약 인터페이스는 `typeSet`(명시적 타입 원소마다 한 항목, 유니언 항 정렬 — 표시
+않게. 제약 인터페이스는 `typeSet`(실효 타입 원소의 교집합 — 임베드한 제약(비공개 포함)과
+유니언의 인터페이스 항을 펼치고, 항을 정렬하고, `comparable`은 항목으로 남김 — 표시
 `interfaceTypeSets: true`)도 담고, `diff`는 공개 제약의 타입 집합이 바뀌면 breaking으로
 봅니다(좁히면 인스턴스화가, 넓히면 허용 연산에 기댄 제네릭 코드가 깨질 수 있음).
 간선 종류: `import`/`contains`/`embeds`/`implements`/`references`/`call`/

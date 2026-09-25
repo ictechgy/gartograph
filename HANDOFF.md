@@ -6,12 +6,20 @@
 
 메서드 집합 사실만으로는 제약 인터페이스의 좁힘·넓힘(`~int | ~int64` → `~int`)이 안 보였다
 (PR #23 README에 한계로 적었던 것).
-- 인터페이스 정점 `typeSet`: 명시적 타입 원소마다 한 항목(유니언 항은 정규 표기로 정렬해
-  " | "로 — 순서·별칭 차이 무시, 비인터페이스 원소는 그 타입, 임베드 인터페이스는 그 정점의
-  사실이라 건너뜀). 문서 표시 `interfaceTypeSets`.
+- 인터페이스 정점 `typeSet`: **실효** 타입 원소(교집합)를 원소마다 한 항목으로 — 임베드한
+  인터페이스(이름 있는·비공개 제약 포함)는 펼쳐 합치고, 유니언 안 인터페이스 항(`signed | float`)은
+  그 유니언 항으로 치환(`soleUnion`), `comparable`은 특수 항목, 메서드만 있는 임베드(error)는 원소
+  없음. 유니언 항은 정규 표기로 정렬(순서·별칭 무시). 명시적 스택(재귀 없음). 문서 표시
+  `interfaceTypeSets`. 리뷰(REQUEST CHANGES) 반영 — 처음엔 임베드를 건너뛰어 공개 제약이 쓰는
+  비공개 제약의 변경을 놓쳤고, `interface{ cmp.Ordered }`로 바꾸는 동치 리팩터가 "-> []" 거짓
+  breaking이었다.
 - diff(`diffTypeSets`): 두 문서 모두 표시가 있으면 공개 제약의 타입 집합 변경을 breaking.
   좁히면 인스턴스화, 넓히면 허용 연산에 기댄 제네릭 본문이 깨질 수 있어 방향 구분 없이.
-- 인라인 제약(`[D decimal.Decimal | decimal.NullDecimal]`)은 인터페이스 정점이 아니라 대상 밖.
+- diff 출력: 항목은 따옴표로 감싸 "; "로 잇고 빈 집합은 "any (no type elements)"(공집합 아님).
+  한쪽 문서에만 표시가 있으면 "were not compared" note.
+- 남은 한계: 여러 원소 교집합의 동치 재작성(`~int | ~string; ~int` → `~int`)은 여전히 변경으로
+  보고된다(드묾). 인라인 제약(`[D decimal.Decimal | decimal.NullDecimal]`)은 인터페이스 정점이
+  아니라 대상 밖.
 
 ## 이전 완료 — CHA 팬아웃: struct 임베드 인터페이스·제네릭 인스턴스 (2026-09-25, PR #29 머지)
 

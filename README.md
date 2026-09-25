@@ -332,11 +332,14 @@ entries — without the marker an absent list means "not harvested", with it
 "no methods"). Types in `fields` and `methods` are canonical — aliases
 resolved, `byte`→`uint8`, type parameters by position (`P0`…) — so a
 spelling-only refactor (`interface{}`→`any`, renaming `T`→`E`) is not a
-breaking change. Constraint interfaces also carry `typeSet` (one sorted
-entry per explicit type element, union terms sorted — marker
-`interfaceTypeSets: true`); `diff` reports an exported constraint whose type
-set changed (narrowing breaks instantiations, widening can break generic
-code relying on the allowed operations).
+breaking change. Constraint interfaces also carry `typeSet` — the effective
+type elements (an intersection), with embedded constraints (unexported ones
+included) and interface union terms flattened, union terms sorted,
+`comparable` kept as an entry (marker `interfaceTypeSets: true`). `diff`
+reports an exported constraint whose type set changed (narrowing breaks
+instantiations, widening can break generic code relying on the allowed
+operations); an empty set renders as `any`. Equivalent rewrites of a
+multi-element intersection may still be reported.
 
 Edges carry `positions` — every source site where the relation holds
 (import decls for `import`, call expressions for `call`, and so on).
