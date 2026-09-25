@@ -101,7 +101,9 @@ gartograph unused-deps --strict
 
 # Compare two saved documents: structure drift and breaking signals
 # breaking = exported symbol removed/unexported, kind changed, signature
-# reference dropped, interface gained a method, struct field contract
+# reference dropped, interface gained a method (declared, through an
+# embedded module interface, or by newly embedding one — embedding an
+# interface from outside the module is not visible), struct field contract
 # broken, exported const value changed
 gartograph diff old.json new.json --strict
 

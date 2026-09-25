@@ -2543,3 +2543,42 @@ func TestDeadSideEffectInitializers(t *testing.T) {
 		t.Fatalf("rta explain must show the initializer path: %s", out)
 	}
 }
+
+// TestDiffInterfaceGainedMethodHarvested는 실제 수확 문서로 인터페이스 메서드 추가가
+// breaking으로 잡히는지 확인한다 — 수확기는 메서드 contains를 패키지에서 긋는데,
+// 판정이 인터페이스 타입에서 나가는 contains만 보면 한 번도 작동하지 않는다.
+func TestDiffInterfaceGainedMethodHarvested(t *testing.T) {
+	v1 := testutil.WriteModule(t, map[string]string{
+		"a/a.go": "package a\n\ntype I interface{ Do() }\n",
+	})
+	v2 := testutil.WriteModule(t, map[string]string{
+		"a/a.go": "package a\n\ntype I interface {\n\tDo()\n\tRun()\n}\n",
+	})
+	tmp := t.TempDir()
+	oldPath, newPath := filepath.Join(tmp, "old.json"), filepath.Join(tmp, "new.json")
+	for dir, out := range map[string]string{v1: oldPath, v2: newPath} {
+		if code, _, errb := run(t, "graph", "--level", "symbol", "--dir", dir, "--out", out); code != 0 {
+			t.Fatalf("graph failed: %d %s", code, errb)
+		}
+	}
+	code, out, _ := run(t, "diff", oldPath, newPath, "--strict")
+	if code != 1 || !strings.Contains(out, "gained method Run") {
+		t.Fatalf("interface method addition must be breaking on harvested documents: %d %s", code, out)
+	}
+	// 비공개 임베드 인터페이스가 메서드를 얻어도 공개 임베더가 깨진다.
+	e1 := testutil.WriteModule(t, map[string]string{
+		"a/a.go": "package a\n\ntype j interface{ M() }\n\ntype I interface{ j }\n",
+	})
+	e2 := testutil.WriteModule(t, map[string]string{
+		"a/a.go": "package a\n\ntype j interface {\n\tM()\n\tN()\n}\n\ntype I interface{ j }\n",
+	})
+	for dir, out := range map[string]string{e1: oldPath, e2: newPath} {
+		if code, _, errb := run(t, "graph", "--level", "symbol", "--dir", dir, "--out", out); code != 0 {
+			t.Fatalf("graph failed: %d %s", code, errb)
+		}
+	}
+	code, out, _ = run(t, "diff", oldPath, newPath, "--strict")
+	if code != 1 || !strings.Contains(out, "a.I gained method N via embedded") {
+		t.Fatalf("a method gained through an embedded interface must be breaking: %d %s", code, out)
+	}
+}

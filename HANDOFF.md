@@ -2,7 +2,23 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — 패키지 변수 초기화식을 실행 지점으로 (2026-09-25, fix/package-initializer-roots)
+## 최근 완료 — diff의 인터페이스 메서드 추가 판정 복구 (2026-09-25, fix/interface-method-breaking)
+
+PR #20 리뷰가 찾은 기존 결함: 수확기는 메서드 contains를 패키지에서 긋는데
+`diffIfaceMethods`는 인터페이스 타입에서 나가는 contains만 봐서, 실제 수확 문서에서는
+"공개 인터페이스 메서드 추가 = breaking"(README 약속)이 한 번도 작동하지 않았다.
+손으로 만든 타입→메서드 간선 테스트만 있어 못 잡았다.
+- 판정을 새 메서드 정점 기준으로: 소유자는 ID(`pkgpath.(I).M`, README 계약)에서
+  `graph.MemberOwner`로, 충돌 접미사 형태도 조회(`ownerVertex`). 소유 인터페이스가
+  공개이고 옛 문서에도 있어야 breaking.
+- 실제 수확 문서 회귀 `TestDiffInterfaceGainedMethodHarvested`(수정 전 exit 0).
+- 리뷰 반영: 임베드 경로 — 비공개 임베드 인터페이스가 메서드를 얻으면 그것을
+  (전이적으로) 임베드한 기존 공개 인터페이스로 전파(worklist), 기존 공개 인터페이스가
+  새로 인터페이스를 임베드하면 breaking. 모듈 밖 인터페이스 임베드(`io.Reader`)는
+  외부 간선이 생략돼 여전히 못 본다(README 명시). 판정 조건마다 정확 비교 테스트 —
+  변이 9개 전부 잡힘. `MethodOwner` → `MemberOwner`(필드 ID도 받는다).
+
+## 이전 완료 — 패키지 변수 초기화식을 실행 지점으로 (2026-09-25, PR #21 머지)
 
 `var registered = register()`에서 `registered`를 아무도 읽지 않으면 초기화 때
 실행되는 `register`가 dead였다(CHA). RTA는 합성 init을 그 패키지에 `var _`가 있을 때만
@@ -23,7 +39,7 @@
   (리뷰 확인). 그 규칙은 `pkg._`를 걷어낸 문서로 `TestRTARootsEverySyntheticInit`가 지킨다.
 - 곁다리: PR #19가 남긴 고아 테스트 헬퍼 `containsLimitation`을 `dead --tests`가 잡아 제거.
 
-## 이전 완료 — diff·baseline의 충돌 ID 짝짓기 (2026-09-25, fix/collision-id-pairing)
+## 이전 완료 — diff·baseline의 충돌 ID 짝짓기 (2026-09-25, PR #20 머지)
 
 충돌 접미사는 수확 패키지 집합에 따라 붙고 떨어져서, 형제 `x.V2/` 추가만으로 `diff
 --strict`가 거짓 breaking(`x.V2` 제거·kind 변경)을, `--tests` 유무가 다른 baseline이
@@ -37,9 +53,6 @@ fresh/stale을 냈다(PR #19 3차 리뷰 LOW).
   정규 ID. 파일은 항목을 저장하고 키는 비교 시 계산하므로 옛 baseline에도 적용된다.
 - signature 목표도 정규 ID로 비교하되 각 문서의 실제 ID로 보고(added는 새 문서, removed는
   옛 문서) — 정규 ID는 형제 `x.U/`가 있으면 패키지 정점을 가리킨다(리뷰 LOW).
-- 리뷰가 찾은 **기존 결함(범위 밖, 다음 작업)**: 수확기가 메서드 contains를 패키지에서
-  긋는데 `diffIfaceMethods`는 인터페이스 타입에서 나가는 contains만 봐서, 실제 수확
-  문서에서는 "인터페이스 메서드 추가 = breaking" 판정이 한 번도 작동하지 않는다.
 
 ## 이전 완료 — 정점 ID 충돌·빈 식별자 초기화식 (2026-09-25, PR #19 머지)
 
