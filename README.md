@@ -333,10 +333,15 @@ rapid type analysis — narrower, source-only, and it under-approximates:
 the report says so in `limitations`.
 
 Vertex IDs: `pkg/path` for packages, `pkg/path.Name` for package-level
-symbols, `pkg/path.(Recv).Name` for methods. All blank `var _`/`const _`
-declarations of a package share one retention-root vertex `pkg/path._`
-(initializers run at program init, and `var _ I = (*T)(nil)` uses `T` and
-`I`), like `init`. A package path with a dot (`example.com/m/x.y`, or the
+symbols, `pkg/path.(Recv).Name` for methods. Each package has at most one
+package-initialization root vertex `pkg/path._`, like `init`: it references
+what blank `var _`/`const _` declarations use (`var _ I = (*T)(nil)` uses
+`T` and `I`) and what named variable initializers that execute a call use
+(`var registered = register()` runs `register` at init even if `registered`
+is never read). Initializers without a call (a table of function values,
+conversions, builtins, function-literal bodies) stay behind their variable.
+`dead --algo rta` roots every package's synthetic initializer for the same
+reason. A package path with a dot (`example.com/m/x.y`, or the
 `--tests` main package `x.test`) can equal a symbol ID (`y` or `test` in
 `example.com/m/x`); only such colliding symbol IDs get a `#symbol` suffix
 (`example.com/m/x.y#symbol`) — `#` cannot appear in an import path, so the
