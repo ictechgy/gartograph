@@ -337,7 +337,16 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
   전용 심볼이 여전히 dead — 재수확 권고 표지 없음(리뷰 LOW 2회). `anonymousDispatch`
   같은 문서 표시가 선례.
 
-## 현재 상태 (2026-09-24)
+## 현재 상태 (2026-09-25)
+
+**v0.8.0 릴리스 진행** — PR #15~#30(ID 명령 symbol 기본, 이름 없는 인터페이스·satisfies 정리,
+점 경로 ID 충돌 `#symbol`, 초기화 루트 `pkg._`, diff의 인터페이스 메서드·메서드 집합·제약 타입
+집합, RTA 메서드 루트·인터페이스 메서드·합성 init, CHA 팬아웃 보강, JSON 빈 목록 `[]`, universe
+임베드 패닉 수정). 새 문서 필드: `anonymousDispatch`·`initializerRoots`·`interfaceMethodSets`·
+`interfaceTypeSets`(문서), `methods`·`typeSet`(인터페이스 정점). 문서 Version은 2 그대로(모두
+omitempty). tap은 여전히 수동 갱신(HOMEBREW_TAP_TOKEN 미설정).
+
+**이전: v0.7.0**
 
 **v0.7.0 릴리스·Homebrew tap 배포 완료** — 경쟁 비교 잔여 5종
 (dead exported 분류·keep 어노테이션·필드 dead·metrics A/D·limits)이
