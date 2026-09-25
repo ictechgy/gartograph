@@ -133,11 +133,12 @@ func (h *harvester) addSatisfies(fn *types.Func, ifaceName string, index map[str
 	if fn.Pkg() == nil {
 		return
 	}
-	i, ok := index[objectID(fn)]
+	i, ok := index[h.id(fn)]
 	if !ok {
 		return
 	}
 	receiver, ok := receiverTypeID(fn)
+	receiver = disambiguate(receiver, h.packageIDs)
 	if _, exists := index[receiver]; !ok || !exists {
 		return
 	}
@@ -146,23 +147,7 @@ func (h *harvester) addSatisfies(fn *types.Func, ifaceName string, index map[str
 		return
 	}
 	v.Satisfies = append(v.Satisfies, ifaceName)
-	if h.packageIDs[receiver] {
-		h.rootCollidingReceiver(v.ID)
-		return
-	}
 	v.Receiver = receiver
-}
-
-// rootCollidingReceiver는 리시버 타입 ID가 점 경로 패키지 ID와 겹친 메서드를
-// 보존 루트로 둔다. 그 ID는 패키지 정점을 가리켜 Receiver로 쓸 수 없다 —
-// "패키지가 도달하면 메서드도 도달"은 거짓 규칙이다. 그렇다고 사실을 버리면
-// 외부 디스패치로 살아 있는 메서드가 dead로 보고된다(과소 근사). 그래서 살리는
-// 쪽으로 기울이고 그 수를 충돌 limitation에 싣는다.
-func (h *harvester) rootCollidingReceiver(methodID string) {
-	if !h.roots[methodID] {
-		h.collidedRoots++
-	}
-	h.root(methodID)
 }
 
 // receiverTypeID는 메서드 리시버의 명명 타입 정점 ID를 만든다.

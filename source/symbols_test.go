@@ -537,19 +537,12 @@ func MakeErr() error { return &Z{} }
 
 func Zed() {}
 `,
-		// 충돌 심볼을 참조하지 않는 테스트 — --tests에서 x를 두 변형으로 돌게만 한다.
-		"x/x_test.go": `package x
-
-import "testing"
-
-func TestNothing(t *testing.T) {}
-`,
 	})
 }
 
-// TestSymbolIDCollidingWithPackage는 패키지 ID와 겹치는 심볼이 패키지 정점에
-// 간선을 덮어쓰지 않는지 확인한다. 겹친 심볼은 정점이 없고 그 사실이 limitation으로
-// 세어진다 — 함수가 패키지를 호출하는 간선은 거짓 사실이다.
+// TestSymbolIDCollidingWithPackage는 패키지 ID와 겹치는 심볼이 접미사 붙은 ID로
+// 제 정점·간선을 갖고, 패키지 정점에 간선을 얹지 않는지 확인한다. 함수가 패키지를
+// 호출하는 간선은 거짓 사실이고, 심볼을 빼면 그 피호출자가 dead가 된다.
 func TestSymbolIDCollidingWithPackage(t *testing.T) {
 	doc := loadSymbol(t, idCollisionFixture(t))
 	const pkg = "example.com/m/x.y"
@@ -560,52 +553,50 @@ func TestSymbolIDCollidingWithPackage(t *testing.T) {
 			t.Fatalf("symbol edge landed on package vertex %s: %+v", pkg, e)
 		}
 	}
-	if !hasEdge(doc, pkg, pkg+".Other", graph.EdgeContains) {
-		t.Fatal("the dotted package must still contain its own symbols")
+	sym := pkg + collisionSuffix
+	if v, ok := doc.VertexByID(sym); !ok || v.Kind != graph.KindFunc {
+		t.Fatalf("colliding symbol must keep a vertex under %s, got %+v", sym, v)
 	}
-	// 리시버 타입이 패키지 ID와 겹치면 외부 디스패치 Receiver가 패키지를 가리키게
-	// 된다 — "패키지가 도달하면 메서드도 도달"은 거짓 규칙이다.
-	// 대신 메서드는 satisfies를 유지한 채 보존 루트가 된다 — 리시버 규칙을 못 거는
-	// 메서드를 죽었다고 하면 과소 근사다.
+	if !hasEdge(doc, "example.com/m/x.Use", sym, graph.EdgeCall) ||
+		!hasEdge(doc, "example.com/m/x", sym, graph.EdgeContains) {
+		t.Fatal("colliding symbol must keep its edges under the suffixed ID")
+	}
+	// 리시버 타입도 같은 규칙 — 외부 디스패치 Receiver가 타입 정점을 가리킨다.
 	zerr, _ := doc.VertexByID("example.com/m/x.(Z).Error")
-	if zerr.Receiver == "example.com/m/x.Z" {
-		t.Fatalf("receiver must not point at a colliding package vertex: %+v", zerr)
-	}
-	if !slices.Contains(zerr.Satisfies, "error") || !slices.Contains(doc.Roots, zerr.ID) {
-		t.Fatalf("method of a colliding type must keep satisfies and become a root: %+v roots=%v",
-			zerr, doc.Roots)
-	}
-	if !containsLimitation(doc, "share their vertex ID with a package") {
-		t.Fatalf("colliding symbols must be counted, got %v", doc.Limitations)
+	if zerr.Receiver != "example.com/m/x.Z"+collisionSuffix || !slices.Contains(zerr.Satisfies, "error") {
+		t.Fatalf("receiver must point at the suffixed type vertex: %+v", zerr)
 	}
 }
 
-// TestCollisionLimitationCountsDistinctEdges는 충돌 limitation이 호출 횟수가 아니라
-// 서로 다른 간선 수를 세는지 확인한다 — --tests는 같은 패키지를 두 변형으로
-// 돌지만 간선은 같으므로 문장도 같아야 한다.
-func TestCollisionLimitationCountsDistinctEdges(t *testing.T) {
-	dir := idCollisionFixture(t)
-	plain := loadSymbol(t, dir)
-	tests, err := Load(Options{Dir: dir, Level: graph.LevelSymbol, Tests: true})
+// TestSymbolIDCollidingWithTestMain은 --tests의 테스트 main 패키지(x.test)와
+// 패키지 x의 함수 test가 겹쳐도 그 함수와 피호출자가 그래프에 남는지 확인한다 —
+// 점 경로를 직접 만들지 않아도 흔한 이름만으로 생기는 충돌이다.
+func TestSymbolIDCollidingWithTestMain(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.27\n",
+		"main.go": `package main
+
+import "example.com/m/x"
+
+func main() { x.Run() }
+`,
+		"x/x.go":      "package x\n\nfunc Run() { test() }\n\nfunc test() { helper() }\n\nfunc helper() {}\n",
+		"x/x_test.go": "package x\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) { Run() }\n",
+	})
+	doc, err := Load(Options{Dir: dir, Level: graph.LevelSymbol, Tests: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pick := func(d *graph.Document) string {
-		for _, l := range d.Limitations {
-			if strings.Contains(l, "share their vertex ID") {
-				return l
-			}
-		}
-		return ""
-	}
-	if pick(plain) == "" || pick(plain) != pick(tests) {
-		t.Fatalf("collision count must not depend on harvest passes:\n%q\n%q", pick(plain), pick(tests))
+	sym := "example.com/m/x.test" + collisionSuffix
+	if !hasEdge(doc, "example.com/m/x.Run", sym, graph.EdgeCall) ||
+		!hasEdge(doc, sym, "example.com/m/x.helper", graph.EdgeCall) {
+		t.Fatalf("function test must keep its call edges beside the test main package")
 	}
 }
 
-// TestCollisionLimitationAtTypeLevel은 정점을 시도하지 않는 type 레벨에서도
-// 충돌로 버린 간선을 limitation으로 세는지 확인한다.
-func TestCollisionLimitationAtTypeLevel(t *testing.T) {
+// TestCollidingConstAtTypeLevel은 type 레벨(const 정점 없음)에서도 충돌 ID의
+// 참조가 패키지 정점에 얹히지 않는지 확인한다.
+func TestCollidingConstAtTypeLevel(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
 		"go.mod": "module example.com/m\n\ngo 1.27\n",
 		"main.go": `package main
@@ -617,20 +608,15 @@ import (
 
 func main() { _ = x.T{} }
 `,
-		"x/x.go": `package x
-
-const y = 2
-
-type T [y]int
-`,
+		"x/x.go":    "package x\n\nconst y = 2\n\ntype T [y]int\n",
 		"x.y/xy.go": "package xy\n",
 	})
 	doc, err := Load(Options{Dir: dir, Level: graph.LevelType})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsLimitation(doc, "package path containing a dot") {
-		t.Fatalf("edges dropped by an ID collision must be counted, got %v", doc.Limitations)
+	if hasEdgeTo(doc, "example.com/m/x.T", "example.com/m/x.y") {
+		t.Fatal("a type-level reference to a colliding const must not land on the package vertex")
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"sort"
 	"strings"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -30,15 +29,9 @@ type harvester struct {
 	noTypes  int                     // 타입 정보 없는 패키지 수
 	reflectN int                     // reflect를 import하는 패키지 수
 	linkname int                     // //go:linkname 지시문 수
-	// packageIDs는 수확 전부터 있던 패키지 정점 ID다. 패키지 경로에 점이 들면
-	// (example.com/m/x.y) 패키지 x의 심볼 y와 ID가 같아진다 — 심볼 쪽 정점·간선이
-	// 패키지 정점에 얹히면 "함수가 패키지를 호출한다" 같은 거짓 사실이 된다.
-	packageIDs   map[string]bool
-	idCollisions map[string]bool // 패키지 ID와 겹쳐 정점을 만들지 않은 심볼 ID
-	// collidedEdges는 그 충돌 때문에 버린 서로 다른 간선(from,to,kind)이다 — 호출
-	// 횟수를 세면 같은 간선이 호출 지점·--tests 변형마다 불어난다.
-	collidedEdges map[string]bool
-	collidedRoots int // 리시버가 충돌해 보존 루트로 살린 메서드 수
+	// packageIDs는 수확 전부터 있던 패키지 정점 ID다 — 심볼 ID가 이와 겹치면
+	// disambiguate가 접미사를 붙인다(h.id).
+	packageIDs map[string]bool
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -53,9 +46,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		impls:    make(map[string][]string),
 		fieldIDs: make(map[types.Object]string),
 
-		packageIDs:    make(map[string]bool),
-		idCollisions:  make(map[string]bool),
-		collidedEdges: make(map[string]bool),
+		packageIDs: make(map[string]bool),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -89,9 +80,6 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		doc.Limitation(fmt.Sprintf(
 			"%d //go:linkname directives found; their targets may appear unreachable", h.linkname))
 	}
-	if len(h.idCollisions) > 0 || len(h.collidedEdges) > 0 {
-		doc.Limitation(h.collisionLimitation())
-	}
 	doc.Level = level
 }
 
@@ -116,7 +104,7 @@ func (h *harvester) addSymbolVertices(internal []*packages.Package, wantSymbols 
 			if !wantSymbols && kind != graph.KindType {
 				continue
 			}
-			id := objectID(obj)
+			id := h.id(obj)
 			v := graph.Vertex{
 				ID:       id,
 				Kind:     kind,
@@ -205,7 +193,7 @@ func (h *harvester) methodVertex(f *types.Func, fset *token.FileSet) {
 	if f.Pkg() == nil || !h.vertices[f.Pkg().Path()] {
 		return
 	}
-	id := objectID(f)
+	id := h.id(f)
 	h.vertex(graph.Vertex{
 		ID:       id,
 		Kind:     graph.KindMethod,
@@ -288,7 +276,7 @@ func (h *harvester) addStructuralEdges(internal []*packages.Package) {
 // 하나의 지점을 이루지 않아 위치를 비워 둔다.
 func (h *harvester) embedEdges(tn *types.TypeName, named *types.Named,
 	fset *token.FileSet) {
-	from := objectID(tn)
+	from := h.id(tn)
 	switch u := named.Underlying().(type) {
 	case *types.Struct:
 		for i := 0; i < u.NumFields(); i++ {
@@ -297,14 +285,14 @@ func (h *harvester) embedEdges(tn *types.TypeName, named *types.Named,
 				continue
 			}
 			if target := namedOf(f.Type()); target != nil {
-				h.edge(from, objectID(target), graph.EdgeEmbeds,
+				h.edge(from, h.id(target), graph.EdgeEmbeds,
 					positionAt(fset, f.Pos()))
 			}
 		}
 	case *types.Interface:
 		for i := 0; i < u.NumEmbeddeds(); i++ {
 			if target := namedOf(u.EmbeddedType(i)); target != nil {
-				h.edge(from, objectID(target), graph.EdgeEmbeds, nil)
+				h.edge(from, h.id(target), graph.EdgeEmbeds, nil)
 			}
 		}
 	}
@@ -326,7 +314,7 @@ func (h *harvester) implementsEdges(concrete, ifaces []*types.Named) {
 			}
 			// implements는 선언 위치가 아니라 타입 집합 계산의 산물이다 —
 			// 지어낸 위치를 싣지 않는다.
-			h.edge(objectID(t.Obj()), objectID(i.Obj()), graph.EdgeImplements, nil)
+			h.edge(h.id(t.Obj()), h.id(i.Obj()), graph.EdgeImplements, nil)
 			for j := 0; j < iface.NumMethods(); j++ {
 				m := iface.Method(j)
 				sel := tset.Lookup(m.Pkg(), m.Name())
@@ -334,7 +322,7 @@ func (h *harvester) implementsEdges(concrete, ifaces []*types.Named) {
 					continue
 				}
 				if fn, ok := sel.Obj().(*types.Func); ok {
-					h.impls[objectID(m)] = append(h.impls[objectID(m)], objectID(fn))
+					h.impls[h.id(m)] = append(h.impls[h.id(m)], h.id(fn))
 				}
 			}
 		}
@@ -372,7 +360,7 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 		if !ok || d.Name.Name == "_" {
 			return
 		}
-		from := objectID(obj)
+		from := h.id(obj)
 		// init은 스코프에 없어 정점이 아직 없다 — 여기서 만들고 루트로 둔다.
 		if d.Name.Name == "init" {
 			h.vertex(graph.Vertex{
@@ -458,7 +446,7 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
 		if !ok || s.Name.Name == "_" { // 빈 타입은 참조될 수 없다 — 빈 변수 루트에 얹지 않는다
 			return
 		}
-		id := objectID(obj)
+		id := h.id(obj)
 		if keepMarked(declDoc) || keepMarked(s.Doc) || keepMarked(s.Comment) {
 			h.root(id)
 		}
@@ -477,7 +465,7 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
 			if obj == nil {
 				continue
 			}
-			id := objectID(obj)
+			id := h.id(obj)
 			if name.Name == "_" {
 				h.blankVertex(p, name)
 			}
@@ -633,7 +621,7 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 		// Pkg()가 nil인 객체(universe 스코프의 error.Error 등)는 정점이
 		// 될 수 없다 — 그대로 objectID에 넣으면 nil 역참조로 죽는다.
 		if fn, ok := p.TypesInfo.Uses[f].(*types.Func); ok && fn.Pkg() != nil {
-			h.edge(from, objectID(fn), graph.EdgeCall, position(p, ce.Pos()))
+			h.edge(from, h.id(fn), graph.EdgeCall, position(p, ce.Pos()))
 		}
 	case *ast.SelectorExpr:
 		if sel, ok := p.TypesInfo.Selections[f]; ok {
@@ -641,7 +629,7 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 			if !ok || fn.Pkg() == nil {
 				return
 			}
-			id := objectID(fn)
+			id := h.id(fn)
 			pos := position(p, ce.Pos())
 			h.edge(from, id, graph.EdgeCall, pos)
 			h.promotedFields(sel, from, pos)
@@ -652,7 +640,7 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 			}
 		} else if fn, ok := p.TypesInfo.Uses[f.Sel].(*types.Func); ok && fn.Pkg() != nil {
 			// pkg.F() — 패키지 한정 선택자는 Selections가 아니라 Uses로 해석된다.
-			h.edge(from, objectID(fn), graph.EdgeCall, position(p, ce.Pos()))
+			h.edge(from, h.id(fn), graph.EdgeCall, position(p, ce.Pos()))
 		}
 	}
 }
@@ -679,7 +667,7 @@ func (h *harvester) sigRef(obj types.Object, from string, pos *graph.Position) {
 	if obj == nil || obj.Pkg() == nil || !isPackageLevel(obj) {
 		return
 	}
-	id := objectID(obj)
+	id := h.id(obj)
 	if !h.vertices[id] {
 		return
 	}
@@ -749,7 +737,7 @@ func (h *harvester) refObject(obj types.Object, from string, pos *graph.Position
 	if !isPackageLevel(obj) {
 		return
 	}
-	id := objectID(obj)
+	id := h.id(obj)
 	if !h.vertices[id] {
 		h.extRefs++
 		return
@@ -787,10 +775,6 @@ func unwrapCallee(e ast.Expr) ast.Expr {
 
 // vertex는 정점을 중복 없이 추가한다.
 func (h *harvester) vertex(v graph.Vertex) {
-	if v.Kind != graph.KindPackage && h.packageIDs[v.ID] {
-		h.idCollisions[v.ID] = true
-		return
-	}
 	if h.vertices[v.ID] {
 		return
 	}
@@ -804,10 +788,6 @@ func (h *harvester) vertex(v graph.Vertex) {
 // pos는 이 관계가 성립하는 소스 지점이다 — 같은 관계가 지점마다 반복되면
 // 간선은 하나인 채 positions에 지점만 쌓인다.
 func (h *harvester) edge(from, to string, kind graph.EdgeKind, pos *graph.Position) {
-	if h.collidesWithPackage(from, to, kind) {
-		h.collidedEdges[from+"\x00"+to+"\x00"+string(kind)] = true
-		return
-	}
 	if !h.vertices[from] || !h.vertices[to] {
 		if h.vertices[from] && kind != graph.EdgeContains {
 			h.extRefs++
@@ -845,48 +825,33 @@ func isTestEntry(p *packages.Package, d *ast.FuncDecl) bool {
 }
 
 // root는 보존 루트를 중복 없이 기록한다.
-// 패키지 ID와 겹친 심볼은 루트가 되지 않는다 — 그 ID는 패키지 정점을 가리킨다.
 func (h *harvester) root(id string) {
-	if h.roots[id] || h.idCollisions[id] {
+	if h.roots[id] {
 		return
 	}
 	h.roots[id] = true
 	h.doc.Roots = append(h.doc.Roots, id)
 }
 
-// collidesWithPackage는 수확기 간선이 패키지 ID와 겹친 심볼의 간선인지 본다.
-// 수확기가 긋는 간선 중 패키지 정점에 닿아도 되는 것은 그 패키지가 자기 심볼을
-// 담는 contains뿐이다(import 간선은 수확기 밖에서 만든다). 그 외에 패키지 ID에
-// 닿는 간선은 같은 ID의 심볼을 뜻한 것이다.
-func (h *harvester) collidesWithPackage(from, to string, kind graph.EdgeKind) bool {
-	return h.packageIDs[to] || (h.packageIDs[from] && kind != graph.EdgeContains)
+// collisionSuffix는 패키지 경로와 겹치는 심볼 ID 뒤에 붙는 접미사다.
+// 패키지 정점 ID는 import 경로 그대로라 점이 든 경로(example.com/m/x.y)는 패키지 x의
+// 심볼 y의 ID("pkgpath.Name")와 같아진다 — --tests의 테스트 main 패키지 x.test와
+// 함수 test도 그렇다. '#'는 import 경로에 쓸 수 없는 문자라 접미사 ID는 어떤 패키지와도
+// 겹치지 않는다. 겹치지 않는 ID는 그대로다.
+const collisionSuffix = "#symbol"
+
+// disambiguate는 심볼 ID가 패키지 정점 ID와 겹치면 접미사를 붙인다.
+// 수확과 RTA가 같은 함수를 써야 두 그래프의 ID가 맞는다.
+func disambiguate(id string, packageIDs map[string]bool) string {
+	if packageIDs[id] {
+		return id + collisionSuffix
+	}
+	return id
 }
 
-// collisionLimitation은 ID 충돌을 실제 수와 한 예시로 적는다.
-// 예시는 정렬 첫 번째 — 맵 순회 순서가 문서를 흔들지 않게. type 레벨은 const·func
-// 정점을 시도하지 않아 충돌 심볼 없이 버린 간선만 있을 수 있다.
-func (h *harvester) collisionLimitation() string {
-	msg := fmt.Sprintf("%d edges to or from symbols whose vertex ID equals a package path containing a dot "+
-		"were omitted", len(h.collidedEdges))
-	if ids := sortedKeys(h.idCollisions); len(ids) > 0 {
-		msg = fmt.Sprintf("%d symbols share their vertex ID with a package whose path contains a dot (e.g. %s); "+
-			"they have no vertex and %d of their edges were omitted", len(ids), ids[0], len(h.collidedEdges))
-	}
-	if h.collidedRoots > 0 {
-		msg += fmt.Sprintf("; %d methods of such types implement external interfaces and are kept as retention roots",
-			h.collidedRoots)
-	}
-	return msg
-}
-
-// sortedKeys는 집합의 키를 정렬해 돌려준다.
-func sortedKeys(set map[string]bool) []string {
-	out := make([]string, 0, len(set))
-	for k := range set {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+// id는 수확 중인 문서 기준의 심볼 정점 ID다.
+func (h *harvester) id(obj types.Object) string {
+	return disambiguate(objectID(obj), h.packageIDs)
 }
 
 // objectID는 심볼의 정점 ID를 만든다.
