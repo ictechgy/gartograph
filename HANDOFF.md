@@ -339,7 +339,10 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 
 ## 현재 상태 (2026-09-25)
 
-**v0.8.0 릴리스 진행** — PR #15~#30(ID 명령 symbol 기본, 이름 없는 인터페이스·satisfies 정리,
+**v0.8.0 릴리스·Homebrew tap 배포 완료** (태그 `v0.8.0`, 릴리스 워크플로우 성공 — 패키지
+바이너리 CLI 계약 검증 포함). 에셋 5개 SHA-256을 내려받아 `checksums.txt`와 대조(전부 OK),
+tap 수동 갱신(`ictechgy/homebrew-tap` `24738c9`), `brew upgrade` 0.7.0→0.8.0 실측, `gartograph 0.8.0`
+보고, `brew test` 통과. 내용 — PR #15~#30(ID 명령 symbol 기본, 이름 없는 인터페이스·satisfies 정리,
 점 경로 ID 충돌 `#symbol`, 초기화 루트 `pkg._`, diff의 인터페이스 메서드·메서드 집합·제약 타입
 집합, RTA 메서드 루트·인터페이스 메서드·합성 init, CHA 팬아웃 보강, JSON 빈 목록 `[]`, universe
 임베드 패닉 수정). 새 문서 필드: `anonymousDispatch`·`initializerRoots`·`interfaceMethodSets`·
