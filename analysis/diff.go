@@ -5,6 +5,7 @@ package analysis
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -288,32 +289,109 @@ func isExportedName(name string) bool {
 	return false
 }
 
-// diffIfaceMethods는 인터페이스에 새 메서드가 생긴 변경을 breaking으로 잡는다.
-// 새 메서드 정점의 소유자를 ID("pkgpath.(I).M")에서 찾는다 — 수확기는 메서드 contains를
-// 패키지에서 긋기 때문에, 인터페이스 타입에서 나가는 contains를 찾으면 실제 문서에서
-// 이 판정이 한 번도 작동하지 않는다. 새 인터페이스의 메서드는 신규 API이지 breaking이
-// 아니므로 소유 인터페이스가 옛 문서에도 있어야 한다.
+// diffIfaceMethods는 공개 인터페이스의 메서드 집합이 늘어난 변경을 breaking으로 잡는다
+// — 모듈 밖 구현자가 더 이상 인터페이스를 만족하지 못한다. 세 경로가 있다: 직접 선언한
+// 메서드 추가, 임베드한(비공개일 수도 있는) 인터페이스의 메서드 추가, 새 인터페이스 임베드.
+// 새 메서드 정점의 소유자는 ID("pkgpath.(I).M")에서 찾는다 — 수확기는 메서드 contains를
+// 패키지에서 긋기 때문에, 인터페이스 타입에서 나가는 contains를 찾으면 실제 문서에서 이
+// 판정이 한 번도 작동하지 않는다. 새 인터페이스는 신규 API라 옛 문서에도 있어야 breaking이다.
+// 모듈 밖 인터페이스 임베드(io.Reader)는 외부 간선이 생략돼 보이지 않는다.
 func diffIfaceMethods(d *Diff, old, new *graph.Document) {
 	oldV := indexVertices(old)
 	newByID := verticesByID(new)
-	for _, v := range new.Vertices {
-		if v.Kind != graph.KindMethod || oldV[vertexKey(v)] != nil {
-			continue
+	embedders := interfaceEmbedders(new, newByID)
+	var out []string
+	gained := gainedInterfaceMethods(oldV, newByID, indexVertices(new))
+	for _, owner := range sortedKeys(gained) {
+		for _, name := range gained[owner] {
+			out = append(out, gainedBreaking(owner, name, embedders, newByID, oldV)...)
 		}
-		owner := ownerVertex(newByID, v.ID)
-		if owner == nil || !owner.Interface || !owner.Exported || oldV[vertexKey(*owner)] == nil {
-			continue
-		}
-		d.Breaking = append(d.Breaking, fmt.Sprintf(
-			"exported interface %s gained method %s — implementers no longer satisfy it",
-			owner.ID, v.Name))
 	}
+	out = append(out, newEmbedBreaking(old, new, newByID, oldV)...)
+	sort.Strings(out)
+	d.Breaking = append(d.Breaking, slices.Compact(out)...)
+}
+
+// gainedInterfaceMethods는 옛 문서에 없던 메서드 정점을 소유 인터페이스별로 모은다.
+// 비공개 인터페이스도 모은다 — 공개 인터페이스에 임베드돼 있으면 그쪽을 깬다.
+func gainedInterfaceMethods(oldV map[string]*graph.Vertex, newByID map[string]*graph.Vertex,
+	newV map[string]*graph.Vertex) map[string][]string {
+	out := map[string][]string{}
+	for _, k := range sortedKeys(newV) {
+		v := newV[k]
+		if v.Kind != graph.KindMethod || oldV[k] != nil {
+			continue
+		}
+		if owner := ownerVertex(newByID, v.ID); owner != nil && owner.Interface {
+			out[owner.ID] = append(out[owner.ID], v.Name)
+		}
+	}
+	return out
+}
+
+// gainedBreaking은 인터페이스 owner가 얻은 메서드가 깨는 공개 인터페이스들의 문구를
+// 만든다 — owner 자신과, owner를 (전이적으로) 임베드한 인터페이스. 재귀 대신 worklist다.
+func gainedBreaking(owner, name string, embedders map[string][]string,
+	newByID, oldV map[string]*graph.Vertex) []string {
+	var out []string
+	seen := map[string]bool{owner: true}
+	for queue := []string{owner}; len(queue) > 0; queue = queue[1:] {
+		id := queue[0]
+		if v := newByID[id]; v != nil && v.Exported && oldV[vertexKey(*v)] != nil {
+			out = append(out, gainedMessage(id, owner, name))
+		}
+		for _, e := range embedders[id] {
+			if !seen[e] {
+				seen[e] = true
+				queue = append(queue, e)
+			}
+		}
+	}
+	return out
+}
+
+// gainedMessage는 메서드 추가 breaking 문구다 — 임베드를 거쳤으면 그 경로를 밝힌다.
+func gainedMessage(iface, owner, name string) string {
+	if iface == owner {
+		return fmt.Sprintf("exported interface %s gained method %s — implementers no longer satisfy it",
+			iface, name)
+	}
+	return fmt.Sprintf("exported interface %s gained method %s via embedded %s — "+
+		"implementers no longer satisfy it", iface, name, owner)
+}
+
+// interfaceEmbedders는 임베드된 인터페이스 ID → 그것을 임베드한 인터페이스 ID들이다.
+func interfaceEmbedders(d *graph.Document, byID map[string]*graph.Vertex) map[string][]string {
+	out := map[string][]string{}
+	for _, e := range d.Edges {
+		if from := byID[e.From]; e.Kind == graph.EdgeEmbeds && from != nil && from.Interface {
+			out[e.To] = append(out[e.To], e.From)
+		}
+	}
+	return out
+}
+
+// newEmbedBreaking은 옛 문서에 있던 공개 인터페이스가 새로 인터페이스를 임베드한
+// 변경의 문구를 만든다 — 임베드된 메서드 전부가 구현자에게 새 요구다.
+func newEmbedBreaking(old, new *graph.Document, newByID, oldV map[string]*graph.Vertex) []string {
+	oldE := indexEdges(old)
+	var out []string
+	for _, e := range new.Edges {
+		from, to := newByID[e.From], newByID[e.To]
+		if e.Kind != graph.EdgeEmbeds || oldE[edgeKey(e)].Kind != "" || from == nil || to == nil ||
+			!from.Interface || !to.Interface || !from.Exported || oldV[vertexKey(*from)] == nil {
+			continue
+		}
+		out = append(out, fmt.Sprintf("exported interface %s now embeds %s — implementers no longer satisfy it",
+			from.ID, to.ID))
+	}
+	return out
 }
 
 // ownerVertex는 멤버 정점의 소유 타입 정점을 찾는다. 소유 타입 ID가 패키지 경로와
 // 겹치면 문서에는 충돌 접미사가 붙은 형태로 있다.
 func ownerVertex(byID map[string]*graph.Vertex, memberID string) *graph.Vertex {
-	owner, ok := graph.MethodOwner(memberID)
+	owner, ok := graph.MemberOwner(memberID)
 	if !ok {
 		return nil
 	}

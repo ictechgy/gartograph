@@ -326,3 +326,76 @@ func TestDiffSignatureTargetsUseActualIDs(t *testing.T) {
 		t.Fatalf("removed target must be reported by the old document's ID: %v", d.Breaking)
 	}
 }
+
+// ifaceDoc는 인터페이스 판정 테스트용 문서다 — 수확 모양대로 메서드 contains는
+// 패키지에서 나간다.
+func ifaceDoc(vs []graph.Vertex, es ...graph.Edge) *graph.Document {
+	doc := &graph.Document{Level: graph.LevelSymbol, Vertices: vs, Edges: es}
+	for _, v := range vs {
+		if v.Kind == graph.KindMethod {
+			doc.Edges = append(doc.Edges, graph.Edge{From: v.Package, To: v.ID, Kind: graph.EdgeContains})
+		}
+	}
+	return doc
+}
+
+// TestDiffInterfaceBreakingExact는 인터페이스 판정의 조건을 하나씩 고정한다 — 부분
+// 문자열만 보면 조건을 지워도 테스트가 통과한다(변이 테스트로 확인된 공백).
+func TestDiffInterfaceBreakingExact(t *testing.T) {
+	iface := func(id string, exported bool) graph.Vertex {
+		return graph.Vertex{ID: id, Kind: graph.KindType, Package: "m/a", Interface: true, Exported: exported}
+	}
+	method := func(id, name string) graph.Vertex {
+		return graph.Vertex{ID: id, Kind: graph.KindMethod, Package: "m/a", Name: name, Exported: true}
+	}
+	concrete := graph.Vertex{ID: "m/a.S", Kind: graph.KindType, Package: "m/a", Exported: true}
+	base := []graph.Vertex{iface("m/a.I", true), method("m/a.(I).Do", "Do"),
+		iface("m/a.p", false), method("m/a.(p).Do", "Do"), concrete,
+		iface("m/a.B"+graph.CollisionSuffix, true), {ID: "m/a.B", Kind: graph.KindPackage}}
+	old := ifaceDoc(base)
+	if d := DiffDocuments(old, ifaceDoc(base)); len(d.Breaking) != 0 {
+		t.Fatalf("unchanged documents: existing methods are not gained: %v", d.Breaking)
+	}
+	grown := append(append([]graph.Vertex(nil), base...),
+		method("m/a.(I).Run", "Run"), method("m/a.(p).Run", "Run"),
+		method("m/a.(S).Run", "Run"), method("m/a.(B).Run", "Run"))
+	want := []string{
+		"exported interface m/a.B#symbol gained method Run — implementers no longer satisfy it",
+		"exported interface m/a.I gained method Run — implementers no longer satisfy it",
+	}
+	if d := DiffDocuments(old, ifaceDoc(grown)); !slices.Equal(d.Breaking, want) {
+		t.Fatalf("only exported interfaces present before may break:\n got %q\nwant %q", d.Breaking, want)
+	}
+}
+
+// TestDiffInterfaceBreakingViaEmbedding은 임베드로 늘어난 메서드 집합도 breaking으로
+// 잡는지 확인한다 — 비공개 임베드 인터페이스가 메서드를 얻거나, 기존 공개 인터페이스가
+// 새로 인터페이스를 임베드하면 공개 인터페이스의 구현자가 깨진다.
+func TestDiffInterfaceBreakingViaEmbedding(t *testing.T) {
+	iface := func(id string, exported bool) graph.Vertex {
+		return graph.Vertex{ID: id, Kind: graph.KindType, Package: "m/a", Interface: true, Exported: exported}
+	}
+	m := func(id, name string) graph.Vertex {
+		return graph.Vertex{ID: id, Kind: graph.KindMethod, Package: "m/a", Name: name}
+	}
+	embedsJ := graph.Edge{From: "m/a.I", To: "m/a.j", Kind: graph.EdgeEmbeds}
+	vs := []graph.Vertex{iface("m/a.I", true), iface("m/a.j", false), m("m/a.(j).M", "M"),
+		iface("m/a.K", true), m("m/a.(K).Z", "Z")}
+	old := ifaceDoc(vs, embedsJ)
+	grown := ifaceDoc(append(append([]graph.Vertex(nil), vs...), m("m/a.(j).N", "N")), embedsJ)
+	d := DiffDocuments(old, grown)
+	if !slices.Contains(d.Breaking,
+		"exported interface m/a.I gained method N via embedded m/a.j — implementers no longer satisfy it") {
+		t.Fatalf("a method gained by an embedded interface breaks the embedder: %v", d.Breaking)
+	}
+	embedsK := graph.Edge{From: "m/a.I", To: "m/a.K", Kind: graph.EdgeEmbeds}
+	// 비공개 인터페이스(j)와 새 인터페이스(L)가 K를 임베드하는 것은 공개 계약 변경이 아니다.
+	jEmbedsK := graph.Edge{From: "m/a.j", To: "m/a.K", Kind: graph.EdgeEmbeds}
+	lEmbedsK := graph.Edge{From: "m/a.L", To: "m/a.K", Kind: graph.EdgeEmbeds}
+	withL := append(append([]graph.Vertex(nil), vs...), iface("m/a.L", true))
+	d = DiffDocuments(old, ifaceDoc(withL, embedsJ, embedsK, jEmbedsK, lEmbedsK))
+	if !slices.Equal(d.Breaking, []string{
+		"exported interface m/a.I now embeds m/a.K — implementers no longer satisfy it"}) {
+		t.Fatalf("only an existing exported interface newly embedding breaks implementers: %v", d.Breaking)
+	}
+}

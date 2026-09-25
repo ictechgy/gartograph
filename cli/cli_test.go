@@ -2565,4 +2565,20 @@ func TestDiffInterfaceGainedMethodHarvested(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "gained method Run") {
 		t.Fatalf("interface method addition must be breaking on harvested documents: %d %s", code, out)
 	}
+	// 비공개 임베드 인터페이스가 메서드를 얻어도 공개 임베더가 깨진다.
+	e1 := testutil.WriteModule(t, map[string]string{
+		"a/a.go": "package a\n\ntype j interface{ M() }\n\ntype I interface{ j }\n",
+	})
+	e2 := testutil.WriteModule(t, map[string]string{
+		"a/a.go": "package a\n\ntype j interface {\n\tM()\n\tN()\n}\n\ntype I interface{ j }\n",
+	})
+	for dir, out := range map[string]string{e1: oldPath, e2: newPath} {
+		if code, _, errb := run(t, "graph", "--level", "symbol", "--dir", dir, "--out", out); code != 0 {
+			t.Fatalf("graph failed: %d %s", code, errb)
+		}
+	}
+	code, out, _ = run(t, "diff", oldPath, newPath, "--strict")
+	if code != 1 || !strings.Contains(out, "a.I gained method N via embedded") {
+		t.Fatalf("a method gained through an embedded interface must be breaking: %d %s", code, out)
+	}
 }
