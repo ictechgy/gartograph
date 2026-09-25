@@ -103,8 +103,8 @@ gartograph unused-deps --strict
 # breaking = exported symbol removed/unexported, kind changed, signature
 # reference dropped, interface gained a method or changed a method
 # signature (declared or through any embedding, io.Reader included, when
-# both documents carry interface method sets), struct field contract
-# broken, exported const value changed
+# both documents carry interface method sets), constraint type set changed,
+# struct field contract broken, exported const value changed
 gartograph diff old.json new.json --strict
 
 # Coupling metrics (Ca/Ce/instability) + abstractness (A) and
@@ -332,8 +332,11 @@ entries — without the marker an absent list means "not harvested", with it
 "no methods"). Types in `fields` and `methods` are canonical — aliases
 resolved, `byte`→`uint8`, type parameters by position (`P0`…) — so a
 spelling-only refactor (`interface{}`→`any`, renaming `T`→`E`) is not a
-breaking change; type-set changes of constraint interfaces (unions, `~T`)
-are not compared.
+breaking change. Constraint interfaces also carry `typeSet` (one sorted
+entry per explicit type element, union terms sorted — marker
+`interfaceTypeSets: true`); `diff` reports an exported constraint whose type
+set changed (narrowing breaks instantiations, widening can break generic
+code relying on the allowed operations).
 
 Edges carry `positions` — every source site where the relation holds
 (import decls for `import`, call expressions for `call`, and so on).
