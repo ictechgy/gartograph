@@ -160,9 +160,10 @@ func analyzeRTA(opts Options, namer rtaNamer) (*rta.Result, error) {
 	return rta.Analyze(rootFns, true), nil
 }
 
-// packageRootFns는 SSA 패키지에서 루트 정점에 해당하는 함수를 고른다.
-// 빈 식별자 루트(pkg._)가 있으면 합성 init이 name으로 그 ID가 되어 함께 잡힌다 —
-// 패키지 변수 초기화식은 합성 init이 실행한다.
+// packageRootFns는 SSA 패키지에서 루트 정점에 해당하는 함수와 합성 init을 고른다.
+// 합성 init은 늘 루트다 — 패키지 변수 초기화식과 import한 패키지의 init을 실행하고,
+// CHA는 모든 사용자 init과 초기화 루트(pkg._)를 루트로 둔다. 같은 기준이어야 두
+// 알고리즘이 초기화 때 실행되는 코드를 똑같이 본다.
 func (n rtaNamer) packageRootFns(sp *ssa.Package) []*ssa.Function {
 	var out []*ssa.Function
 	for _, member := range sp.Members {
@@ -170,8 +171,21 @@ func (n rtaNamer) packageRootFns(sp *ssa.Package) []*ssa.Function {
 		if !ok {
 			continue
 		}
-		if id, named := n.name(fn); named && n.roots[id] {
+		if id, named := n.name(fn); fn == sp.Func("init") || (named && n.roots[id]) {
 			out = append(out, fn)
+		}
+	}
+	return out
+}
+
+// ExplainRoots는 RTA explain의 출발점이다 — 문서 루트에 패키지마다 합성 init의
+// 순회용 ID(pkgpath#init)를 더한다. 합성 init은 RTA 루트지만 문서 정점이 아니라
+// 문서 루트 목록에 없다 — 빼면 판정은 살린 초기화식 함수를 explain이 못 찾는다.
+func ExplainRoots(doc *graph.Document, roots []string) []string {
+	out := append([]string(nil), roots...)
+	for _, v := range doc.Vertices {
+		if v.Kind == graph.KindPackage {
+			out = append(out, v.ID+PackageInitSuffix)
 		}
 	}
 	return out
