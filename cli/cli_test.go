@@ -2694,6 +2694,11 @@ func TestDeadRTAInterfaceMethods(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
 		"main.go": `package main
 
+import (
+	"example.com/fixture/x"
+	_ "example.com/fixture/x.y"
+)
+
 type I interface {
 	Called()
 	Never()
@@ -2708,11 +2713,34 @@ type unusedCaller struct{}
 
 func (unusedCaller) run(i I) { i.Never() }
 
+type Base interface{ Emb() }
+type Wide interface{ Base }
+type Valued interface{ Val() }
+type Inited interface{ Init() int }
+type Tabled interface{ Tab() }
+
+func (T) Emb()      {}
+func (T) Val()      {}
+func (T) Init() int { return 0 }
+func (T) Tab()      {}
+
+var _ = Inited(T{}).Init()
+
+var table = map[string]func(Tabled){"a": func(t Tabled) { t.Tab() }}
+
 func main() {
 	var i I = T{}
 	i.Called()
+	var w Wide = T{}
+	w.Emb()
+	f := Valued(T{}).Val
+	f()
+	table["a"](T{})
+	x.Use()
 }
 `,
+		"x/x.go":    "package x\n\ntype y interface{ Clash() }\n\ntype impl struct{}\n\nfunc (impl) Clash() {}\n\nfunc Use() { var v y = impl{}; v.Clash() }\n",
+		"x.y/xy.go": "package xy\n",
 	})
 	code, out, errb := run(t, "dead", "--dir", dir, "--algo", "rta", "--format", "json")
 	if code != 0 {
@@ -2734,6 +2762,17 @@ func main() {
 	// Never는 rta가 도달하지 않는 함수에서만 불린다.
 	if !got["example.com/fixture.(I).Never"] {
 		t.Fatalf("an interface method called only from unreachable code must be reported: %s", out)
+	}
+	for _, alive := range []string{
+		"example.com/fixture.(Base).Emb",         // 임베드 인터페이스로 호출 — 선언 쪽 정점에 붙는다
+		"example.com/fixture.(Valued).Val",       // 메서드 값(references)
+		"example.com/fixture.(Inited).Init",      // 초기화 루트(pkg._)에서 호출
+		"example.com/fixture.(Tabled).Tab",       // 패키지 변수에 담긴 함수 표 안에서만 호출
+		"example.com/fixture/x.(y#symbol).Clash", // 소유자가 점 경로 패키지와 겹침
+	} {
+		if got[alive] {
+			t.Fatalf("%s is used from live code but rta reported it: %s", alive, out)
+		}
 	}
 	_, out, _ = run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/fixture.(I).Called")
 	if !strings.Contains(out, "root: example.com/fixture.main") || !strings.Contains(out, "-> example.com/fixture.(I).Called") {

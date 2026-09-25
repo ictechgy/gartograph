@@ -670,7 +670,7 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 		if !doc.HasVertex(id) {
 			return fail(stderr, fmt.Errorf("%w: %s", analysis.ErrNotFound, id))
 		}
-		adj = analysis.WithAbstractCalls(doc, adj, rtaReach)
+		adj = analysis.WithAbstractCalls(doc, adj, analysis.Reachable(doc, roots), rtaReach)
 		path, found := analysis.ExplainAdjacency(adj, id, source.ExplainRoots(doc, roots))
 		if !found {
 			fmt.Fprintf(stdout,
