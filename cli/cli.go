@@ -22,7 +22,7 @@ import (
 
 // Version은 CLI가 스스로를 보고하는 버전 문자열이다. 릴리스는
 // -ldflags "-X .../cli.Version=<태그>"로 이 값을 덮어쓴다.
-var Version = "0.7.0"
+var Version = "0.8.0"
 
 // Run은 인자를 해석해 명령을 실행하고 종료 코드를 돌려준다.
 // os.Exit 대신 반환값을 쓰는 것은 종료 코드 계약을 테스트하기 위함이다.
