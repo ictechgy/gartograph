@@ -2,7 +2,67 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — 제약 인터페이스 타입 집합 (2026-09-25, feature/constraint-type-sets)
+## 이어받기 요약 (2026-09-25 세션 끝)
+
+### 목표
+gartograph(Go 의존성 그래프 CLI — `graph`가 산출물, 나머지는 그 위의 질의)의 **dead·diff·RTA
+정밀도를 거짓 사실 없이** 끌어올리고 릴리스한다. 원칙: 과대 근사는 "살아 있다" 쪽으로만,
+limitation은 실제로 센 사실만, 결정적 출력, `graph`는 외부 의존 없음, x/tools는 `source`만.
+
+### 현재 진행
+- **v0.8.0 릴리스·Homebrew tap 배포 완료**(아래 "현재 상태" 참고). main = `199d469` 부근, 작업
+  트리 깨끗, 열린 PR 없음.
+- 이번 세션 머지: PR #14~#32. 핵심 — ID 명령 symbol 기본(#15), 이름 없는 인터페이스 수확(#16),
+  satisfies 노이즈 정리(#17), 점 경로 ID 충돌 `#symbol`·빈 식별자 루트(#19), diff·baseline 충돌 ID
+  짝짓기(#20), 초기화식 루트 `pkg._`(#21·#25), diff 인터페이스 판정 복구·메서드 집합·제약 타입
+  집합(#22·#23·#28), RTA 메서드 루트·인터페이스 메서드·제네릭 크래시(#24·#26), JSON `[]`(#27),
+  CHA 팬아웃 보강(#29), universe 임베드 패닉(#30), 릴리스(#31·#32).
+- 새 문서 필드(모두 omitempty, Version 2 유지): 문서 `anonymousDispatch`·`initializerRoots`·
+  `interfaceMethodSets`·`interfaceTypeSets`, 인터페이스 정점 `methods`·`typeSet`, 충돌 심볼 ID
+  접미사 `#symbol`, 초기화 루트 정점 `pkg._`, RTA explain 순회 ID `pkgpath#init`.
+
+### 잘된 것
+- **모든 PR에 code-reviewer 서브에이전트 리뷰 → 반영 → 필요하면 재리뷰.** 리뷰가 거의 매번
+  실제 결함을 찾았다(제 구현이 만든 패닉 3건, main의 잠재 크래시 3건 포함).
+- **벤치 비교 스크립트**: scratchpad `cmp.sh`가 main 바이너리(`gt.main2`)와 브랜치(`gt`)를 세
+  저장소(이 저장소·go-mssqldb·actionlint) × CHA·`--tests`·RTA로 비교. 새 보고(`>` 줄) 0건 +
+  사라진 항목을 원문으로 대조하는 것이 회귀 판단 기준. 큰 저장소 검증은 pgx·x/tools(리뷰어가 받아
+  둔 `scratchpad/rvw/big-*`).
+- **변이 테스트**: 판정 조건을 하나씩 지워 테스트가 실패하는지 python으로 돌려 확인 — 약한
+  테스트(부분 문자열 매칭, 다른 경로가 살려 주는 fixture)를 여러 번 잡았다.
+- **수정 전 실패 확인**: 새 테스트는 `git stash`/옛 파일로 되돌려 실패를 본 뒤 커밋.
+- 문서 사실에는 **문서 단위 표시**(marker)를 둬 옛 문서의 "몰랐다"와 "없음"을 가른다.
+- 재귀는 `cycles --level symbol --strict` 자기 분석에 순환으로 잡힌다 — 명시적 스택으로 쓴다.
+
+### 안 된 것 (반복하지 말 것)
+- **충돌 심볼을 그래프에서 빼기**(#19 1·2차): 피호출자가 거짓 dead가 됨 → `#symbol` 접미사로 교체.
+- **합성 파일로 인터페이스 표기 재해석**(#16 1차): 의존도 이미 소스 타입체크됨 → `p.TypesInfo` 직접.
+- **인스턴스 없는 제네릭 본문을 RTA 루트로**: x/tools rta가 `any(&x)`에서 패닉 → `isGenericBody` 제외.
+- **모듈 밖 인터페이스 호출을 모든 모듈 구현자로 팬아웃**: 죽은 구현까지 살림 → 모듈 인터페이스만.
+- `types.TypeString`을 사실 비교에 쓰기: 별칭·`byte`·타입 파라미터 이름으로 거짓 breaking →
+  `canonicalType`(`source/typestring.go`).
+- 벤치 스크립트에서 zsh가 `$args`를 단어 분리하지 않음 → bash 배열(`cmp.sh`).
+- rebase 충돌을 python으로 풀 때 두 테스트의 공통 닫는 괄호가 빠지는 일이 반복됐다 — 풀고 나서
+  `gofmt -l`로 확인.
+
+### 다음 단계
+1. (사용자 몫) `HOMEBREW_TAP_TOKEN` 리포 시크릿 등록 → tap 자동 갱신. 없으면 릴리스마다 수동:
+   에셋 SHA-256 대조 → `Formula/gartograph.rb` 자리표시자 채워 `ictechgy/homebrew-tap` main에 푸시.
+2. RTA explain이 익명 클로저를 거치는 경로를 못 찾음(판정은 살렸는데 "no path") — 클로저 간선을
+   감싸는 함수 ID로 접어 인접 맵에 넣기.
+3. 제네릭 구현자 느슨한 매칭은 이름·패키지·모양(개수)만 본다 — 타입이 다른 메서드도 살아남(과대
+   근사, 안전). 필요하면 타입 파라미터가 아닌 위치의 타입까지 비교.
+4. 제약 타입 집합: 여러 원소 교집합의 동치 재작성은 여전히 변경으로 보고(드묾). 공개 제약이 쓰는
+   비공개 헬퍼 이름만 바꾸면 기존 signature 규칙이 breaking 한 줄(선언 참조 소실).
+5. 같은 패키지의 여러 `init`은 정점 하나로 합쳐져 위치가 첫 선언만(도달성 무관).
+6. `export`(graph 문서)는 빈 목록 `[]` 처리 범위 밖(빈 모듈에서만 드러남).
+
+### 매 세션 확인 명령
+`go vet ./... && go test -count=1 ./...` (패키지별 `ok`/`FAIL` 전부 확인), 자기 분석
+`go run ./cmd/gartograph cycles --level {package,type,symbol} --strict`, `rules --strict`, `dead`
+(현재 6건 — 전부 진짜 미사용/직렬화 전용 필드), `Scripts/verify-cli-contract.sh <바이너리>`.
+
+## 이전 완료 — 제약 인터페이스 타입 집합 (2026-09-25, PR #28 머지)
 
 메서드 집합 사실만으로는 제약 인터페이스의 좁힘·넓힘(`~int | ~int64` → `~int`)이 안 보였다
 (PR #23 README에 한계로 적었던 것).
@@ -326,16 +386,7 @@ gartograph·rustograph(PR #15)·kartograph(PR #102)·cartograph(PR #136).
 isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 `schema`는 발행본에 없는 main 기능이다.
 
-다음 후보:
-- RTA 루트 매핑은 패키지 멤버 함수만 본다 — 메서드 루트(keep·충돌 리시버)는
-  RTA 루트가 되지 않는다(기존 동작).
-
-- 같은 패키지의 여러 `init`·빈 선언은 정점 하나로 합쳐져 위치가 첫 선언만 남는다
-  (둘 다 보존 루트라 도달성 영향 없음). `pkg._`의 `generated`는 처음 본 선언의
-  파일을 따르고 kind는 const만 있어도 var다(리뷰 LOW).
-- 옛 저장 문서에는 `pkg._`(빈 선언·호출하는 이름 있는 초기화식)가 없어 초기화식
-  전용 심볼이 여전히 dead — 재수확 권고 표지 없음(리뷰 LOW 2회). `anonymousDispatch`
-  같은 문서 표시가 선례.
+다음 후보는 맨 위 "이어받기 요약 → 다음 단계"를 본다(이 자리의 옛 목록은 PR #24·#25에서 해결).
 
 ## 현재 상태 (2026-09-25)
 
