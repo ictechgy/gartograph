@@ -2598,3 +2598,54 @@ func TestDiffInterfaceGainedMethodHarvested(t *testing.T) {
 		t.Fatalf("embedding an interface from outside the module must be breaking: %d %s", code, out)
 	}
 }
+
+// TestDeadRTAKeepsMethodRoots는 문서 루트인 메서드(keep 표지)가 --algo rta에서도
+// 루트로 잡히고 그 피호출자까지 도달하는지 확인한다 — SSA 패키지 Members에는 메서드가
+// 없어, 루트이면서 unreachable로 보고되는 모순이 있었다. 제네릭 본문은 x/tools rta가
+// 타입 파라미터에서 패닉해 루트로 넣지 않는다 — 크래시 없이 루트 자신만 살아 있다.
+func TestDeadRTAKeepsMethodRoots(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+type T struct{}
+
+//gartograph:keep
+func (T) Kept() { viaValue() }
+
+type P struct{}
+
+//gartograph:keep
+func (*P) PtrKept() { viaPtr() }
+
+type G[X any] struct{ x X }
+
+//gartograph:keep
+func (g *G[X]) Generic() any { return any(&g.x) }
+
+//gartograph:keep
+func Box[X any](x X) any { return any(&x) }
+
+func viaValue() {}
+func viaPtr()   {}
+
+func main() {}
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--algo", "rta", "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead --algo rta must not crash on generic roots: %d %s", code, errb)
+	}
+	var rep struct {
+		Unreachable []struct{ ID string } `json:"unreachable"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("dead output is not JSON: %v", err)
+	}
+	if len(rep.Unreachable) != 0 {
+		t.Fatalf("root methods (generic ones included) and their callees must be reachable: %s", out)
+	}
+	_, out, _ = run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/fixture.viaPtr")
+	if !strings.Contains(out, "root: example.com/fixture.(P).PtrKept") {
+		t.Fatalf("rta explain must route from the root method: %s", out)
+	}
+}

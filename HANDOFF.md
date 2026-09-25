@@ -2,7 +2,27 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — 인터페이스 메서드 집합 사실(모듈 밖 임베드) (2026-09-25, feature/interface-method-set)
+## 최근 완료 — RTA가 메서드 루트를 루트로 (2026-09-25, fix/rta-method-roots)
+
+SSA 패키지 Members에는 메서드가 없어, 문서 루트인 메서드(keep 표지·충돌 리시버 등)가
+`--algo rta`에서 "루트이면서 unreachable"로 보고됐다.
+- `methodRootFns`: 패키지 타입 멤버가 **선언한** 메서드 중 루트 ID인 것의 SSA 함수
+  (`prog.FuncValue`)를 RTA 루트로 — 승격·간접 wrapper가 아니라 선언 함수. 인터페이스(추상)와
+  제네릭 타입은 건너뛴다.
+- **제네릭 본문은 RTA 루트가 아니다**(`isGenericBody`): 인스턴스 없는 제네릭 본문을 루트로
+  넣으면 x/tools rta가 `any(&x)` 같은 타입 파라미터 포함 타입에서 패닉한다("ForEachElement
+  called on type containing *types.TypeParam"). 리뷰 제안(FuncValue로 제네릭 메서드 루트)을
+  넣자 go-mssqldb `--retain-public`(`Money[D].Scan`)에서 재현됐고, **main도 keep·retain-public
+  제네릭 함수에서 같은 크래시가 잠재**했다(`func Box[X any](x X) any { return any(&x) }`) — 함께
+  고쳤다. 루트 자신은 withRoots로 살아 있고, 그 피호출자는 RTA limitation("uninstantiated
+  types") 범위.
+- `withRoots`: RTAReachable·RTAAdjacency 둘 다 문서 루트 자신을 도달 집합에 넣는다.
+- 실측: `--algo rta --retain-public` go-mssqldb 106→58, actionlint 26→2(공개 메서드 루트가 이제 RTA 루트, 크래시 없음).
+  기본 모드는 동일.
+- 남은 기존 결함(범위 밖): 인터페이스 메서드 정점은 `--algo rta`에서 늘 unreachable
+  (추상 메서드에 SSA 함수 없음 — 예: actionlint `(Pass).VisitStep`).
+
+## 이전 완료 — 인터페이스 메서드 집합 사실(모듈 밖 임베드) (2026-09-25, PR #23 머지)
 
 `io.Reader` 같은 모듈 밖 인터페이스 임베드는 외부 간선이 생략돼 diff가 메서드 추가를
 못 봤다(PR #22 리뷰의 남은 한계).
@@ -205,8 +225,6 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 - 옛 저장 문서에는 `pkg._`(빈 선언·호출하는 이름 있는 초기화식)가 없어 초기화식
   전용 심볼이 여전히 dead — 재수확 권고 표지 없음(리뷰 LOW 2회). `anonymousDispatch`
   같은 문서 표시가 선례.
-- RTA 루트 매핑은 패키지 멤버 함수만 본다 — 메서드 루트(keep·충돌 리시버)는
-  RTA 루트가 되지 않는다(기존 동작).
 
 ## 현재 상태 (2026-09-24)
 
