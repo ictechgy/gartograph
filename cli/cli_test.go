@@ -2960,3 +2960,26 @@ func main() {
 		t.Fatalf("a generic method with a different shape is not an implementer: %s", out)
 	}
 }
+
+// TestDiffConstraintTypeSetHarvested는 실제 수확 문서로 제약 인터페이스를 좁히면 breaking이고,
+// 항 순서·별칭만 바꾸면 아닌지 확인한다.
+func TestDiffConstraintTypeSetHarvested(t *testing.T) {
+	tmp := t.TempDir()
+	harvest := func(src, name string) string {
+		dir := testutil.WriteModule(t, map[string]string{"a/a.go": src})
+		out := filepath.Join(tmp, name)
+		if code, _, errb := run(t, "graph", "--level", "symbol", "--dir", dir, "--out", out); code != 0 {
+			t.Fatalf("graph failed: %d %s", code, errb)
+		}
+		return out
+	}
+	base := harvest("package a\n\ntype N interface{ ~int | ~int64 | ~byte }\n", "base.json")
+	same := harvest("package a\n\ntype N interface{ ~uint8 | ~int64 | ~int }\n", "same.json")
+	narrow := harvest("package a\n\ntype N interface{ ~int }\n", "narrow.json")
+	if code, out, _ := run(t, "diff", base, same, "--strict"); code != 0 {
+		t.Fatalf("reordering terms and alias spelling is not a change: %d %s", code, out)
+	}
+	if code, out, _ := run(t, "diff", base, narrow, "--strict"); code != 1 || !strings.Contains(out, "changed type set") {
+		t.Fatalf("narrowing an exported constraint must be breaking: %d %s", code, out)
+	}
+}

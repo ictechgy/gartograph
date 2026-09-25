@@ -83,6 +83,7 @@ func DiffDocuments(old, new *graph.Document) *Diff {
 	diffVertices(d, old, new)
 	diffEdges(d, old, new)
 	diffIfaceMethods(d, old, new)
+	diffTypeSets(d, old, new)
 	sort.Strings(d.Notes)
 	return d
 }
@@ -302,6 +303,25 @@ func isExportedName(name string) bool {
 		return unicode.IsUpper(r)
 	}
 	return false
+}
+
+// diffTypeSets는 공개 제약 인터페이스의 타입 집합 변경을 breaking으로 잡는다 — 좁히면
+// 소비자의 인스턴스화가, 넓히면 그 제약을 쓰는 소비자 제네릭 본문(허용 연산)이 깨질 수 있다.
+// 두 문서 모두 표시(InterfaceTypeSets)가 있어야 비교한다 — 옛 문서의 부재는 "몰랐다"다.
+func diffTypeSets(d *Diff, old, new *graph.Document) {
+	if !old.InterfaceTypeSets || !new.InterfaceTypeSets {
+		return
+	}
+	oldV := indexVertices(old)
+	newV := indexVertices(new)
+	for _, k := range sortedKeys(newV) {
+		nv, ov := newV[k], oldV[k]
+		if ov == nil || !ov.Interface || !nv.Interface || !nv.Exported || slices.Equal(ov.TypeSet, nv.TypeSet) {
+			continue
+		}
+		d.Breaking = append(d.Breaking, fmt.Sprintf("exported constraint %s changed type set: %v -> %v — "+
+			"instantiations or generic code may no longer compile", nv.ID, ov.TypeSet, nv.TypeSet))
+	}
 }
 
 // diffIfaceMethods는 공개 인터페이스의 메서드 집합이 늘어난 변경을 breaking으로 잡는다

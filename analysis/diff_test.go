@@ -508,3 +508,27 @@ func TestDiffInterfaceFallsBackWithoutBothMarkers(t *testing.T) {
 		t.Fatalf("an old document without method sets must not make existing methods look gained: %q", d.Breaking)
 	}
 }
+
+// TestDiffConstraintTypeSet은 공개 제약 인터페이스의 타입 집합 변경을 breaking으로 잡는지
+// 확인한다 — 좁히면 인스턴스화가, 넓히면 그 제약을 쓰는 제네릭 본문이 깨질 수 있다.
+// 두 문서 모두 표시가 있어야 비교한다(옛 문서의 typeSet 부재는 "몰랐다").
+func TestDiffConstraintTypeSet(t *testing.T) {
+	mk := func(marker bool, set ...string) *graph.Document {
+		return &graph.Document{Level: graph.LevelSymbol, InterfaceTypeSets: marker, Vertices: []graph.Vertex{
+			{ID: "m/a.Number", Name: "Number", Kind: graph.KindType, Package: "m/a", Interface: true,
+				Exported: true, TypeSet: set},
+			{ID: "m/a.num", Name: "num", Kind: graph.KindType, Package: "m/a", Interface: true, TypeSet: set},
+		}}
+	}
+	d := DiffDocuments(mk(true, "~int | ~int64"), mk(true, "~int"))
+	if !slices.Equal(d.Breaking, []string{
+		"exported constraint m/a.Number changed type set: [~int | ~int64] -> [~int] — instantiations or generic code may no longer compile"}) {
+		t.Fatalf("a narrowed exported constraint must be breaking: %q", d.Breaking)
+	}
+	if d := DiffDocuments(mk(true, "~int"), mk(true, "~int")); len(d.Breaking) != 0 {
+		t.Fatalf("an unchanged type set is not breaking: %q", d.Breaking)
+	}
+	if d := DiffDocuments(mk(false), mk(true, "~int")); len(d.Breaking) != 0 {
+		t.Fatalf("without the marker on both documents type sets are not compared: %q", d.Breaking)
+	}
+}
