@@ -2,7 +2,16 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — RTA의 인터페이스 메서드 판정 (2026-09-25, fix/rta-interface-methods)
+## 최근 완료 — JSON 빈 목록을 []로 (2026-09-25, fix/json-empty-lists)
+
+결과가 없으면 `"unreachable": null`처럼 목록 필드가 null로 나갔다(SARIF `results: null`은
+명세 위반). CLI JSON 산출물(보고서·`emitJSON`·baseline·MCP·SARIF·bridges·schema)을
+`marshalReport` 한 곳으로 모아 omitempty 없는 nil 슬라이스를 빈 배열로 채운다(reflect
+스택 순회 — 재귀 없음). 선택 필드(omitempty)는 여전히 키가 빠진다. 곁다리: 보고서 직렬화
+오류를 무시하던 `out, _ :=` 네 곳을 `emitJSON`으로 전파. 옛 `TestCyclesJSON`이 "null"
+문자열로 통과하던 약한 검사를 봉투 파싱으로 교체. `export`(graph 문서)는 범위 밖.
+
+## 이전 완료 — RTA의 인터페이스 메서드 판정 (2026-09-25, PR #26 머지)
 
 인터페이스 메서드 정점은 추상이라 SSA 함수가 없어 `--algo rta`에서 늘 unreachable이었다
 (PR #24 리뷰가 찾은 기존 결함 — actionlint `(Pass).VisitStep` 등 실제 호출되는 메서드).
