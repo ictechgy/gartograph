@@ -663,13 +663,14 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 		for _, r := range roots {
 			rootSet[r] = true
 		}
-		adj, _, err := source.RTAAdjacency(opts, doc, rootSet)
+		adj, rtaReach, err := source.RTAAdjacency(opts, doc, rootSet)
 		if err != nil {
 			return fail(stderr, err)
 		}
 		if !doc.HasVertex(id) {
 			return fail(stderr, fmt.Errorf("%w: %s", analysis.ErrNotFound, id))
 		}
+		adj = analysis.WithAbstractCalls(doc, adj, analysis.Reachable(doc, roots), rtaReach)
 		path, found := analysis.ExplainAdjacency(adj, id, source.ExplainRoots(doc, roots))
 		if !found {
 			fmt.Fprintf(stdout,

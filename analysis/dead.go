@@ -198,13 +198,18 @@ func Dead(d *graph.Document, reachable map[string]bool) []Finding {
 // 넓어진다는 점이 사유와 limitation으로 구분되어야 한다.
 func DeadRTA(d *graph.Document, graphReach, rtaReach map[string]bool) []Finding {
 	var out []Finding
+	byID := indexByID(d)
+	usedAbstract := abstractMethodsUsedBy(d, byID, liveSources(byID, graphReach, rtaReach))
 	for _, v := range d.Symbols() {
 		callable := v.Kind == graph.KindFunc || v.Kind == graph.KindMethod
 		var dead bool
 		reason := ReasonUnreachable
-		if callable {
+		switch {
+		case callable && isAbstractMethod(byID, v.ID):
+			dead, reason = !usedAbstract[v.ID] && !rtaReach[v.ID], ReasonRTA
+		case callable:
 			dead, reason = !rtaReach[v.ID], ReasonRTA
-		} else {
+		default:
 			dead = !graphReach[v.ID]
 		}
 		if dead {
@@ -221,6 +226,84 @@ func DeadRTA(d *graph.Document, graphReach, rtaReach map[string]bool) []Finding 
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// isAbstractMethod는 메서드 정점이 인터페이스 메서드(추상 — SSA 함수가 없어 RTA 도달
+// 집합에 나타날 수 없다)인지 본다. 소유자는 멤버 ID에서, 충돌 접미사 형태도 조회한다.
+func isAbstractMethod(byID map[string]*graph.Vertex, id string) bool {
+	owner, ok := graph.MemberOwner(id)
+	if !ok {
+		return false
+	}
+	v := byID[owner]
+	if v == nil || v.Kind != graph.KindType {
+		v = byID[owner+graph.CollisionSuffix]
+	}
+	return v != nil && v.Interface
+}
+
+// WithAbstractCalls는 RTA 인접 맵에 RTA 도달 함수 → 인터페이스 메서드 간선을 더한다.
+// DeadRTA가 추상 메서드를 이 간선으로 판정하므로 explain도 같은 간선을 봐야 한다 —
+// 판정은 살렸는데 경로가 없다고 하면 모순이다.
+// graphReach는 같은 루트에서의 그래프 도달 집합이다(var 출발 간선 판정용).
+func WithAbstractCalls(d *graph.Document, adj map[string][]string,
+	graphReach, rtaReach map[string]bool) map[string][]string {
+	touched := map[string]bool{}
+	byID := indexByID(d)
+	for _, e := range abstractCallEdges(d, byID, liveSources(byID, graphReach, rtaReach)) {
+		adj[e.From] = append(adj[e.From], e.To)
+		touched[e.From] = true
+	}
+	for from := range touched {
+		adj[from] = sortedUnique(adj[from])
+	}
+	return adj
+}
+
+// abstractMethodsUsedBy는 RTA가 도달한 함수가 호출·참조하는 인터페이스 메서드 집합이다.
+func abstractMethodsUsedBy(d *graph.Document, byID map[string]*graph.Vertex,
+	live func(string) bool) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range abstractCallEdges(d, byID, live) {
+		out[e.To] = true
+	}
+	return out
+}
+
+// liveSources는 추상 메서드 호출 간선의 출발점이 살아 있는지의 판정이다. 함수·메서드는
+// RTA 도달로, 호출할 수 없는 정점(패키지 변수에 담긴 클로저·함수 표 — 간선이 var에서
+// 나간다, pkg._)은 DeadRTA가 비호출 심볼을 판정하는 그래프 도달성으로 본다.
+func liveSources(byID map[string]*graph.Vertex, graphReach, rtaReach map[string]bool) func(string) bool {
+	return func(id string) bool {
+		v := byID[id]
+		if v != nil && (v.Kind == graph.KindFunc || v.Kind == graph.KindMethod) {
+			return rtaReach[id]
+		}
+		return rtaReach[id] || graphReach[id]
+	}
+}
+
+// abstractCallEdges는 RTA 도달 함수에서 인터페이스 메서드로 가는 call·references 간선이다.
+// 수확 그래프가 인터페이스 메서드 호출 지점을 담는다 — 호출하는 쪽이 RTA로 살아 있으면
+// 그 추상 메서드도 쓰이고, 죽은 코드에서만 불리면 보고된다.
+func abstractCallEdges(d *graph.Document, byID map[string]*graph.Vertex, live func(string) bool) []graph.Edge {
+	var out []graph.Edge
+	for _, e := range d.Edges {
+		if (e.Kind == graph.EdgeCall || e.Kind == graph.EdgeReferences) && live(e.From) &&
+			isAbstractMethod(byID, e.To) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// indexByID는 정점 ID → 정점 색인이다.
+func indexByID(d *graph.Document) map[string]*graph.Vertex {
+	out := make(map[string]*graph.Vertex, len(d.Vertices))
+	for i := range d.Vertices {
+		out[d.Vertices[i].ID] = &d.Vertices[i]
+	}
 	return out
 }
 
