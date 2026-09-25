@@ -33,6 +33,9 @@ type harvester struct {
 	// packageIDs는 수확 전부터 있던 패키지 정점 ID다 — 심볼 ID가 이와 겹치면
 	// disambiguate가 접미사를 붙인다(h.id).
 	packageIDs map[string]bool
+	// initRoots는 초기화 루트 정점 ID → doc.Vertices 인덱스다(위치 갱신용).
+	initRoots      map[string]int
+	generatedFiles map[string]bool // 파일 → 생성 파일 여부 캐시
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -48,6 +51,9 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		fieldIDs: make(map[types.Object]string),
 
 		packageIDs: make(map[string]bool),
+
+		initRoots:      make(map[string]int),
+		generatedFiles: make(map[string]bool),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -57,6 +63,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	}
 	wantSymbols := level == graph.LevelSymbol
 	doc.InterfaceMethodSets = true // fillTypeShape가 type 레벨부터 인터페이스 Methods를 채운다
+	doc.InitializerRoots = wantSymbols // specEdges가 심볼 레벨에서 pkg._를 수확한다
 
 	h.addSymbolVertices(internal, wantSymbols)
 	h.addStructuralEdges(internal)
@@ -415,15 +422,35 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 // init처럼 한 정점으로 모이고 위치는 처음 본 선언이다.
 func (h *harvester) blankVertex(p *packages.Package, name *ast.Ident) {
 	id := p.PkgPath + "._"
-	h.vertex(graph.Vertex{
-		ID:       id,
-		Kind:     graph.KindVar,
-		Name:     "_",
-		Package:  p.PkgPath,
-		Position: position(p, name.Pos()),
-	})
+	pos := position(p, name.Pos())
+	if i, ok := h.initRoots[id]; ok {
+		h.preferHandWritten(&h.doc.Vertices[i], pos)
+		return
+	}
+	h.initRoots[id] = len(h.doc.Vertices)
+	h.vertex(graph.Vertex{ID: id, Kind: graph.KindVar, Name: "_", Package: p.PkgPath, Position: pos})
 	h.edge(p.PkgPath, id, graph.EdgeContains, nil)
 	h.root(id)
+}
+
+// preferHandWritten은 합쳐진 초기화 루트의 위치를 손으로 쓴 선언 쪽으로 옮긴다.
+// generated는 위치의 파일로 정해지므로(markGenerated), 생성 파일 선언이 먼저 보였다고
+// 손으로 쓴 선언까지 모인 정점이 generated가 되면 안 된다 — 기여한 선언이 전부 생성
+// 파일일 때만 generated다.
+func (h *harvester) preferHandWritten(v *graph.Vertex, pos *graph.Position) {
+	if v.Position != nil && pos != nil && h.isGenerated(v.Position.File) && !h.isGenerated(pos.File) {
+		v.Position = pos
+	}
+}
+
+// isGenerated는 파일이 생성 파일인지 캐시해 본다(markGenerated와 같은 판정).
+func (h *harvester) isGenerated(file string) bool {
+	gen, ok := h.generatedFiles[file]
+	if !ok {
+		gen = isGeneratedFile(file)
+		h.generatedFiles[file] = gen
+	}
+	return gen
 }
 
 // keepMarked는 주석 그룹에 keep 표지가 있는지 본다.
@@ -481,7 +508,7 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
 				continue
 			}
 			id := h.id(obj)
-			if name.Name == "_" {
+			if name.Name == "_" && h.referencesModule(p, specExprs(s)) {
 				h.blankVertex(p, name)
 			}
 			if keep {
@@ -516,6 +543,15 @@ func (h *harvester) initializerEdges(p *packages.Package, s *ast.ValueSpec) {
 		h.inspect(p, v, p.PkgPath+"._")
 	}
 	h.extRefs = counted
+}
+
+// specExprs는 값 스펙의 선언 타입과 초기화 식을 모은다 — 빈 선언은 타입만으로도
+// 모듈 심볼을 쓴다(var _ I = (*T)(nil)의 I).
+func specExprs(s *ast.ValueSpec) []ast.Expr {
+	if s.Type == nil {
+		return s.Values
+	}
+	return append([]ast.Expr{s.Type}, s.Values...)
 }
 
 // referencesModule은 식들이 문서 정점인 모듈 심볼을 하나라도 참조하는지 본다.
