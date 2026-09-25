@@ -101,9 +101,9 @@ gartograph unused-deps --strict
 
 # Compare two saved documents: structure drift and breaking signals
 # breaking = exported symbol removed/unexported, kind changed, signature
-# reference dropped, interface gained a method (declared, through an
-# embedded module interface, or by newly embedding one — embedding an
-# interface from outside the module is not visible), struct field contract
+# reference dropped, interface gained a method or changed a method
+# signature (declared or through any embedding, io.Reader included, when
+# both documents carry interface method sets), struct field contract
 # broken, exported const value changed
 gartograph diff old.json new.json --strict
 
@@ -323,9 +323,13 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
 `version: 2`, `tool: "gartograph"`, `level`, `root` (filesystem dir),
 `module` (module path), `roots` (harvested retention roots: `main`, `init`,
 plus `Test*`/`Benchmark*`/`Example*`/`Fuzz*` entry points under `--tests`),
-`vertices`, `edges`, `limitations`, and `anonymousDispatch: true` when
+`vertices`, `edges`, `limitations`, `anonymousDispatch: true` when
 method `satisfies` facts include anonymous interfaces from dependency
-source (symbol-level harvests; older documents lack it).
+source (symbol-level harvests; older documents lack it), and
+`interfaceMethodSets: true` when interface type vertices carry `methods`
+(the full method set, embeddings included, as sorted `Name(params) results`
+entries — without the marker an absent list means "not harvested", with it
+"no methods").
 
 Edges carry `positions` — every source site where the relation holds
 (import decls for `import`, call expressions for `call`, and so on).

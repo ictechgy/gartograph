@@ -74,8 +74,8 @@ gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트�
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 # (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·
-#  인터페이스 메서드 추가(직접·모듈 안 임베드 경유·새 임베드 — 모듈 밖 인터페이스
-#  임베드는 안 보임)·struct 필드 계약 파괴·공개 상수 값 변경)
+#  인터페이스 메서드 추가·서명 변경(직접·임베드 경유 — 두 문서에 메서드 집합이 있으면
+#  io.Reader 같은 모듈 밖 임베드도)·struct 필드 계약 파괴·공개 상수 값 변경)
 gartograph metrics                             # Ca/Ce/불안정성 + 추상성(A)·주 계열
                                                # 거리(D=|A+I-1|) + orphan 패키지
                                                # (A/D는 타입 레벨 수확이 필요)
@@ -282,7 +282,10 @@ breaking으로 분류하는 재료입니다.
 인터페이스(비공개 `context.stringer`, `internal/` 경로 등)는 다른 인터페이스(공개 명명·
 `error`·이름 없는 표기)가 그 메서드를 설명하지 못할 때만 싣습니다 — 목록이 비지
 않으므로 도달성은 같습니다. 문서는 이름 없는 인터페이스까지 수확했으면
-`anonymousDispatch: true`를 싣습니다(심볼 레벨 수확, 옛 문서엔 없음).
+`anonymousDispatch: true`를 싣습니다(심볼 레벨 수확, 옛 문서엔 없음). 인터페이스 타입
+정점은 `methods`(임베드 포함 전체 메서드 집합, 정렬된 `Name(params) results`)를 답고,
+문서는 `interfaceMethodSets: true`를 싣습니다 — 이 표시가 없으면 목록 부재는 "몰랐다",
+있으면 "메서드 없음"입니다.
 간선 종류: `import`/`contains`/`embeds`/`implements`/`references`/`call`/
 `signature`(선언 시그니처 안의 타입 참조 — `contains`와 달리 의존 관계).
 인터페이스 호출은 CHA 팬아웃으로 인터페이스 메서드와 모든 구현 메서드에
