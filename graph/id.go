@@ -19,11 +19,11 @@ func CanonicalID(id string) string {
 	return strings.TrimSuffix(id, CollisionSuffix)
 }
 
-// MethodOwner는 메서드·필드 정점 ID("pkgpath.(Recv).Name")에서 소유 타입의 ID
+// MemberOwner는 메서드·필드 정점 ID("pkgpath.(Recv).Name")에서 소유 타입의 ID
 // ("pkgpath.Recv")를 돌려준다. import 경로에는 괄호를 쓸 수 없어 첫 ".("가 경로와
 // 리시버의 경계다. 소유 타입 ID가 패키지와 겹치면 문서에는 CollisionSuffix가 붙어
 // 있다 — 조회하는 쪽이 두 형태를 다 본다. 멤버 ID가 아니면 false다.
-func MethodOwner(id string) (string, bool) {
+func MemberOwner(id string) (string, bool) {
 	open := strings.Index(id, ".(")
 	if open < 0 {
 		return "", false
