@@ -640,12 +640,61 @@ func TestBlankInitializersAreRoots(t *testing.T) {
 	}
 }
 
-// containsLimitation은 문서 limitation 중 부분 문자열을 담은 것이 있는지 본다.
-func containsLimitation(doc *graph.Document, part string) bool {
-	return slices.ContainsFunc(doc.Limitations, func(l string) bool { return strings.Contains(l, part) })
-}
-
 // hasEdgeTo는 종류와 상관없이 from→to 간선이 있는지 본다.
 func hasEdgeTo(doc *graph.Document, from, to string) bool {
 	return slices.ContainsFunc(doc.Edges, func(e graph.Edge) bool { return e.From == from && e.To == to })
+}
+
+// TestSideEffectInitializersAreRoots는 이름 있는 패키지 변수라도 초기화식이 실제로
+// 호출을 실행하면 그 호출이 패키지 초기화 루트(pkg._)에서 닿는지 확인한다 —
+// var registered = register()는 registered를 아무도 읽지 않아도 초기화 때 실행된다.
+// 호출이 없는 초기화식(함수 값 표·형 변환·함수 리터럴 본문)은 변수를 거쳐서만 닿는다.
+func TestSideEffectInitializersAreRoots(t *testing.T) {
+	doc := loadSymbol(t, testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+type Duration int
+
+var registered = register()
+var table = map[string]func(){"a": handleA}
+var lazy = func() { inner() }
+var d = Duration(3)
+var n = len("abc")
+
+func register() int { return 1 }
+func handleA()      {}
+func inner()        {}
+
+func main() {}
+`,
+	}))
+	const m = "example.com/fixture"
+	if !slices.Contains(doc.Roots, m+"._") || !hasEdgeTo(doc, m+"._", m+".register") {
+		t.Fatalf("a side-effecting initializer must be reached from the package init root, roots=%v", doc.Roots)
+	}
+	for _, to := range []string{m + ".handleA", m + ".inner", m + ".Duration"} {
+		if hasEdgeTo(doc, m+"._", to) {
+			t.Fatalf("%s is not executed at init and must stay behind its variable", to)
+		}
+	}
+	// 모듈 심볼을 참조하지 않는 초기화식(var ErrX = errors.New(...))은 간선 없는 루트만
+	// 만든다 — 흔한 관용구라 정점·루트 노이즈가 된다.
+	lone := loadSymbol(t, testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport \"errors\"\n\nvar ErrX = errors.New(\"x\")\n\nfunc main() { _ = ErrX }\n",
+	}))
+	if _, ok := lone.VertexByID(m + "._"); ok {
+		t.Fatal("an initializer that references no module symbol must not create an init root")
+	}
+}
+
+// TestExplainRoots는 RTA explain 출발점이 문서 루트에 패키지별 합성 init 순회 ID를
+// 더하는지 확인한다 — 합성 init은 RTA 루트지만 문서 정점이 아니다.
+func TestExplainRoots(t *testing.T) {
+	doc := &graph.Document{Vertices: []graph.Vertex{
+		{ID: "m/a", Kind: graph.KindPackage}, {ID: "m/a.F", Kind: graph.KindFunc},
+	}}
+	got := ExplainRoots(doc, []string{"m/a.F"})
+	if !slices.Equal(got, []string{"m/a.F", "m/a" + PackageInitSuffix}) {
+		t.Fatalf("explain roots must add one synthetic initializer per package, got %v", got)
+	}
 }
