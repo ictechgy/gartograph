@@ -794,41 +794,58 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 
 // dispatchTargets는 인터페이스 메서드 선택의 CHA 구현 목록이다. 수신자가 인터페이스인
 // 경우뿐 아니라, struct에 임베드한 인터페이스에서 승격된 메서드(s.M() — 수신자는 struct,
-// 메서드는 인터페이스 소속)도 동적 디스패치다. 미리 계산한 impls가 비면 인스턴스화된 제네릭
-// 인터페이스(G[int])일 수 있다 — 원형은 타입 파라미터 때문에 Implements를 물을 수 없어
-// impls가 비므로, 호출 지점의 인스턴스로 구현자를 찾는다. 모듈 밖 인터페이스(io.Closer 등)는
-// 팬아웃하지 않는다 — 메서드 정점이 없고, satisfies·receiver 규칙이 리시버 도달성으로 더
-// 정밀하게 다룬다(모든 모듈 구현자로 퍼뜨리면 죽은 구현까지 살린다).
+// 메서드는 인터페이스 소속)도 동적 디스패치다. 미리 계산한 impls가 있으면 그대로 쓴다 —
+// 외부 제네릭 인터페이스를 임베드한 모듈 인터페이스도 여기로 모인다. 비었으면 인스턴스화된
+// 모듈 제네릭 인터페이스(G[int])일 수 있다 — 원형은 타입 파라미터 때문에 Implements를
+// 물을 수 없어 impls가 비므로, 호출 지점의 인스턴스로 구현자를 찾는다. 모듈 밖
+// 인터페이스(io.Closer 등)는 그 경로로 가지 않는다 — satisfies·receiver 규칙이 리시버
+// 도달성으로 더 정밀하게 다룬다(모든 모듈 구현자로 퍼뜨리면 죽은 구현까지 살린다).
 func (h *harvester) dispatchTargets(sel *types.Selection, fn *types.Func, id string) []string {
 	recv := fn.Signature().Recv()
-	if !h.vertices[id] || (!isInterface(sel.Recv()) && (recv == nil || !types.IsInterface(recv.Type()))) {
+	if !isInterface(sel.Recv()) && (recv == nil || !types.IsInterface(recv.Type())) {
 		return nil
 	}
-	if impls := h.impls[id]; len(impls) > 0 || recv == nil {
+	if impls := h.impls[id]; len(impls) > 0 || recv == nil || !h.vertices[id] {
 		return impls
 	}
-	return h.instanceImplementers(recv.Type(), fn.Name())
+	return h.instanceImplementers(recv.Type(), fn)
 }
 
-// instanceImplementers는 (인스턴스화된) 인터페이스 타입을 만족하는 모듈 구체 타입의 그
-// 이름 메서드 ID들이다. 호출 지점마다 모든 구체 타입을 훑지 않도록 결과를 캐시한다.
-func (h *harvester) instanceImplementers(iface types.Type, name string) []string {
-	key := types.TypeString(iface, nil) + "\x00" + name
+// instanceImplementers는 (인스턴스화된) 인터페이스 타입의 메서드 fn을 구현하는 모듈 구체
+// 타입의 메서드 ID들이다. 메서드는 이름이 아니라 인터페이스 메서드 객체로 찾는다 — 비공개
+// 메서드는 패키지까지 맞아야 찾힌다. 인터페이스 인스턴스에 타입 파라미터가 섞였거나(제네릭
+// 함수 안의 G[X]) 구체 타입이 제네릭 원형(Box[X])이면 Implements로 판정할 수 없어 같은
+// 메서드를 가진 것으로 과대 근사한다("살아 있다" 쪽). 결과는 캐시한다.
+func (h *harvester) instanceImplementers(iface types.Type, fn *types.Func) []string {
+	key := types.TypeString(iface, nil) + "\x00" + fn.Id()
 	if out, ok := h.instanceImpls[key]; ok {
 		return out
 	}
-	var out []string
 	it, _ := iface.Underlying().(*types.Interface)
+	var out []string
 	for _, t := range h.concrete {
-		if it == nil || (!types.Implements(t, it) && !types.Implements(types.NewPointer(t), it)) {
+		if it == nil || !implementsLoosely(t, it, iface) {
 			continue
 		}
-		if m, ok := types.NewMethodSet(types.NewPointer(t)).Lookup(nil, name).Obj().(*types.Func); ok {
+		sel := types.NewMethodSet(types.NewPointer(t)).Lookup(fn.Pkg(), fn.Name())
+		if sel == nil {
+			continue
+		}
+		if m, ok := sel.Obj().(*types.Func); ok {
 			out = append(out, h.id(m))
 		}
 	}
 	h.instanceImpls[key] = out
 	return out
+}
+
+// implementsLoosely는 구체 타입이 인터페이스를 만족하는지 본다 — 어느 한쪽에 타입
+// 파라미터가 남아 있어 판정할 수 없으면 참(메서드 조회가 이름·패키지로 거른다).
+func implementsLoosely(t *types.Named, it *types.Interface, iface types.Type) bool {
+	if t.TypeParams().Len() > 0 || mentionsUnnameable(iface) {
+		return true
+	}
+	return types.Implements(t, it) || types.Implements(types.NewPointer(t), it)
 }
 
 // sigTypeEdges는 선언의 타입 표현식 안 타입 참조를 signature 간선으로 긋는다.
@@ -867,8 +884,9 @@ func (h *harvester) selectorEdge(p *packages.Package, sel *ast.SelectorExpr, fro
 		pos := position(p, sel.Pos())
 		h.refObject(s.Obj(), from, pos)
 		h.promotedFields(s, from, pos)
-		// 인터페이스 메서드 값(f := i.M)도 나중에 불린다 — 호출처럼 구현으로 퍼뜨린다.
-		if fn, ok := s.Obj().(*types.Func); ok && s.Kind() == types.MethodVal && fn.Pkg() != nil {
+		// 인터페이스 메서드 값(f := i.M)·메서드 표현식(e := I.M)도 나중에 불린다 — 호출처럼
+		// 구현으로 퍼뜨린다.
+		if fn, ok := s.Obj().(*types.Func); ok && fn.Pkg() != nil {
 			for _, impl := range h.dispatchTargets(s, fn, h.id(fn)) {
 				h.edge(from, impl, graph.EdgeReferences, pos)
 			}

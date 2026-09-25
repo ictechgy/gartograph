@@ -15,6 +15,13 @@ PR #26 리뷰가 찾은 CHA 기존 거짓 dead 2건.
   호출이 모든 모듈 구현자로 퍼져 go-mssqldb 테스트 전용 `memoryBuffer`가 살아났다(정밀도
   손실). satisfies·receiver 규칙이 리시버 도달성으로 더 정밀하게 다룬다. 회귀 테스트로 고정.
 - 실측: 벤치 세 저장소 CHA·`--tests`·RTA main과 동일(해당 패턴 없음), fixture로 수정 전 실패.
+- 리뷰 반영(REQUEST CHANGES): 비공개 제네릭 인터페이스 호출이 `Lookup(nil, name)`으로 nil을
+  역참조해 **패닉**했다 — 인터페이스 메서드 객체로(`fn.Pkg()`·`fn.Id()`) 찾고 nil을 건너뛴다.
+  외부 제네릭 인터페이스를 임베드한 모듈 인터페이스(`interface{ dep.G[int] }`)는 정점 검사가
+  미리 계산한 impls까지 막아 main 대비 회귀였다 — impls가 있으면 정점 여부와 무관하게 쓴다.
+  제네릭 구체 타입(`Box[X]`)·타입 파라미터가 섞인 인스턴스(제네릭 함수 안 `G[X]`)는 Implements로
+  판정할 수 없어 같은 메서드를 가진 것으로 과대 근사(`implementsLoosely`). 메서드 표현식
+  (`e := I.M`)도 팬아웃. 경로별 fixture와 변이 4개 전부 잡힘.
 
 ## 이전 완료 — universe 타입 임베드 수확 패닉 (2026-09-25, PR #30 머지)
 

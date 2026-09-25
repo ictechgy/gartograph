@@ -2860,3 +2860,74 @@ func main() {
 		t.Fatalf("a call through an external interface must not keep every module implementer alive: %s", out)
 	}
 }
+
+// TestDeadCHADispatchEdgeCases는 CHA 팬아웃 보강의 경계를 경로별로 고정한다 — 비공개
+// 제네릭 인터페이스 호출(패닉 회귀), 외부 제네릭 인터페이스를 임베드한 모듈 인터페이스
+// (미리 계산한 impls 사용), 제네릭 구체 타입·제네릭 함수 안 호출(이름 기반 과대 근사),
+// 메서드 값·메서드 표현식으로만 쓰는 인터페이스 메서드.
+func TestDeadCHADispatchEdgeCases(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod":     "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep => ./dep\n",
+		"dep/go.mod": "module example.com/dep\n\ngo 1.27\n",
+		"dep/dep.go": "package dep\n\ntype G[X any] interface{ Get() X }\n",
+		"main.go": `package main
+
+import "example.com/dep"
+
+type g[X any] interface{ get() X }
+type Priv struct{}
+
+func (Priv) get() int { return 0 }
+
+type MyG interface{ dep.G[int] }
+type Ext struct{}
+
+func (Ext) Get() int { return 0 }
+
+type Gen[X any] interface{ Val() X }
+type Box[X any] struct{ x X }
+
+func (b Box[X]) Val() X { return b.x }
+
+type InFunc struct{}
+
+func (InFunc) Val() string { return "" }
+
+func use[X any](v Gen[X]) X { return v.Val() }
+
+type MV interface{ Run() }
+type RunOnly struct{}
+
+func (RunOnly) Run() {}
+
+type ME interface{ Do() }
+type DoOnly struct{}
+
+func (DoOnly) Do() {}
+
+func main() {
+	var p g[int] = Priv{}
+	_ = p.get()
+	var m MyG = Ext{}
+	_ = m.Get()
+	var b Gen[int] = Box[int]{}
+	_ = b.Val()
+	_ = use[string](InFunc{})
+	var mv MV = RunOnly{}
+	f := mv.Run
+	f()
+	e := ME.Do
+	e(DoOnly{})
+}
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead must not crash: %d %s", code, errb)
+	}
+	for _, alive := range []string{"(Priv).get", "(Ext).Get", "(Box).Val", "(InFunc).Val", "(RunOnly).Run", "(DoOnly).Do"} {
+		if strings.Contains(out, `"id": "example.com/fixture.`+alive+`"`) {
+			t.Fatalf("%s is reached through interface dispatch but was reported: %s", alive, out)
+		}
+	}
+}
