@@ -11,6 +11,7 @@ package source
 
 import (
 	"fmt"
+	"go/types"
 	"sort"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -34,7 +35,13 @@ func RTAReachable(opts Options, doc *graph.Document, roots map[string]bool) (map
 	if err != nil {
 		return nil, err
 	}
-	return namer.reachable(res), nil
+	reach := namer.reachable(res)
+	// 루트는 정의상 도달한다 — 인스턴스 없는 제네릭 메서드처럼 SSA 함수가 없는 루트도
+	// "루트이면서 unreachable"로 보고되면 모순이다.
+	for r := range roots {
+		reach[r] = true
+	}
+	return reach, nil
 }
 
 // RTAAdjacency는 RTA 호출 그래프의 정점 ID 인접 맵과 도달 집합을 돌려준다.
@@ -167,11 +174,32 @@ func analyzeRTA(opts Options, namer rtaNamer) (*rta.Result, error) {
 func (n rtaNamer) packageRootFns(sp *ssa.Package) []*ssa.Function {
 	var out []*ssa.Function
 	for _, member := range sp.Members {
-		fn, ok := member.(*ssa.Function)
-		if !ok {
-			continue
+		switch m := member.(type) {
+		case *ssa.Function:
+			if id, named := n.name(m); m == sp.Func("init") || (named && n.roots[id]) {
+				out = append(out, m)
+			}
+		case *ssa.Type:
+			out = append(out, n.methodRootFns(sp.Prog, m.Type())...)
 		}
-		if id, named := n.name(fn); fn == sp.Func("init") || (named && n.roots[id]) {
+	}
+	return out
+}
+
+// methodRootFns는 타입의 메서드 중 문서 루트(keep 표지 등)인 것의 SSA 함수를 고른다.
+// 패키지 Members에는 메서드가 없어서, 이것 없이는 루트 메서드가 RTA에서 unreachable로
+// 보고되는 모순이 생긴다. 포인터 메서드 집합이 값·포인터 리시버를 다 담는다.
+// 제네릭 타입은 인스턴스 없이 메서드 함수가 없고, 인터페이스는 구현이 없어 건너뛴다.
+func (n rtaNamer) methodRootFns(prog *ssa.Program, t types.Type) []*ssa.Function {
+	named, ok := t.(*types.Named)
+	if !ok || named.TypeParams().Len() > 0 || types.IsInterface(named) {
+		return nil
+	}
+	var out []*ssa.Function
+	mset := prog.MethodSets.MethodSet(types.NewPointer(named))
+	for i := 0; i < mset.Len(); i++ {
+		fn := prog.MethodValue(mset.At(i))
+		if id, ok := n.name(fn); ok && n.roots[id] {
 			out = append(out, fn)
 		}
 	}

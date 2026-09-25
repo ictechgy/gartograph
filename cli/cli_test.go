@@ -2598,3 +2598,44 @@ func TestDiffInterfaceGainedMethodHarvested(t *testing.T) {
 		t.Fatalf("embedding an interface from outside the module must be breaking: %d %s", code, out)
 	}
 }
+
+// TestDeadRTAKeepsMethodRoots는 문서 루트인 메서드(keep 표지)가 --algo rta에서도
+// 루트로 잡히는지 확인한다 — SSA 패키지 Members에는 메서드가 없어, 루트이면서
+// unreachable로 보고되는 모순이 있었다. 제네릭 타입의 메서드는 인스턴스 없이 SSA
+// 함수가 없어 RTA 루트로 못 잡지만, 루트 자신은 정의상 도달한다.
+func TestDeadRTAKeepsMethodRoots(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+type T struct{}
+
+//gartograph:keep
+func (T) Kept() { helper() }
+
+func helper() {}
+
+type G[X any] struct{}
+
+//gartograph:keep
+func (G[X]) Generic() {}
+
+func main() {}
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--algo", "rta", "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead --algo rta failed: %d %s", code, errb)
+	}
+	var rep struct {
+		Unreachable []struct{ ID string } `json:"unreachable"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("dead output is not JSON: %v", err)
+	}
+	for _, f := range rep.Unreachable {
+		if f.ID == "example.com/fixture.(T).Kept" || f.ID == "example.com/fixture.helper" ||
+			f.ID == "example.com/fixture.(G).Generic" {
+			t.Fatalf("%s is a root (or reached from one) but rta reported it: %s", f.ID, out)
+		}
+	}
+}
