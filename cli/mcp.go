@@ -181,7 +181,7 @@ func (s *mcpServer) callTool(p toolCallParams) map[string]any {
 // 반환 형식은 CLI의 JSON 출력과 같다 — 같은 계약을 두 통로가 공유한다.
 func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 	marshal := func(v any) (string, error) {
-		b, err := json.MarshalIndent(v, "", "  ")
+		b, err := marshalReport(v)
 		return string(b), err
 	}
 	switch name {

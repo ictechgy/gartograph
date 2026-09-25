@@ -4,7 +4,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -396,11 +395,12 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 
 	switch *format {
 	case "json":
-		out, _ := json.MarshalIndent(cyclesReport{
+		if err := emitJSON(stdout, cyclesReport{
 			Cycles: cycles, Baselined: baselined,
 			StaleBaseline: stale, Limitations: limitations,
-		}, "", "  ")
-		fmt.Fprintln(stdout, string(out))
+		}); err != nil {
+			return fail(stderr, err)
+		}
 	case "sarif":
 		out, err := cyclesSARIF(cycles)
 		if err != nil {
@@ -547,13 +547,14 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 
 	switch *format {
 	case "json":
-		out, _ := json.MarshalIndent(deadReport{
+		if err := emitJSON(stdout, deadReport{
 			Algorithm: *algo,
 			Roots:     roots, UnknownRoots: unknown,
 			Unreachable: findings, Baselined: baselined,
 			StaleBaseline: stale, Limitations: limitations,
-		}, "", "  ")
-		fmt.Fprintln(stdout, string(out))
+		}); err != nil {
+			return fail(stderr, err)
+		}
 	case "sarif":
 		out, err := deadSARIF(findings)
 		if err != nil {
@@ -828,12 +829,13 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 
 	switch *format {
 	case "json":
-		out, _ := json.MarshalIndent(rulesReport{
+		if err := emitJSON(stdout, rulesReport{
 			Violations: violations, Baselined: baselined, StaleBaseline: stale,
 			Unmapped: unmapped, UnmappedExternal: rep.UnmappedExternal,
 			UnmatchedComponents: rep.UnmatchedComponents, Limitations: limitations,
-		}, "", "  ")
-		fmt.Fprintln(stdout, string(out))
+		}); err != nil {
+			return fail(stderr, err)
+		}
 	case "sarif":
 		out, err := rulesSARIF(violations)
 		if err != nil {
@@ -901,8 +903,9 @@ func cmdQuery(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, levelHint(doc, *graphPath, err))
 	}
 	sortNeighborsJSON(res)
-	out, _ := json.MarshalIndent(res, "", "  ")
-	fmt.Fprintln(stdout, string(out))
+	if err := emitJSON(stdout, res); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }
 
@@ -1120,7 +1123,7 @@ func printDiffText(d *analysis.Diff, w io.Writer) error {
 // emitJSON은 분석 결과를 JSON으로 쓴다. 출력 실패는 분석 성공과 다른
 // 사실이므로 에러를 돌려준다 — 잘린 리포트가 성공(0)으로 끝나면 안 된다.
 func emitJSON(w io.Writer, v any) error {
-	out, err := json.MarshalIndent(v, "", "  ")
+	out, err := marshalReport(v)
 	if err != nil {
 		return err
 	}
@@ -1414,7 +1417,7 @@ func cmdBridges(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	data, err := json.MarshalIndent(doc, "", "  ")
+	data, err := marshalReport(doc)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -1442,7 +1445,7 @@ func cmdSchema(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	data, err := json.MarshalIndent(doc, "", "  ")
+	data, err := marshalReport(doc)
 	if err != nil {
 		return fail(stderr, err)
 	}

@@ -142,7 +142,7 @@ func saveDeadBaseline(path string, findings []analysis.Finding) error {
 // 부분 쓰기가 남지 않게 임시 파일에 쓰고 rename한다 — export.SaveFile과
 // 같은 이유다.
 func saveBaselineJSON(path string, body any) error {
-	data, err := json.MarshalIndent(body, "", "  ")
+	data, err := marshalReport(body)
 	if err != nil {
 		return fmt.Errorf("encoding baseline: %w", err)
 	}

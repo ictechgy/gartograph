@@ -4,7 +4,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -80,7 +79,7 @@ type sarifLogical struct {
 // sarifLog는 결과와 규칙 색인을 SARIF 로그로 감싼다.
 // rules·cycles·dead가 같은 봉투를 쓰므로 한 곳에서 만든다.
 func sarifLog(rules []sarifRule, results []sarifResult) ([]byte, error) {
-	return json.MarshalIndent(sarifDoc{
+	return marshalReport(sarifDoc{
 		Schema:  "https://json.schemastore.org/sarif-2.1.0.json",
 		Version: "2.1.0",
 		Runs: []sarifRun{{
@@ -92,7 +91,7 @@ func sarifLog(rules []sarifRule, results []sarifResult) ([]byte, error) {
 			}},
 			Results: results,
 		}},
-	}, "", "  ")
+	})
 }
 
 // rulesSARIF는 규칙 위반을 SARIF 로그로 직렬화한다.

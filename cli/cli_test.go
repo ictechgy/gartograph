@@ -792,9 +792,11 @@ func TestCyclesJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("cycles json failed: %d %s", code, errb)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(out), "[") &&
-		!strings.Contains(out, "null") {
-		t.Fatalf("cycles --format json must emit JSON: %s", out)
+	var rep struct {
+		Cycles []json.RawMessage `json:"cycles"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil || rep.Cycles == nil || len(rep.Cycles) != 0 {
+		t.Fatalf("cycles --format json must emit an envelope with an empty cycles array: %v %s", err, out)
 	}
 }
 
@@ -2777,5 +2779,27 @@ func main() {
 	_, out, _ = run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/fixture.(I).Called")
 	if !strings.Contains(out, "root: example.com/fixture.main") || !strings.Contains(out, "-> example.com/fixture.(I).Called") {
 		t.Fatalf("rta explain must show the call into the interface method: %s", out)
+	}
+
+// TestJSONEmptyListsAreArrays는 결과가 없는 목록 필드가 null이 아니라 []로 나가는지
+// 확인한다 — 소비자가 null과 "없음"을 따로 다루게 하면 안 되고, SARIF는 results가
+// 배열이어야 유효하다. 선택 필드(omitempty)는 여전히 키가 빠진다.
+func TestJSONEmptyListsAreArrays(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"dead", "--format", "json"}, `"unreachable": []`},
+		{[]string{"dead", "--format", "sarif"}, `"results": []`},
+		{[]string{"cycles", "--format", "json"}, `"cycles": []`},
+		{[]string{"query", "example.com/fixture.main"}, `"dependsOn": []`},
+	} {
+		code, out, errb := run(t, append(c.args, "--dir", dir)...)
+		if code != 0 || !strings.Contains(out, c.want) || strings.Contains(out, ": null") {
+			t.Fatalf("%v: expected %s and no null lists: %d %s %s", c.args, c.want, code, out, errb)
+		}
 	}
 }
