@@ -773,3 +773,35 @@ func TestBlankExternalRefsCountedRegardlessOfOrder(t *testing.T) {
 		t.Fatalf("external refs of blank declarations must not depend on order:\n%q\n%q", externalFirst, moduleFirst)
 	}
 }
+
+// TestUniverseEmbedsDoNotCrash는 universe 타입(error·comparable)을 임베드한 인터페이스·
+// struct를 수확해도 패닉하지 않는지 확인한다 — universe 객체는 패키지가 없어 정점 ID를
+// 만들 수 없고, 임베드 간선의 대상이 되면 nil 역참조로 죽었다(type·symbol 레벨 모두).
+func TestUniverseEmbedsDoNotCrash(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+type E interface {
+	error
+	Code() int
+}
+
+type K interface{ comparable }
+
+type Wrapped struct{ error }
+
+func Eq[T K](a, b T) bool { return a == b }
+
+func main() { _ = Eq(1, 2); _ = Wrapped{} }
+`,
+	})
+	for _, level := range []graph.Level{graph.LevelType, graph.LevelSymbol} {
+		doc, err := Load(Options{Dir: dir, Level: level})
+		if err != nil {
+			t.Fatalf("%s: %v", level, err)
+		}
+		if _, ok := doc.VertexByID("example.com/fixture.E"); !ok {
+			t.Fatalf("%s: interface embedding error must still be a vertex", level)
+		}
+	}
+}

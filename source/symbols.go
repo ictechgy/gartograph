@@ -1040,7 +1040,9 @@ func namedOf(t types.Type) *types.TypeName {
 	if alias, ok := t.(*types.Alias); ok {
 		t = types.Unalias(alias)
 	}
-	if named, ok := t.(*types.Named); ok {
+	// universe 타입(error·comparable)은 패키지가 없어 정점이 없다 — 돌려주면 임베드 간선
+	// 대상의 ID를 만들다 nil 역참조로 죽는다(interface{ error; … }, struct{ error }).
+	if named, ok := t.(*types.Named); ok && named.Obj().Pkg() != nil {
 		return named.Obj()
 	}
 	return nil
