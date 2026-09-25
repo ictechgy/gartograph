@@ -553,7 +553,7 @@ func TestSymbolIDCollidingWithPackage(t *testing.T) {
 			t.Fatalf("symbol edge landed on package vertex %s: %+v", pkg, e)
 		}
 	}
-	sym := pkg + collisionSuffix
+	sym := pkg + graph.CollisionSuffix
 	if v, ok := doc.VertexByID(sym); !ok || v.Kind != graph.KindFunc {
 		t.Fatalf("colliding symbol must keep a vertex under %s, got %+v", sym, v)
 	}
@@ -563,7 +563,7 @@ func TestSymbolIDCollidingWithPackage(t *testing.T) {
 	}
 	// 리시버 타입도 같은 규칙 — 외부 디스패치 Receiver가 타입 정점을 가리킨다.
 	zerr, _ := doc.VertexByID("example.com/m/x.(Z).Error")
-	if zerr.Receiver != "example.com/m/x.Z"+collisionSuffix || !slices.Contains(zerr.Satisfies, "error") {
+	if zerr.Receiver != "example.com/m/x.Z"+graph.CollisionSuffix || !slices.Contains(zerr.Satisfies, "error") {
 		t.Fatalf("receiver must point at the suffixed type vertex: %+v", zerr)
 	}
 }
@@ -587,7 +587,7 @@ func main() { x.Run() }
 	if err != nil {
 		t.Fatal(err)
 	}
-	sym := "example.com/m/x.test" + collisionSuffix
+	sym := "example.com/m/x.test" + graph.CollisionSuffix
 	if !hasEdge(doc, "example.com/m/x.Run", sym, graph.EdgeCall) ||
 		!hasEdge(doc, sym, "example.com/m/x.helper", graph.EdgeCall) {
 		t.Fatalf("function test must keep its call edges beside the test main package")

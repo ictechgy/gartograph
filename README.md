@@ -340,10 +340,10 @@ declarations of a package share one retention-root vertex `pkg/path._`
 `--tests` main package `x.test`) can equal a symbol ID (`y` or `test` in
 `example.com/m/x`); only such colliding symbol IDs get a `#symbol` suffix
 (`example.com/m/x.y#symbol`) — `#` cannot appear in an import path, so the
-package keeps its plain path and every other ID is unchanged. Because the
-suffix depends on which packages are harvested, the same symbol can change ID
-across `--tests`/`--deps`/`exclude` settings or when a sibling `x.y/` directory
-appears — compare documents and baselines harvested the same way.
+package keeps its plain path and every other ID is unchanged. The suffix
+depends on which packages are harvested (a sibling `x.y/` directory, `--tests`,
+`--deps`, `exclude`), so `diff` and baselines pair `ID` with `ID#symbol` as
+the same symbol.
 `dead --algo rta --explain` may route through `pkgpath#init`, the synthetic
 package initializer (not a graph vertex). Vertex `kind`:
 `module`/`package`/`type`/`func`/`method`/`var`/`const`. Vertices carry

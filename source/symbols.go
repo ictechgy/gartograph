@@ -833,18 +833,11 @@ func (h *harvester) root(id string) {
 	h.doc.Roots = append(h.doc.Roots, id)
 }
 
-// collisionSuffix는 패키지 경로와 겹치는 심볼 ID 뒤에 붙는 접미사다.
-// 패키지 정점 ID는 import 경로 그대로라 점이 든 경로(example.com/m/x.y)는 패키지 x의
-// 심볼 y의 ID("pkgpath.Name")와 같아진다 — --tests의 테스트 main 패키지 x.test와
-// 함수 test도 그렇다. '#'는 import 경로에 쓸 수 없는 문자라 접미사 ID는 어떤 패키지와도
-// 겹치지 않는다. 겹치지 않는 ID는 그대로다.
-const collisionSuffix = "#symbol"
-
-// disambiguate는 심볼 ID가 패키지 정점 ID와 겹치면 접미사를 붙인다.
+// disambiguate는 심볼 ID가 패키지 정점 ID와 겹치면 접미사(graph.CollisionSuffix)를 붙인다.
 // 수확과 RTA가 같은 함수를 써야 두 그래프의 ID가 맞는다.
 func disambiguate(id string, packageIDs map[string]bool) string {
 	if packageIDs[id] {
-		return id + collisionSuffix
+		return id + graph.CollisionSuffix
 	}
 	return id
 }

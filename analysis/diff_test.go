@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -271,5 +272,56 @@ func TestConstValueBreaking(t *testing.T) {
 		&graph.Document{Vertices: []graph.Vertex{mk(true, `"2.0"`)}})
 	if len(d.Breaking) != 0 {
 		t.Fatalf("old doc without values must not flag every const: %+v", d)
+	}
+}
+
+// TestDiffPairsCollisionSuffix는 형제 디렉터리(x.V2/)가 생겨 심볼 x.V2의 ID가
+// x.V2#symbol로 바뀌어도 diff가 같은 심볼로 짝짓는지 확인한다 — 공개 API는 그대로인데
+// "제거·kind 변경" breaking을 내면 --strict가 거짓으로 실패한다. 새 패키지 x.V2는
+// 추가로 보고된다.
+func TestDiffPairsCollisionSuffix(t *testing.T) {
+	sym := graph.Vertex{ID: "m/x.V2", Kind: graph.KindFunc, Package: "m/x", Name: "V2", Exported: true}
+	old := &graph.Document{Level: graph.LevelSymbol, Vertices: []graph.Vertex{
+		{ID: "m/x", Kind: graph.KindPackage}, sym,
+	}, Edges: []graph.Edge{{From: "m/x", To: "m/x.V2", Kind: graph.EdgeContains}}}
+	moved := sym
+	moved.ID = "m/x.V2" + graph.CollisionSuffix
+	new := &graph.Document{Level: graph.LevelSymbol, Vertices: []graph.Vertex{
+		{ID: "m/x", Kind: graph.KindPackage}, {ID: "m/x.V2", Kind: graph.KindPackage}, moved,
+	}, Edges: []graph.Edge{{From: "m/x", To: moved.ID, Kind: graph.EdgeContains}}}
+	d := DiffDocuments(old, new)
+	if len(d.Breaking) != 0 || len(d.RemovedVertices) != 0 || len(d.ChangedVertices) != 0 {
+		t.Fatalf("suffix-only ID change must not look like a removal: %+v", d)
+	}
+	if len(d.AddedVertices) != 1 || d.AddedVertices[0] != "m/x.V2" {
+		t.Fatalf("only the new package is added: %v", d.AddedVertices)
+	}
+	if len(d.AddedEdges) != 0 || len(d.RemovedEdges) != 0 {
+		t.Fatalf("the same contains edge must pair across the suffix: +%v -%v", d.AddedEdges, d.RemovedEdges)
+	}
+}
+
+// TestDiffSignatureTargetsUseActualIDs는 signature 목표가 접미사를 사이에 두고 짝지어지되
+// 각 문서의 실제 ID로 보고되는지 확인한다 — 정규 ID로 보고하면 형제 x.U/가 있을 때 그
+// 이름이 패키지 정점을 가리켜 소비자가 엉뚱한 정점을 따라간다.
+func TestDiffSignatureTargetsUseActualIDs(t *testing.T) {
+	f := graph.Vertex{ID: "m/x.F", Kind: graph.KindFunc, Package: "m/x", Exported: true}
+	tt := graph.Vertex{ID: "m/x.T", Kind: graph.KindType, Package: "m/x", Exported: true}
+	u := graph.Vertex{ID: "m/x.U" + graph.CollisionSuffix, Kind: graph.KindType, Package: "m/x", Exported: true}
+	old := &graph.Document{Level: graph.LevelSymbol, Vertices: []graph.Vertex{f, tt},
+		Edges: []graph.Edge{{From: f.ID, To: tt.ID, Kind: graph.EdgeSignature}}}
+	new := &graph.Document{Level: graph.LevelSymbol,
+		Vertices: []graph.Vertex{f, tt, u, {ID: "m/x.U", Kind: graph.KindPackage}},
+		Edges: []graph.Edge{{From: f.ID, To: tt.ID, Kind: graph.EdgeSignature},
+			{From: f.ID, To: u.ID, Kind: graph.EdgeSignature}}}
+	d := DiffDocuments(old, new)
+	if len(d.SignatureChanges) != 1 || !slices.Equal(d.SignatureChanges[0].Added, []string{u.ID}) {
+		t.Fatalf("added target must be reported by the new document's ID: %+v", d.SignatureChanges)
+	}
+	d = DiffDocuments(new, old)
+	if !slices.ContainsFunc(d.Breaking, func(b string) bool {
+		return strings.HasSuffix(b, "no longer references "+u.ID)
+	}) {
+		t.Fatalf("removed target must be reported by the old document's ID: %v", d.Breaking)
 	}
 }

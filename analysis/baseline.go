@@ -4,7 +4,11 @@
 // 증명한 도입 조건이다 — baseline 없는 --strict는 대형 레포에서 쓸 수 없다.
 package analysis
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/ictechgy/gartograph/graph"
+)
 
 // SplitBaseline은 항목을 baseline에 이미 있는 것(baselined)과
 // 새 것(fresh)으로 나누고, baseline에만 남은 항목을 stale로 돌려준다.
@@ -61,20 +65,27 @@ func ViolationBaselineKey(v Violation) string {
 		// 위반이므로 컴포넌트와 상한 종류만으로 식별한다.
 		return v.Rule + "\x00" + v.Name + "\x00" + v.FromComponent + "\x00" + v.ToComponent
 	}
-	return v.Rule + "\x00" + string(v.Kind) + "\x00" + v.From + "\x00" +
-		v.To + "\x00" + v.FromComponent + "\x00" + v.ToComponent
+	return v.Rule + "\x00" + string(v.Kind) + "\x00" + graph.CanonicalID(v.From) + "\x00" +
+		graph.CanonicalID(v.To) + "\x00" + v.FromComponent + "\x00" + v.ToComponent
 }
 
 // CycleBaselineKey는 순환의 동일성을 정의한다.
 // Members는 Cycles가 이미 정렬해 내놓는다 — 같은 멤버 집합은 같은
 // 순환이다. 간선 목록은 멤버가 같으면 증거가 달라도 위반 사실은 같다.
+// 충돌 접미사(graph.CollisionSuffix)는 뗀다 — 수확 패키지 집합만 달라진 같은 순환이
+// 새 순환으로 울리지 않게.
 func CycleBaselineKey(c Cycle) string {
-	return strings.Join(c.Members, "\x00")
+	members := make([]string, len(c.Members))
+	for i, m := range c.Members {
+		members[i] = graph.CanonicalID(m)
+	}
+	return strings.Join(members, "\x00")
 }
 
 // FindingBaselineKey는 dead 보고의 동일성을 정의한다.
 // 심볼 ID와 종류가 같으면 같은 사실이다 — 사유(reason)나 알고리즘이
-// 달라져도 "도달 불가"로 보고된 대상은 같다.
+// 달라져도 "도달 불가"로 보고된 대상은 같다. 충돌 접미사도 뗀다 — --tests 유무처럼
+// 수확 패키지 집합만 달라 x.test가 x.test#symbol이 되어도 같은 심볼이다.
 func FindingBaselineKey(f Finding) string {
-	return string(f.Kind) + "\x00" + f.ID
+	return string(f.Kind) + "\x00" + graph.CanonicalID(f.ID)
 }

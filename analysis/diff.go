@@ -93,25 +93,29 @@ func diffVertices(d *Diff, old, new *graph.Document) {
 	oldSig := signatureTargets(old)
 	newSig := signatureTargets(new)
 
-	for _, id := range sortedKeys(oldV) {
-		nv, ok := newV[id]
+	for _, k := range sortedKeys(oldV) {
+		ov := oldV[k]
+		nv, ok := newV[k]
 		if !ok {
-			d.RemovedVertices = append(d.RemovedVertices, id)
-			if oldV[id].Exported {
+			d.RemovedVertices = append(d.RemovedVertices, ov.ID)
+			if ov.Exported {
 				d.Breaking = append(d.Breaking,
-					fmt.Sprintf("exported vertex removed: %s", id))
+					fmt.Sprintf("exported vertex removed: %s", ov.ID))
 			}
 			continue
 		}
-		recordVertexChanges(d, id, oldV[id], nv)
-		recordFieldChanges(d, id, oldV[id], nv)
-		recordSignatureChange(d, id, oldV[id], oldSig[id], newSig[id])
+		// 짝지어진 정점은 새 문서의 ID로 보고한다 — 소비자가 지금 찾을 수 있는 이름이다.
+		recordVertexChanges(d, nv.ID, ov, nv)
+		recordFieldChanges(d, nv.ID, ov, nv)
+		recordSignatureChange(d, nv.ID, ov, oldSig[k], newSig[k])
 	}
-	for _, id := range sortedKeys(newV) {
-		if _, ok := oldV[id]; !ok {
-			d.AddedVertices = append(d.AddedVertices, id)
+	for _, k := range sortedKeys(newV) {
+		if _, ok := oldV[k]; !ok {
+			d.AddedVertices = append(d.AddedVertices, newV[k].ID)
 		}
 	}
+	sort.Strings(d.RemovedVertices)
+	sort.Strings(d.AddedVertices)
 }
 
 // recordVertexChanges는 kind·exported·generated 플래그의 뒤바뀜을 적는다.
@@ -289,7 +293,7 @@ func isExportedName(name string) bool {
 // "메서드 정점"으로 향할 때다 — 새 인터페이스의 메서드는 신규 API이지
 // breaking이 아니므로 From이 old에 있어야 한다.
 func diffIfaceMethods(d *Diff, old, new *graph.Document) {
-	newV := indexVertices(new)
+	newV := verticesByID(new)
 	oldV := indexVertices(old)
 	oldE := indexEdges(old)
 	newE := indexEdges(new)
@@ -305,7 +309,7 @@ func diffIfaceMethods(d *Diff, old, new *graph.Document) {
 		if !ok || !tv.Interface {
 			continue
 		}
-		if _, inOld := oldV[e.From]; !inOld {
+		if _, inOld := oldV[vertexKey(*tv)]; !inOld {
 			continue
 		}
 		mv, ok := newV[e.To]
@@ -324,21 +328,12 @@ func diffIfaceMethods(d *Diff, old, new *graph.Document) {
 // recordSignatureChange는 exported 심볼의 signature 간선 목표 차이를 적는다.
 // 비공개 심볼의 시그니처 변화는 API 계약과 무관해 보고하지 않는다.
 func recordSignatureChange(d *Diff, id string, ov *graph.Vertex,
-	oldT, newT map[string]bool) {
+	oldT, newT map[string]string) {
 	if !ov.Exported {
 		return
 	}
-	var added, removed []string
-	for t := range newT {
-		if !oldT[t] {
-			added = append(added, t)
-		}
-	}
-	for t := range oldT {
-		if !newT[t] {
-			removed = append(removed, t)
-		}
-	}
+	added := targetsOnlyIn(newT, oldT)   // 새 문서의 ID
+	removed := targetsOnlyIn(oldT, newT) // 옛 문서의 ID
 	if len(added) == 0 && len(removed) == 0 {
 		return
 	}
@@ -350,6 +345,17 @@ func recordSignatureChange(d *Diff, id string, ov *graph.Vertex,
 		d.Breaking = append(d.Breaking,
 			fmt.Sprintf("exported signature %s no longer references %s", id, t))
 	}
+}
+
+// targetsOnlyIn은 a에만 있는 목표를 a 문서의 실제 ID로 돌려준다.
+func targetsOnlyIn(a, b map[string]string) []string {
+	var out []string
+	for canonical, actual := range a {
+		if _, ok := b[canonical]; !ok {
+			out = append(out, actual)
+		}
+	}
+	return out
 }
 
 // diffEdges는 (from,to,kind) 삼중 집합의 차이를 채운다.
@@ -369,8 +375,28 @@ func diffEdges(d *Diff, old, new *graph.Document) {
 	}
 }
 
-// indexVertices는 정점 ID → 정점 색인이다.
+// vertexKey는 문서 사이에서 같은 정점을 짝짓는 키다. 심볼은 충돌 접미사를 뗀
+// ID로 맞춘다 — 형제 x.y/ 디렉터리나 --tests 유무처럼 수확 패키지 집합만 달라
+// x.y가 x.y#symbol이 되어도 같은 심볼이다. 한 문서 안에서 패키지 x.y와 심볼
+// x.y#symbol이 함께 있을 수 있어 범주를 키에 넣는다.
+func vertexKey(v graph.Vertex) string {
+	if v.Kind == graph.KindPackage || v.Kind == graph.KindModule {
+		return "pkg\x00" + v.ID
+	}
+	return "sym\x00" + graph.CanonicalID(v.ID)
+}
+
+// indexVertices는 vertexKey → 정점 색인이다(문서 사이 비교용).
 func indexVertices(d *graph.Document) map[string]*graph.Vertex {
+	out := make(map[string]*graph.Vertex, len(d.Vertices))
+	for i := range d.Vertices {
+		out[vertexKey(d.Vertices[i])] = &d.Vertices[i]
+	}
+	return out
+}
+
+// verticesByID는 정점 ID → 정점 색인이다(한 문서 안의 간선 끝 조회용).
+func verticesByID(d *graph.Document) map[string]*graph.Vertex {
 	out := make(map[string]*graph.Vertex, len(d.Vertices))
 	for i := range d.Vertices {
 		out[d.Vertices[i].ID] = &d.Vertices[i]
@@ -378,24 +404,30 @@ func indexVertices(d *graph.Document) map[string]*graph.Vertex {
 	return out
 }
 
-// signatureTargets는 심볼 ID → signature 간선 목표 집합이다.
-func signatureTargets(d *graph.Document) map[string]map[string]bool {
-	out := map[string]map[string]bool{}
+// signatureTargets는 심볼 vertexKey → (정규 ID → 그 문서의 실제 목표 ID)다.
+// signature 간선은 심볼에서 심볼(타입)로 향한다. 비교는 정규 ID로 하되 보고는 실제
+// ID로 한다 — 정규 ID는 형제 x.U/가 있으면 패키지 정점을 가리킨다.
+func signatureTargets(d *graph.Document) map[string]map[string]string {
+	out := map[string]map[string]string{}
 	for _, e := range d.Edges {
 		if e.Kind != graph.EdgeSignature {
 			continue
 		}
-		if out[e.From] == nil {
-			out[e.From] = map[string]bool{}
+		from := "sym\x00" + graph.CanonicalID(e.From)
+		if out[from] == nil {
+			out[from] = map[string]string{}
 		}
-		out[e.From][e.To] = true
+		out[from][graph.CanonicalID(e.To)] = e.To
 	}
 	return out
 }
 
 // edgeKey는 간선의 집합 동일성 키다 — 위치가 아니라 관계가 단위다.
+// 끝점은 충돌 접미사를 뗀다(vertexKey와 같은 이유). 간선 종류가 끝점의 범주를
+// 가른다 — import는 패키지끼리, contains는 패키지에서 심볼로, 나머지는 심볼끼리라
+// 접미사를 떼도 다른 관계와 겹치지 않는다.
 func edgeKey(e graph.Edge) string {
-	return e.From + "\x00" + e.To + "\x00" + string(e.Kind)
+	return graph.CanonicalID(e.From) + "\x00" + graph.CanonicalID(e.To) + "\x00" + string(e.Kind)
 }
 
 // indexEdges는 간선 키 → 간선 색인이다.
