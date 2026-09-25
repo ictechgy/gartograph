@@ -399,3 +399,37 @@ func TestDiffInterfaceBreakingViaEmbedding(t *testing.T) {
 		t.Fatalf("only an existing exported interface newly embedding breaks implementers: %v", d.Breaking)
 	}
 }
+
+// TestDiffInterfaceMethodSetFacts는 두 문서가 인터페이스 메서드 집합 사실을 가지면 그
+// 사실로 판정하는지 확인한다 — 모듈 밖 인터페이스 임베드(io.Reader)는 간선이 없어
+// 정점만으로는 안 보인다. 선언하지 않은 메서드는 "via embedding"으로, 같은 이름의
+// 서명 변경도 breaking으로 적는다. 빈 인터페이스(사실 목록이 비어 omitempty로 빠짐)도
+// 문서 표시가 있으면 "몰랐다"가 아니라 "메서드 없음"이다.
+func TestDiffInterfaceMethodSetFacts(t *testing.T) {
+	mk := func(methods []string, extra ...graph.Vertex) *graph.Document {
+		vs := append([]graph.Vertex{
+			{ID: "m/a.I", Kind: graph.KindType, Package: "m/a", Interface: true, Exported: true, Methods: methods},
+			{ID: "m/a.(I).Do", Kind: graph.KindMethod, Package: "m/a", Name: "Do", Exported: true},
+			{ID: "m/a.Any", Kind: graph.KindType, Package: "m/a", Interface: true, Exported: true},
+			// 비공개 인터페이스의 메서드 집합 변화는 공개 계약이 아니다.
+			{ID: "m/a.p", Kind: graph.KindType, Package: "m/a", Interface: true, Methods: methods},
+		}, extra...)
+		return &graph.Document{Level: graph.LevelSymbol, InterfaceMethodSets: true, Vertices: vs}
+	}
+	old := mk([]string{"Do()"})
+	grownAny := graph.Vertex{ID: "m/a.Any", Kind: graph.KindType, Package: "m/a", Interface: true,
+		Exported: true, Methods: []string{"String() string"}}
+	new := mk([]string{"Do() error", "Read([]byte) (int, error)"})
+	new.Vertices[2] = grownAny
+	want := []string{
+		"exported interface m/a.Any gained method String via embedding — implementers no longer satisfy it",
+		"exported interface m/a.I changed method Do signature — implementers no longer satisfy it",
+		"exported interface m/a.I gained method Read via embedding — implementers no longer satisfy it",
+	}
+	if d := DiffDocuments(old, new); !slices.Equal(d.Breaking, want) {
+		t.Fatalf("method-set facts must drive the interface verdict:\n got %q\nwant %q", d.Breaking, want)
+	}
+	if d := DiffDocuments(old, mk([]string{"Do()"})); len(d.Breaking) != 0 {
+		t.Fatalf("unchanged method sets are not breaking: %v", d.Breaking)
+	}
+}
