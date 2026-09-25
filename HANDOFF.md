@@ -2,7 +2,28 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — diff·baseline의 충돌 ID 짝짓기 (2026-09-25, fix/collision-id-pairing)
+## 최근 완료 — 패키지 변수 초기화식을 실행 지점으로 (2026-09-25, fix/package-initializer-roots)
+
+`var registered = register()`에서 `registered`를 아무도 읽지 않으면 초기화 때
+실행되는 `register`가 dead였다(CHA). RTA는 합성 init을 그 패키지에 `var _`가 있을 때만
+루트로 삼아 이웃 패키지에 따라 판정이 갈렸다.
+- CHA(`initializerEdges`·`executesCall`): 이름 있는 패키지 변수 초기화식이 실제로
+  호출을 실행하면 그 참조를 초기화 루트 `pkg._`에서도 긋는다. 형 변환·builtin·함수
+  리터럴 본문은 실행이 아니라 뺀다 — 함수 값 표(`map{"a": handleA}`)는 변수를 거쳐서만
+  닿아 쓰이지 않는 표의 핸들러를 살리지 않는다. 읽히지 않는 변수 자체는 여전히 보고.
+  `pkg._`의 뜻이 "빈 선언 공유 정점"에서 "패키지 초기화 루트"로 넓어졌다.
+- RTA: 모든 패키지의 합성 init이 루트(CHA가 모든 사용자 init을 루트로 두는 것과
+  같은 기준). explain 출발점은 `source.ExplainRoots`(문서 루트 + 패키지별 `pkg#init`).
+- 모듈 밖 참조 limitation은 초기화 루트 순회에서 다시 세지 않는다(리뷰 MEDIUM —
+  go-mssqldb 6699→6705로 부풀었다). 모듈 참조 판정은 refObject와 같은 기준
+  (`isVertexObject` — 지역 변수 가림에 속지 않음). 순회는 초기화 식만(선언 타입 제외).
+- 실측(main 대비): CHA·`--tests` 세 저장소 동일, actionlint `--algo rta` 44→42
+  (`NewUntrustedInputMap` 등). **이 차이의 원인은 CHA 쪽 `pkg._` 생성**이다 — RTA는
+  `pkg._` 루트로 합성 init을 잡는다. "모든 합성 init 루트" 변경만의 효과는 벤치에서 0
+  (리뷰 확인). 그 규칙은 `pkg._`를 걷어낸 문서로 `TestRTARootsEverySyntheticInit`가 지킨다.
+- 곁다리: PR #19가 남긴 고아 테스트 헬퍼 `containsLimitation`을 `dead --tests`가 잡아 제거.
+
+## 이전 완료 — diff·baseline의 충돌 ID 짝짓기 (2026-09-25, fix/collision-id-pairing)
 
 충돌 접미사는 수확 패키지 집합에 따라 붙고 떨어져서, 형제 `x.V2/` 추가만으로 `diff
 --strict`가 거짓 breaking(`x.V2` 제거·kind 변경)을, `--tests` 유무가 다른 baseline이
@@ -144,18 +165,12 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 `schema`는 발행본에 없는 main 기능이다.
 
 다음 후보:
-- RTA의 합성 init 루트 여부가 그 패키지의 `var _` 유무에 좌우된다(3차 리뷰 LOW) —
-  원칙적으로는 deadcode처럼 main 패키지의 합성 init을 루트로 삼아야 한다(모든
-  import의 init을 전이 실행). 아래 "이름 있는 변수 초기화식" 후보와 같은 뿌리.
 - 같은 패키지의 여러 `init`·빈 선언은 정점 하나로 합쳐져 위치가 첫 선언만 남는다
   (둘 다 보존 루트라 도달성 영향 없음). `pkg._`의 `generated`는 처음 본 선언의
   파일을 따르고 kind는 const만 있어도 var다(리뷰 LOW).
-- 옛 저장 문서에는 `pkg._`가 없어 빈 초기화식 전용 심볼이 여전히 dead — 재수확
-  권고 표지 없음(리뷰 LOW, 선택).
-- **이름 있는 변수 초기화식의 부작용(재현, 기존 결함)**: `var registered = register()`에서
-  `registered`를 아무도 읽지 않으면 `register`가 dead로 나온다 — 초기화 때 실행되는데.
-  초기화식 호출을 변수가 아니라 패키지 초기화 루트에 귀속시키는 설계 변경이 필요.
-  RTA는 합성 init을 모든 패키지 루트로 삼으면 같이 풀린다(지금은 `pkg._`가 있을 때만).
+- 옛 저장 문서에는 `pkg._`(빈 선언·호출하는 이름 있는 초기화식)가 없어 초기화식
+  전용 심볼이 여전히 dead — 재수확 권고 표지 없음(리뷰 LOW 2회). `anonymousDispatch`
+  같은 문서 표시가 선례.
 - RTA 루트 매핑은 패키지 멤버 함수만 본다 — 메서드 루트(keep·충돌 리시버)는
   RTA 루트가 되지 않는다(기존 동작).
 

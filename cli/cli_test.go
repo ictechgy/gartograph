@@ -2496,9 +2496,10 @@ func main() { x.Use(); xy.Other() }
 	}
 }
 
-// TestDeadRTAExplainTransitiveInit은 빈 식별자 루트가 없는 패키지의 합성 init을
-// 거쳐 도달한 초기화식도 RTA explain이 경로를 보이는지 확인한다 — 판정은 살렸는데
-// "no path"라고 하면 모순이다. 합성 init은 문서 정점이 아니라서 그렇게 표시한다.
+// TestDeadRTAExplainTransitiveInit은 다른 패키지(q)의 빈 선언이 끌어오는 패키지(r)의
+// 변수 초기화식도 RTA가 살리고 explain이 경로를 보이는지 확인한다 — 판정은 살렸는데
+// "no path"라고 하면 모순이다. r의 초기화식은 호출을 실행하므로 r 자신의 초기화
+// 루트(r._)에서 닿는다.
 func TestDeadRTAExplainTransitiveInit(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
 		"main.go": "package main\n\nimport _ \"example.com/fixture/q\"\n\nfunc main() {}\n",
@@ -2511,8 +2512,34 @@ func TestDeadRTAExplainTransitiveInit(t *testing.T) {
 		t.Fatalf("rta must keep rreg reachable through package initializers: %d %s %s", code, out, errb)
 	}
 	_, out, _ = run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", target)
-	if !strings.Contains(out, "example.com/fixture/r#init (package initializer") ||
-		!strings.Contains(out, "-> "+target) {
-		t.Fatalf("rta explain must route through the synthetic initializer: %s", out)
+	if !strings.Contains(out, "root: example.com/fixture/r._") || !strings.Contains(out, "-> "+target) {
+		t.Fatalf("rta explain must route from the package initializer root: %s", out)
+	}
+}
+
+// TestDeadSideEffectInitializers는 초기화 때 실행되는 호출의 대상이 CHA·RTA 모두에서
+// dead로 보고되지 않고, 읽히지 않는 변수 자체는 여전히 보고되는지 확인한다. RTA는
+// 모든 패키지의 합성 init을 루트로 삼는다 — CHA가 모든 사용자 init을 루트로 두는 것과
+// 같은 기준이다.
+func TestDeadSideEffectInitializers(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport _ \"example.com/fixture/p\"\n\nfunc main() {}\n",
+		"p/p.go":  "package p\n\nvar registered = register()\n\nfunc register() int { return 1 }\n",
+	})
+	for _, algo := range []string{"cha", "rta"} {
+		code, out, errb := run(t, "dead", "--dir", dir, "--algo", algo, "--format", "json")
+		if code != 0 {
+			t.Fatalf("%s: dead failed: %d %s", algo, code, errb)
+		}
+		if strings.Contains(out, `"example.com/fixture/p.register"`) {
+			t.Fatalf("%s: register runs at init but was reported: %s", algo, out)
+		}
+		if !strings.Contains(out, `"example.com/fixture/p.registered"`) {
+			t.Fatalf("%s: the never-read variable must still be reported: %s", algo, out)
+		}
+	}
+	_, out, _ := run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/fixture/p.register")
+	if !strings.Contains(out, "-> example.com/fixture/p.register") {
+		t.Fatalf("rta explain must show the initializer path: %s", out)
 	}
 }

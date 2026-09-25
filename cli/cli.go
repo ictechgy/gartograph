@@ -654,7 +654,7 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 		if !doc.HasVertex(id) {
 			return fail(stderr, fmt.Errorf("%w: %s", analysis.ErrNotFound, id))
 		}
-		path, found := analysis.ExplainAdjacency(adj, id, roots)
+		path, found := analysis.ExplainAdjacency(adj, id, source.ExplainRoots(doc, roots))
 		if !found {
 			fmt.Fprintf(stdout,
 				"no path from %d retention roots to %s (rta call graph)\n", len(roots), id)
@@ -662,6 +662,8 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 		}
 		for i, p := range path {
 			switch {
+			case i == 0 && strings.HasSuffix(p, source.PackageInitSuffix):
+				fmt.Fprintf(stdout, "root: %s (package initializer; not a graph vertex)\n", p)
 			case i == 0:
 				fmt.Fprintf(stdout, "root: %s\n", p)
 			case strings.HasSuffix(p, source.PackageInitSuffix):

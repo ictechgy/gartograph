@@ -393,11 +393,12 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 	}
 }
 
-// blankVertex는 패키지의 빈 식별자 var·const 선언들이 공유하는 정점(pkg._)을
-// 만들고 보존 루트로 둔다. var _ = f()는 프로그램 초기화 때 실행되고
+// blankVertex는 패키지 초기화 루트 정점(pkg._)을 만들고 보존 루트로 둔다. 빈 식별자
+// var·const 선언과 호출을 실행하는 이름 있는 변수 초기화식(initializerEdges)이 이
+// 정점을 공유한다. var _ = f()·var x = f()는 프로그램 초기화 때 실행되고
 // var _ I = (*T)(nil)은 T·I를 쓴다 — 정점이 없으면 그 참조가 조용히 버려져
-// 초기화식에서만 쓰는 심볼이 unreachable로 보고된다. 빈 선언들은 이름으로
-// 구분할 수 없어 init처럼 한 정점으로 모이고 위치는 처음 본 선언이다.
+// 초기화식에서만 쓰는 심볼이 unreachable로 보고된다. 이름으로 구분할 수 없어
+// init처럼 한 정점으로 모이고 위치는 처음 본 선언이다.
 func (h *harvester) blankVertex(p *packages.Package, name *ast.Ident) {
 	id := p.PkgPath + "._"
 	h.vertex(graph.Vertex{
@@ -477,7 +478,81 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
 			}
 			h.inspect(p, s, id)
 		}
+		h.initializerEdges(p, s)
 	}
+}
+
+// initializerEdges는 실제로 호출을 실행하는 패키지 변수 초기화식의 참조를 패키지
+// 초기화 루트(pkg._)에서도 긋는다. var registered = register()는 registered를 아무도
+// 읽지 않아도 초기화 때 실행된다 — 변수에서만 간선을 그으면 register가 dead로
+// 보고된다. 빈 선언은 이미 pkg._가 가져간다. 호출이 없는 초기화식(함수 값 표 등)은
+// 실행되는 코드가 없어 변수를 거쳐서만 닿게 둔다 — 쓰이지 않는 표의 핸들러를 살리지 않게.
+// 순회는 초기화 식만이다(선언 타입 제외). 호출이 있는 식은 그 식 전체(같은 식 안의
+// 함수 값·리터럴 본문 포함)가 루트에 붙는다 — "살아 있다" 쪽 과대 근사다.
+// 모듈 밖 참조는 변수 쪽 순회가 이미 셌다 — 두 번 세면 limitation 수치가 부풀어서
+// 이 순회의 증가분은 되돌린다.
+func (h *harvester) initializerEdges(p *packages.Package, s *ast.ValueSpec) {
+	if len(s.Names) == 0 || s.Names[0].Name == "_" || !executesCall(p, s.Values) ||
+		!h.referencesModule(p, s.Values) {
+		return
+	}
+	h.blankVertex(p, s.Names[0])
+	counted := h.extRefs
+	for _, v := range s.Values {
+		h.inspect(p, v, p.PkgPath+"._")
+	}
+	h.extRefs = counted
+}
+
+// referencesModule은 식들이 문서 정점인 모듈 심볼을 하나라도 참조하는지 본다.
+// var ErrX = errors.New("x")처럼 외부 호출만 하는 초기화식은 루트에서 그을 간선이
+// 없다 — 빈 루트 정점을 만들면 흔한 관용구마다 정점·루트 노이즈가 된다.
+// 판정은 실제로 간선을 긋는 refObject와 같은 기준이다 — 지역 변수가 패키지 변수와
+// 이름이 같아도 모듈 참조로 세지 않는다.
+func (h *harvester) referencesModule(p *packages.Package, exprs []ast.Expr) bool {
+	found := false
+	for _, e := range exprs {
+		ast.Inspect(e, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && !found {
+				found = h.isVertexObject(p.TypesInfo.Uses[id])
+			}
+			return !found
+		})
+	}
+	return found
+}
+
+// isVertexObject는 객체가 문서 정점(패키지 수준 심볼·메서드·필드)인지 본다.
+func (h *harvester) isVertexObject(obj types.Object) bool {
+	if obj == nil || obj.Pkg() == nil {
+		return false
+	}
+	if v, ok := obj.(*types.Var); ok {
+		if _, isField := h.fieldRef(v); isField {
+			return true
+		}
+	}
+	return isPackageLevel(obj) && h.vertices[h.id(obj)]
+}
+
+// executesCall은 식들이 초기화 때 사용자 코드를 호출하는지 본다. 형 변환(T(x))과
+// builtin(len·make)은 호출이 아니고, 함수 리터럴 본문은 그 리터럴이 불려야 실행되므로
+// 들어가지 않는다 — 인자 안의 호출(int64(f()))은 센다.
+func executesCall(p *packages.Package, exprs []ast.Expr) bool {
+	found := false
+	for _, e := range exprs {
+		ast.Inspect(e, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncLit:
+				return false
+			case *ast.CallExpr:
+				tv := p.TypesInfo.Types[x.Fun]
+				found = found || (!tv.IsType() && !tv.IsBuiltin())
+			}
+			return !found
+		})
+	}
+	return found
 }
 
 // keepStructFields는 struct 선언 안의 필드 keep 표지를 루트로 기록한다.
