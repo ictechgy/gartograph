@@ -103,3 +103,17 @@ func TestCycleFindingBaselineKey(t *testing.T) {
 		t.Fatal("same symbol unreachable is the same fact across algos")
 	}
 }
+
+// TestBaselineKeysIgnoreCollisionSuffix는 --tests 유무처럼 수확 패키지 집합만 달라
+// 심볼 ID에 #symbol이 붙고 떨어져도 baseline이 같은 항목으로 보는지 확인한다.
+func TestBaselineKeysIgnoreCollisionSuffix(t *testing.T) {
+	plain := Finding{ID: "m/x.test", Kind: graph.KindFunc}
+	suffixed := Finding{ID: "m/x.test" + graph.CollisionSuffix, Kind: graph.KindFunc}
+	if FindingBaselineKey(plain) != FindingBaselineKey(suffixed) {
+		t.Fatal("dead baseline must pair a symbol across the collision suffix")
+	}
+	if CycleBaselineKey(Cycle{Members: []string{"m/x.a", "m/x.test"}}) !=
+		CycleBaselineKey(Cycle{Members: []string{"m/x.a", "m/x.test" + graph.CollisionSuffix}}) {
+		t.Fatal("cycle baseline must pair members across the collision suffix")
+	}
+}

@@ -273,3 +273,29 @@ func TestConstValueBreaking(t *testing.T) {
 		t.Fatalf("old doc without values must not flag every const: %+v", d)
 	}
 }
+
+// TestDiffPairsCollisionSuffix는 형제 디렉터리(x.V2/)가 생겨 심볼 x.V2의 ID가
+// x.V2#symbol로 바뀌어도 diff가 같은 심볼로 짝짓는지 확인한다 — 공개 API는 그대로인데
+// "제거·kind 변경" breaking을 내면 --strict가 거짓으로 실패한다. 새 패키지 x.V2는
+// 추가로 보고된다.
+func TestDiffPairsCollisionSuffix(t *testing.T) {
+	sym := graph.Vertex{ID: "m/x.V2", Kind: graph.KindFunc, Package: "m/x", Name: "V2", Exported: true}
+	old := &graph.Document{Level: graph.LevelSymbol, Vertices: []graph.Vertex{
+		{ID: "m/x", Kind: graph.KindPackage}, sym,
+	}, Edges: []graph.Edge{{From: "m/x", To: "m/x.V2", Kind: graph.EdgeContains}}}
+	moved := sym
+	moved.ID = "m/x.V2" + graph.CollisionSuffix
+	new := &graph.Document{Level: graph.LevelSymbol, Vertices: []graph.Vertex{
+		{ID: "m/x", Kind: graph.KindPackage}, {ID: "m/x.V2", Kind: graph.KindPackage}, moved,
+	}, Edges: []graph.Edge{{From: "m/x", To: moved.ID, Kind: graph.EdgeContains}}}
+	d := DiffDocuments(old, new)
+	if len(d.Breaking) != 0 || len(d.RemovedVertices) != 0 || len(d.ChangedVertices) != 0 {
+		t.Fatalf("suffix-only ID change must not look like a removal: %+v", d)
+	}
+	if len(d.AddedVertices) != 1 || d.AddedVertices[0] != "m/x.V2" {
+		t.Fatalf("only the new package is added: %v", d.AddedVertices)
+	}
+	if len(d.AddedEdges) != 0 || len(d.RemovedEdges) != 0 {
+		t.Fatalf("the same contains edge must pair across the suffix: +%v -%v", d.AddedEdges, d.RemovedEdges)
+	}
+}
