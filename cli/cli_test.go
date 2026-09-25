@@ -2562,7 +2562,7 @@ func TestDiffInterfaceGainedMethodHarvested(t *testing.T) {
 		}
 	}
 	code, out, _ := run(t, "diff", oldPath, newPath, "--strict")
-	if code != 1 || !strings.Contains(out, "gained method Run") {
+	if code != 1 || !strings.Contains(out, "a.I gained method Run — ") {
 		t.Fatalf("interface method addition must be breaking on harvested documents: %d %s", code, out)
 	}
 	// 비공개 임베드 인터페이스가 메서드를 얻어도 공개 임베더가 깨진다.
@@ -2578,7 +2578,23 @@ func TestDiffInterfaceGainedMethodHarvested(t *testing.T) {
 		}
 	}
 	code, out, _ = run(t, "diff", oldPath, newPath, "--strict")
-	if code != 1 || !strings.Contains(out, "a.I gained method N via embedded") {
+	if code != 1 || !strings.Contains(out, "a.I gained method N via embedded example.com/fixture/a.j") {
 		t.Fatalf("a method gained through an embedded interface must be breaking: %d %s", code, out)
+	}
+	// 모듈 밖 인터페이스 임베드는 간선이 없다 — 메서드 집합 사실로만 보인다.
+	x1 := testutil.WriteModule(t, map[string]string{
+		"a/a.go": "package a\n\ntype I interface{ Do() }\n",
+	})
+	x2 := testutil.WriteModule(t, map[string]string{
+		"a/a.go": "package a\n\nimport \"io\"\n\ntype I interface {\n\tDo()\n\tio.Reader\n}\n",
+	})
+	for dir, out := range map[string]string{x1: oldPath, x2: newPath} {
+		if code, _, errb := run(t, "graph", "--level", "symbol", "--dir", dir, "--out", out); code != 0 {
+			t.Fatalf("graph failed: %d %s", code, errb)
+		}
+	}
+	code, out, _ = run(t, "diff", oldPath, newPath, "--strict")
+	if code != 1 || !strings.Contains(out, "a.I gained method Read via embedding") {
+		t.Fatalf("embedding an interface from outside the module must be breaking: %d %s", code, out)
 	}
 }

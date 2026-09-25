@@ -121,6 +121,13 @@ type Vertex struct {
 	// 목록·순서·타입이기 때문에 diff의 breaking 판정 재료다.
 	// struct가 아닌 타입이나 필드를 수확하지 않은 옛 문서는 nil이다.
 	Fields []string `json:"fields,omitempty"`
+	// Methods는 인터페이스 타입 정점의 전체 메서드 집합(임베드 포함, 모듈 밖 인터페이스
+	// 임베드도)을 "Name(params) results" 형태로 정렬해 담는다(파라미터 이름 없음,
+	// 비공개 메서드는 패키지 경로 한정). 모듈 밖 인터페이스 임베드(io.Reader)는 간선이
+	// 생략돼 정점만으로는 메서드 집합이 늘어난 걸 알 수 없다 — diff의 breaking 재료다.
+	// 빈 인터페이스는 omitempty로 빠지므로 "몰랐다"와의 구분은 문서의
+	// InterfaceMethodSets가 한다.
+	Methods []string `json:"methods,omitempty"`
 	// Value는 const 정점의 상수 값을 Go 리터럴 형태로 담는다 —
 	// 상수는 컴파일 시 소비자 코드에 인라인되므로 값 변경은 재컴파일을
 	// 깨지는 않아도 API 계약의 변경이다. diff의 breaking 분류 재료다.
@@ -182,6 +189,9 @@ type Document struct {
 	// 인터페이스의 Satisfies는 있어서, Satisfies 존재만으로는 "이름 없는 것도
 	// 셌다"를 말할 수 없다 — 소비자가 거짓 한계 문구를 내지 않게 하는 표시다.
 	AnonymousDispatch bool `json:"anonymousDispatch,omitempty"`
+	// InterfaceMethodSets는 인터페이스 정점의 Methods를 수확했다는 표시다 — 이 표시가
+	// 있는 문서에서 Methods가 없으면 "메서드 없음"이고, 없는 옛 문서에서는 "몰랐다"다.
+	InterfaceMethodSets bool `json:"interfaceMethodSets,omitempty"`
 }
 
 // Limitation은 분석이 보지 못한 것을 그 입력에서 실제로 세어 적는다.

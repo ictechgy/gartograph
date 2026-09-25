@@ -399,3 +399,112 @@ func TestDiffInterfaceBreakingViaEmbedding(t *testing.T) {
 		t.Fatalf("only an existing exported interface newly embedding breaks implementers: %v", d.Breaking)
 	}
 }
+
+// TestDiffInterfaceMethodSetFacts는 두 문서가 인터페이스 메서드 집합 사실을 가지면 그
+// 사실로 판정하는지 확인한다 — 모듈 밖 인터페이스 임베드(io.Reader)는 간선이 없어
+// 정점만으로는 안 보인다. 선언하지 않은 메서드는 "via embedding"으로, 같은 이름의
+// 서명 변경도 breaking으로 적는다. 빈 인터페이스(사실 목록이 비어 omitempty로 빠짐)도
+// 문서 표시가 있으면 "몰랐다"가 아니라 "메서드 없음"이다.
+func TestDiffInterfaceMethodSetFacts(t *testing.T) {
+	mk := func(methods []string, extra ...graph.Vertex) *graph.Document {
+		vs := append([]graph.Vertex{
+			{ID: "m/a.I", Kind: graph.KindType, Package: "m/a", Interface: true, Exported: true, Methods: methods},
+			{ID: "m/a.(I).Do", Kind: graph.KindMethod, Package: "m/a", Name: "Do", Exported: true},
+			{ID: "m/a.Any", Kind: graph.KindType, Package: "m/a", Interface: true, Exported: true},
+			// 비공개 인터페이스의 메서드 집합 변화는 공개 계약이 아니다.
+			{ID: "m/a.p", Kind: graph.KindType, Package: "m/a", Interface: true, Methods: methods},
+		}, extra...)
+		return &graph.Document{Level: graph.LevelSymbol, InterfaceMethodSets: true, Vertices: vs}
+	}
+	old := mk([]string{"Do()"})
+	grownAny := graph.Vertex{ID: "m/a.Any", Kind: graph.KindType, Package: "m/a", Interface: true,
+		Exported: true, Methods: []string{"String() string"}}
+	new := mk([]string{"Do() error", "Read([]byte) (int, error)"})
+	new.Vertices[2] = grownAny
+	want := []string{
+		"exported interface m/a.Any gained method String via embedding — implementers no longer satisfy it",
+		"exported interface m/a.I changed method Do signature — implementers no longer satisfy it",
+		"exported interface m/a.I gained method Read via embedding — implementers no longer satisfy it",
+	}
+	if d := DiffDocuments(old, new); !slices.Equal(d.Breaking, want) {
+		t.Fatalf("method-set facts must drive the interface verdict:\n got %q\nwant %q", d.Breaking, want)
+	}
+	if d := DiffDocuments(old, mk([]string{"Do()"})); len(d.Breaking) != 0 {
+		t.Fatalf("unchanged method sets are not breaking: %v", d.Breaking)
+	}
+}
+
+// TestDiffInterfaceMethodSetEdges는 메서드 집합 사실 경로의 나머지 판정을 고정한다 —
+// 임베드로 빠진 메서드(호출자 파괴), 선언 메서드를 임베드로 옮긴 리팩터(메서드 집합
+// 그대로 → 정점 제거로도 breaking 아님), 인터페이스가 struct가 된 변경, 모듈 안 임베드의
+// 출처 표시, 같은 패키지 비공개 메서드의 짧은 이름, type 레벨의 구분 없는 문구.
+func TestDiffInterfaceMethodSetEdges(t *testing.T) {
+	iface := func(id string, methods ...string) graph.Vertex {
+		return graph.Vertex{ID: id, Name: id[strings.LastIndex(id, ".")+1:], Kind: graph.KindType,
+			Package: "m/a", Interface: true, Exported: true, Methods: methods}
+	}
+	method := func(id, name string) graph.Vertex {
+		return graph.Vertex{ID: id, Kind: graph.KindMethod, Package: "m/a", Name: name, Exported: true}
+	}
+	doc := func(level graph.Level, vs []graph.Vertex, es ...graph.Edge) *graph.Document {
+		return &graph.Document{Level: level, InterfaceMethodSets: true, Vertices: vs, Edges: es}
+	}
+	sym := graph.LevelSymbol
+	// 선언 Do를 임베드 D로 옮김 + Write를 잃음 + 비공개 seal 선언 추가.
+	old := doc(sym, []graph.Vertex{iface("m/a.I", "Do()", "Write([]uint8) (int, error)"),
+		method("m/a.(I).Do", "Do"), iface("m/a.D", "Do()"), method("m/a.(D).Do", "Do")})
+	new := doc(sym, []graph.Vertex{iface("m/a.I", "Do()", "m/a.seal()"), method("m/a.(I).seal", "seal"),
+		iface("m/a.D", "Do()"), method("m/a.(D).Do", "Do")},
+		graph.Edge{From: "m/a.I", To: "m/a.D", Kind: graph.EdgeEmbeds})
+	want := []string{
+		"exported interface m/a.I gained method seal — implementers no longer satisfy it",
+		"exported interface m/a.I lost method Write via embedding — callers no longer compile",
+	}
+	if d := DiffDocuments(old, new); !slices.Equal(d.Breaking, want) {
+		t.Fatalf("method-set edge cases:\n got %q\nwant %q", d.Breaking, want)
+	}
+	// 모듈 안 임베드로 들어온 메서드는 출처를 적는다.
+	grown := doc(sym, []graph.Vertex{iface("m/a.I", "Do()", "Z()"), method("m/a.(I).Do", "Do"),
+		iface("m/a.K", "Z()"), method("m/a.(K).Z", "Z")},
+		graph.Edge{From: "m/a.I", To: "m/a.K", Kind: graph.EdgeEmbeds})
+	base := doc(sym, []graph.Vertex{iface("m/a.I", "Do()"), method("m/a.(I).Do", "Do"),
+		iface("m/a.K", "Z()"), method("m/a.(K).Z", "Z")})
+	if d := DiffDocuments(base, grown); !slices.Equal(d.Breaking, []string{
+		"exported interface m/a.I gained method Z via embedded m/a.K — implementers no longer satisfy it"}) {
+		t.Fatalf("module embedding must name its source: %q", d.Breaking)
+	}
+	// type 레벨(메서드 정점 없음)은 선언·임베드를 가를 수 없다.
+	if d := DiffDocuments(doc(graph.LevelType, []graph.Vertex{iface("m/a.I", "Do()")}),
+		doc(graph.LevelType, []graph.Vertex{iface("m/a.I", "Do()", "More()")})); !slices.Equal(d.Breaking,
+		[]string{"exported interface m/a.I gained method More — implementers no longer satisfy it"}) {
+		t.Fatalf("type-level documents cannot tell declaration from embedding: %q", d.Breaking)
+	}
+	// 선언 메서드를 지우면 정점 제거 하나로만 보고한다(임베드 제거와 중복 없이).
+	if d := DiffDocuments(doc(sym, []graph.Vertex{iface("m/a.I", "Do()", "Gone()"), method("m/a.(I).Do", "Do"),
+		method("m/a.(I).Gone", "Gone")}), doc(sym, []graph.Vertex{iface("m/a.I", "Do()"),
+		method("m/a.(I).Do", "Do")})); !slices.Equal(d.Breaking, []string{"exported vertex removed: m/a.(I).Gone"}) {
+		t.Fatalf("a removed declared method is reported once, as a vertex removal: %q", d.Breaking)
+	}
+	// 인터페이스가 struct가 됨.
+	st := graph.Vertex{ID: "m/a.I", Name: "I", Kind: graph.KindType, Package: "m/a", Exported: true,
+		Fields: []string{"X:int"}}
+	if d := DiffDocuments(doc(sym, []graph.Vertex{iface("m/a.I", "Do()")}), doc(sym, []graph.Vertex{st})); !slices.Contains(d.Breaking, "exported type m/a.I is no longer an interface") {
+		t.Fatalf("an interface turned struct must be breaking: %q", d.Breaking)
+	}
+}
+
+// TestDiffInterfaceFallsBackWithoutBothMarkers는 한쪽 문서라도 메서드 집합 표시가 없으면
+// 정점 기반 판정을 쓰는지 확인한다 — 옛 문서의 Methods 부재는 "메서드 없음"이 아니라
+// "몰랐다"라서, 사실로 비교하면 모든 메서드가 새로 생긴 것처럼 보인다.
+func TestDiffInterfaceFallsBackWithoutBothMarkers(t *testing.T) {
+	i := graph.Vertex{ID: "m/a.I", Name: "I", Kind: graph.KindType, Package: "m/a", Interface: true, Exported: true}
+	do := graph.Vertex{ID: "m/a.(I).Do", Kind: graph.KindMethod, Package: "m/a", Name: "Do", Exported: true}
+	old := &graph.Document{Level: graph.LevelSymbol, Vertices: []graph.Vertex{i, do}}
+	withFacts := i
+	withFacts.Methods = []string{"Do()"}
+	new := &graph.Document{Level: graph.LevelSymbol, InterfaceMethodSets: true,
+		Vertices: []graph.Vertex{withFacts, do}}
+	if d := DiffDocuments(old, new); len(d.Breaking) != 0 {
+		t.Fatalf("an old document without method sets must not make existing methods look gained: %q", d.Breaking)
+	}
+}

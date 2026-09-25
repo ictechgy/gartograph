@@ -11,6 +11,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"sort"
 	"strings"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -55,6 +56,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		}
 	}
 	wantSymbols := level == graph.LevelSymbol
+	doc.InterfaceMethodSets = true // fillTypeShape가 type 레벨부터 인터페이스 Methods를 채운다
 
 	h.addSymbolVertices(internal, wantSymbols)
 	h.addStructuralEdges(internal)
@@ -146,20 +148,32 @@ func fillTypeShape(v *graph.Vertex, tn *types.TypeName) {
 	switch u := named.Underlying().(type) {
 	case *types.Interface:
 		v.Interface = true
+		v.Methods = interfaceMethods(u)
 	case *types.Struct:
 		v.Fields = structFields(u)
 	}
 }
 
+// interfaceMethods는 인터페이스의 전체 메서드 집합(임베드 포함)을 정렬된 항목으로
+// 적는다. 항목 형식은 이름 없는 인터페이스의 이름과 같은 methodEntry다.
+func interfaceMethods(iface *types.Interface) []string {
+	out := make([]string, iface.NumMethods())
+	for i := range out {
+		out[i] = methodEntry(iface.Method(i))
+	}
+	sort.Strings(out)
+	return out
+}
+
 // structFields는 struct의 필드를 "name:Type" 형태로 선언 순서대로 적는다.
 // unkeyed composite literal은 필드 목록·순서·타입이 계약이라 이 셋이
-// 곧 호환성 판정의 단위다. 타입 문자열은 패키지 경로 정규화를 써서
-// 같은 이름의 다른 타입을 섞지 않는다.
+// 곧 호환성 판정의 단위다. 타입은 정규 표기(canonicalType)다 — 경로로 한정해
+// 같은 이름의 다른 타입을 섞지 않고, 별칭·byte 표기 차이로 거짓 변경을 내지 않는다.
 func structFields(st *types.Struct) []string {
 	out := make([]string, st.NumFields())
 	for i := range out {
 		f := st.Field(i)
-		out[i] = f.Name() + ":" + types.TypeString(f.Type(), nil)
+		out[i] = f.Name() + ":" + canonicalType(f.Type())
 	}
 	return out
 }

@@ -99,7 +99,7 @@ func diffVertices(d *Diff, old, new *graph.Document) {
 		nv, ok := newV[k]
 		if !ok {
 			d.RemovedVertices = append(d.RemovedVertices, ov.ID)
-			if ov.Exported {
+			if ov.Exported && !stillInMethodSet(ov, old, newV) {
 				d.Breaking = append(d.Breaking,
 					fmt.Sprintf("exported vertex removed: %s", ov.ID))
 			}
@@ -117,6 +117,21 @@ func diffVertices(d *Diff, old, new *graph.Document) {
 	}
 	sort.Strings(d.RemovedVertices)
 	sort.Strings(d.AddedVertices)
+}
+
+// stillInMethodSet은 사라진 인터페이스 메서드 정점이 여전히 그 인터페이스의 메서드
+// 집합에 있는지 본다 — 선언 메서드를 임베드한 인터페이스로 옮기는 리팩터는 메서드 집합이
+// 그대로라 호환이다. 두 문서 모두 메서드 집합 사실이 있을 때만 판단한다.
+func stillInMethodSet(ov *graph.Vertex, old *graph.Document, newV map[string]*graph.Vertex) bool {
+	if ov.Kind != graph.KindMethod || !old.InterfaceMethodSets {
+		return false
+	}
+	owner, ok := graph.MemberOwner(ov.ID)
+	if !ok {
+		return false
+	}
+	nv := newV["sym\x00"+owner]
+	return nv != nil && nv.Interface && methodEntriesByName(nv.Methods)[ov.Name] != ""
 }
 
 // recordVertexChanges는 kind·exported·generated 플래그의 뒤바뀜을 적는다.
@@ -295,8 +310,14 @@ func isExportedName(name string) bool {
 // 새 메서드 정점의 소유자는 ID("pkgpath.(I).M")에서 찾는다 — 수확기는 메서드 contains를
 // 패키지에서 긋기 때문에, 인터페이스 타입에서 나가는 contains를 찾으면 실제 문서에서 이
 // 판정이 한 번도 작동하지 않는다. 새 인터페이스는 신규 API라 옛 문서에도 있어야 breaking이다.
-// 모듈 밖 인터페이스 임베드(io.Reader)는 외부 간선이 생략돼 보이지 않는다.
+// 두 문서 모두 인터페이스 메서드 집합 사실(InterfaceMethodSets)을 가지면 그 사실로
+// 판정한다 — 모듈 밖 인터페이스 임베드(io.Reader)까지 보인다. 옛 문서가 끼면 정점으로
+// 판정하고, 그때 모듈 밖 임베드는 외부 간선이 생략돼 보이지 않는다.
 func diffIfaceMethods(d *Diff, old, new *graph.Document) {
+	if old.InterfaceMethodSets && new.InterfaceMethodSets {
+		d.Breaking = append(d.Breaking, methodSetBreaking(old, new)...)
+		return
+	}
 	oldV := indexVertices(old)
 	newByID := verticesByID(new)
 	embedders := interfaceEmbedders(new, newByID)
@@ -310,6 +331,139 @@ func diffIfaceMethods(d *Diff, old, new *graph.Document) {
 	out = append(out, newEmbedBreaking(old, new, newByID, oldV)...)
 	sort.Strings(out)
 	d.Breaking = append(d.Breaking, slices.Compact(out)...)
+}
+
+// methodSetBreaking은 양쪽 문서에 있는 공개 인터페이스의 메서드 집합 사실을 비교한다.
+// 공개 인터페이스가 인터페이스가 아니게 된 변경도 여기서 잡는다 — 필드 사실이 없던
+// 쪽이라 recordFieldChanges는 "몰랐다"로 넘긴다.
+func methodSetBreaking(old, new *graph.Document) []string {
+	oldV := indexVertices(old)
+	newV := indexVertices(new)
+	ctx := methodSetContext{old: verticesByID(old), new: verticesByID(new),
+		embeds: interfaceEmbeds(new), symbols: new.Level == graph.LevelSymbol}
+	var out []string
+	for _, k := range sortedKeys(newV) {
+		nv, ov := newV[k], oldV[k]
+		switch {
+		case ov == nil || !ov.Interface || !ov.Exported:
+		case !nv.Interface:
+			out = append(out, fmt.Sprintf("exported type %s is no longer an interface", nv.ID))
+		default:
+			out = append(out, ctx.changes(ov, nv)...)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// methodSetContext는 메서드 집합 비교가 문구를 만들 때 보는 두 문서의 색인이다.
+// symbols가 거짓(type 레벨)이면 메서드 정점이 없어 선언·임베드를 가를 수 없다.
+type methodSetContext struct {
+	old, new map[string]*graph.Vertex
+	embeds   map[string][]string // 인터페이스 ID → 새 문서에서 임베드한 인터페이스 ID들
+	symbols  bool
+}
+
+// changes는 한 인터페이스의 메서드 추가·서명 변경·(임베드로 인한) 제거 문구를 만든다.
+// 추가·서명 변경은 모듈 밖 구현자를, 제거는 호출자를 깬다. 선언 메서드 제거는 정점
+// 제거가 이미 보고하므로 여기서는 임베드로 빠진 것만 적는다.
+func (c methodSetContext) changes(ov, nv *graph.Vertex) []string {
+	before := methodEntriesByName(ov.Methods)
+	after := methodEntriesByName(nv.Methods)
+	var out []string
+	for _, entry := range nv.Methods {
+		name := methodEntryName(entry)
+		prev, had := before[name]
+		switch {
+		case !had:
+			out = append(out, c.gained(nv, name))
+		case prev != entry:
+			out = append(out, fmt.Sprintf("exported interface %s changed method %s signature — "+
+				"implementers no longer satisfy it", nv.ID, shortMethodName(nv, name)))
+		}
+	}
+	for _, entry := range ov.Methods {
+		if name := methodEntryName(entry); after[name] == "" && !declaredIn(c.old, ov, name) {
+			out = append(out, fmt.Sprintf("exported interface %s lost method %s via embedding — "+
+				"callers no longer compile", nv.ID, shortMethodName(ov, name)))
+		}
+	}
+	return out
+}
+
+// gained는 메서드 추가 문구다 — 직접 선언이면 그대로, 모듈 안 인터페이스 임베드로
+// 들어왔으면 그 인터페이스를, 모듈 밖 임베드면 "via embedding"을 적는다. type 레벨은
+// 선언 여부를 알 수 없어 구분 없이 적는다.
+func (c methodSetContext) gained(nv *graph.Vertex, name string) string {
+	short := shortMethodName(nv, name)
+	how := ""
+	switch {
+	case !c.symbols || declaredIn(c.new, nv, name):
+	case c.embeddedSource(nv.ID, name) != "":
+		how = " via embedded " + c.embeddedSource(nv.ID, name)
+	default:
+		how = " via embedding"
+	}
+	return fmt.Sprintf("exported interface %s gained method %s%s — implementers no longer satisfy it",
+		nv.ID, short, how)
+}
+
+// embeddedSource는 인터페이스가 임베드한 모듈 안 인터페이스 중 그 메서드를 가진 것의 ID다.
+func (c methodSetContext) embeddedSource(ifaceID, name string) string {
+	for _, id := range c.embeds[ifaceID] {
+		if v := c.new[id]; v != nil && methodEntriesByName(v.Methods)[name] != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// declaredIn은 인터페이스가 그 메서드를 직접 선언했는지(정점 pkgpath.(I).M이 있는지) 본다.
+// 비공개 메서드 항목은 "pkgpath.name"이라 같은 패키지일 때만 짧은 이름으로 찾는다.
+func declaredIn(byID map[string]*graph.Vertex, iface *graph.Vertex, name string) bool {
+	short := shortMethodName(iface, name)
+	if strings.Contains(short, ".") {
+		return false // 다른 패키지의 비공개 메서드 — 임베드로만 들어온다
+	}
+	return byID[iface.Package+".("+iface.Name+")."+short] != nil
+}
+
+// shortMethodName은 같은 패키지의 비공개 메서드 항목("pkgpath.seal")을 짧은 이름으로 줄인다.
+func shortMethodName(iface *graph.Vertex, name string) string {
+	return strings.TrimPrefix(name, iface.Package+".")
+}
+
+// interfaceEmbeds는 인터페이스 ID → 그 인터페이스가 임베드한 인터페이스 ID들이다.
+func interfaceEmbeds(d *graph.Document) map[string][]string {
+	byID := verticesByID(d)
+	out := map[string][]string{}
+	for _, e := range d.Edges {
+		from, to := byID[e.From], byID[e.To]
+		if e.Kind == graph.EdgeEmbeds && from != nil && to != nil && from.Interface && to.Interface {
+			out[e.From] = append(out[e.From], e.To)
+		}
+	}
+	for k := range out {
+		sort.Strings(out[k])
+	}
+	return out
+}
+
+// methodEntriesByName은 메서드 집합 항목을 이름 → 항목으로 색인한다.
+func methodEntriesByName(entries []string) map[string]string {
+	out := make(map[string]string, len(entries))
+	for _, e := range entries {
+		out[methodEntryName(e)] = e
+	}
+	return out
+}
+
+// methodEntryName은 "Name(params) results" 항목의 이름 부분이다.
+func methodEntryName(entry string) string {
+	if i := strings.Index(entry, "("); i >= 0 {
+		return entry[:i]
+	}
+	return entry
 }
 
 // gainedInterfaceMethods는 옛 문서에 없던 메서드 정점을 소유 인터페이스별로 모은다.

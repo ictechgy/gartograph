@@ -2,7 +2,28 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — diff의 인터페이스 메서드 추가 판정 복구 (2026-09-25, fix/interface-method-breaking)
+## 최근 완료 — 인터페이스 메서드 집합 사실(모듈 밖 임베드) (2026-09-25, feature/interface-method-set)
+
+`io.Reader` 같은 모듈 밖 인터페이스 임베드는 외부 간선이 생략돼 diff가 메서드 추가를
+못 봤다(PR #22 리뷰의 남은 한계).
+- 인터페이스 타입 정점에 `methods`(임베드 포함 전체 메서드 집합, `methodEntry` 형식 —
+  이름 없는 인터페이스 이름과 같은 규칙), 문서에 `interfaceMethodSets`(빈 인터페이스의
+  "메서드 없음"과 옛 문서의 "몰랐다"를 가르는 표시). type 레벨부터 채운다.
+- diff: 두 문서 모두 표시가 있으면 사실로 판정(추가 = gained, 같은 이름 서명 변경 =
+  changed signature, 선언 정점이 없으면 "via embedding"). 한쪽이라도 옛 문서면 PR #22의
+  정점 기반 판정(선언·모듈 안 임베드 전파·새 임베드).
+- 리뷰 반영(MEDIUM 3·LOW 5): **정규 타입 표기** `source/typestring.go`(`canonicalType` —
+  별칭 풀기, byte→uint8, 타입 파라미터 위치 P0…, 스택 순회로 재귀 없음). `methods`·
+  `fields`·이름 없는 인터페이스 이름이 공유 — `interface{}`→`any`, `I[T]`→`I[E]` 같은 표기
+  리팩터의 거짓 breaking 제거. **전환 주의**: 이 변경 전 도구로 만든 문서와 diff하면
+  `fields`에 표기 차이(any↔interface{}, byte↔uint8)가 한 번 나올 수 있다.
+  임베드로 빠진 메서드는 "lost method … via embedding"(호출자 파괴), 선언 메서드를 임베드로
+  옮긴 리팩터는 메서드 집합이 같으면 정점 제거로도 breaking 아님(`stillInMethodSet`),
+  인터페이스→struct는 "no longer an interface", 모듈 안 임베드는 "via embedded X",
+  type 레벨은 선언·임베드 구분 없이, 같은 패키지 비공개 메서드는 짧은 이름. 변이 13개 전부
+  잡힘. 제약 인터페이스의 타입 집합(유니언) 변경은 보지 않는다(README 명시).
+
+## 이전 완료 — diff의 인터페이스 메서드 추가 판정 복구 (2026-09-25, PR #22 머지)
 
 PR #20 리뷰가 찾은 기존 결함: 수확기는 메서드 contains를 패키지에서 긋는데
 `diffIfaceMethods`는 인터페이스 타입에서 나가는 contains만 봐서, 실제 수확 문서에서는
