@@ -2,7 +2,41 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — satisfies의 비공개 인터페이스 노이즈 정리 (2026-09-25, fix/satisfies-unexported-noise)
+## 최근 완료 — 정점 ID 충돌·빈 식별자 초기화식 (2026-09-25, fix/object-id-collision)
+
+리뷰 LOW로 남았던 `objectID` 충돌을 재현했다(fixture `idCollisionFixture`).
+- **점 경로 충돌(재현)**: 패키지 `example.com/m/x.y`와 `x`의 심볼 `y`가 같은 ID.
+  심볼 정점이 조용히 사라지고, 그 간선이 패키지 정점에 얹혀 `x → x.y contains`
+  (패키지가 패키지를 담음)·`x.Use → x.y call`(함수가 패키지를 호출) 같은 거짓
+  사실이 됐다. `--tests`에서는 테스트 main 패키지 `x.test`와 함수 `test`만으로 생긴다.
+  수정(사용자 결정): **겹치는 심볼 ID에만 `#symbol` 접미사**(`disambiguate`,
+  `collisionSuffix`). `#`는 import 경로에 못 쓰므로 유일하고 다른 ID는 불변.
+  수확기는 `h.id(obj)`, RTA는 문서를 받아 같은 규칙(`rtaNamer`)으로 이름 짓는다.
+- **버린 설계: 충돌 심볼 빼기**(1·2차 구현). 정점·간선을 버리고 limitation으로 세면
+  그 심볼만 부르는 피호출자가 거짓 dead가 되고(`--tests`의 `test`로 흔히 재현),
+  리시버 충돌 메서드를 루트로 살리면 orphan이 가려지고, RTA explain이 판정과
+  모순됐다. 2차 리뷰 REQUEST CHANGES로 폐기.
+- **빈 식별자 초기화식(재현 중 발견)**: `var _ = first()`·`var _ I = T{}`의 참조가
+  `_` 정점 부재로 limitation 없이 버려져 first·T·I가 dead로 보고됐다. 수정:
+  패키지당 보존 루트 정점 `pkg._`(init과 같은 방식). `func _()`·`type _` 본문은
+  실행·참조되지 않으므로 제외. RTA는 `pkg._` 루트가 있으면 그 패키지의 합성
+  `init`을 루트에 더한다. metrics orphan은 `pkg._` 루트를 보지 않는다(컴파일 타임
+  단언은 패키지 보존 표지가 아니다 — init·keep과 다르다). RTA 합성 init은 `pkg._`
+  ID로 이름 지어 explain이 초기화식 경로를 보인다.
+- 실측(main 대비): CHA·`--tests` 결과는 세 저장소 동일. go-mssqldb `--algo rta`
+  237→195 — krb5·ntlm 인증 제공자 등록(`AuthProviderFunc = ProviderFunc(getAuth)`)
+  같은 이름 있는 변수 초기화식을 합성 init이 실행하는데 main RTA는 그것을 못 봤다.
+  같은 var 블록에 `_`가 있어 이번에 살아났다 — 올바른 수정. 빈 선언이 없는
+  패키지는 여전히 못 본다(아래 후보와 같은 뿌리).
+- RTA explain: 빈 식별자 루트가 없는 합성 init도 순회용 ID `pkgpath#init`
+  (`source.PackageInitSuffix`, 문서 정점 아님)으로 인접 맵에 싣는다 — 전이적으로
+  실행되는 초기화식도 explain과 판정이 맞는다.
+- 리뷰: code-reviewer 3회(1차 REQUEST CHANGES → 2차 REQUEST CHANGES로 설계 교체 →
+  3차 COMMENT, MEDIUM 반영).
+- 실측: go-mssqldb 180·actionlint 37·자기 저장소 6 불변(벤치에 충돌·빈 초기화
+  전용 심볼 없음).
+
+## 이전 완료 — satisfies의 비공개 인터페이스 노이즈 정리 (2026-09-25, PR #17 머지)
 
 `context.stringer | fmt.Stringer | runtime.stringer`처럼 비공개 명명 인터페이스가
 공개 인터페이스 옆에 늘 붙어 triage 목록을 부풀렸다.
@@ -92,9 +126,24 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 `schema`는 발행본에 없는 main 기능이다.
 
 다음 후보:
-- (미확인, 리뷰 LOW) `objectID` 충돌 가능성 — 경로에 `.`이 든 패키지
-  `example.com/x.y`와 패키지 `example.com/x`의 심볼 `y`가 같은 ID. 재현
-  사례 없음. ID 명령이 symbol 기본이 되어 부딪힐 확률만 늘었다.
+- 충돌 ID는 수확된 패키지 집합에 따라 달라진다(3차 리뷰 LOW) — 형제 `x.V2/` 추가만으로
+  `diff`가 `x.V2` 제거·`x.V2#symbol` 추가(거짓 breaking)를, `--tests` 유무가 다른
+  baseline이 fresh/stale을 낸다. README에 명시만 했다. 고치려면 diff·baseline이
+  `ID`와 `ID#symbol`을 (Package·Name·Kind)로 짝지어야 한다.
+- RTA의 합성 init 루트 여부가 그 패키지의 `var _` 유무에 좌우된다(3차 리뷰 LOW) —
+  원칙적으로는 deadcode처럼 main 패키지의 합성 init을 루트로 삼아야 한다(모든
+  import의 init을 전이 실행). 아래 "이름 있는 변수 초기화식" 후보와 같은 뿌리.
+- 같은 패키지의 여러 `init`·빈 선언은 정점 하나로 합쳐져 위치가 첫 선언만 남는다
+  (둘 다 보존 루트라 도달성 영향 없음). `pkg._`의 `generated`는 처음 본 선언의
+  파일을 따르고 kind는 const만 있어도 var다(리뷰 LOW).
+- 옛 저장 문서에는 `pkg._`가 없어 빈 초기화식 전용 심볼이 여전히 dead — 재수확
+  권고 표지 없음(리뷰 LOW, 선택).
+- **이름 있는 변수 초기화식의 부작용(재현, 기존 결함)**: `var registered = register()`에서
+  `registered`를 아무도 읽지 않으면 `register`가 dead로 나온다 — 초기화 때 실행되는데.
+  초기화식 호출을 변수가 아니라 패키지 초기화 루트에 귀속시키는 설계 변경이 필요.
+  RTA는 합성 init을 모든 패키지 루트로 삼으면 같이 풀린다(지금은 `pkg._`가 있을 때만).
+- RTA 루트 매핑은 패키지 멤버 함수만 본다 — 메서드 루트(keep·충돌 리시버)는
+  RTA 루트가 되지 않는다(기존 동작).
 
 ## 현재 상태 (2026-09-24)
 

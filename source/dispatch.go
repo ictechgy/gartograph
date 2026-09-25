@@ -9,6 +9,7 @@ package source
 
 import (
 	"go/types"
+	"slices"
 	"sort"
 	"strings"
 
@@ -132,19 +133,18 @@ func (h *harvester) addSatisfies(fn *types.Func, ifaceName string, index map[str
 	if fn.Pkg() == nil {
 		return
 	}
-	i, ok := index[objectID(fn)]
+	i, ok := index[h.id(fn)]
 	if !ok {
 		return
 	}
 	receiver, ok := receiverTypeID(fn)
+	receiver = disambiguate(receiver, h.packageIDs)
 	if _, exists := index[receiver]; !ok || !exists {
 		return
 	}
 	v := &h.doc.Vertices[i]
-	for _, s := range v.Satisfies {
-		if s == ifaceName {
-			return
-		}
+	if slices.Contains(v.Satisfies, ifaceName) {
+		return
 	}
 	v.Satisfies = append(v.Satisfies, ifaceName)
 	v.Receiver = receiver

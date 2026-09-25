@@ -1,6 +1,7 @@
 package source
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -475,4 +476,176 @@ func (Al) Name() string { return "al" }
 		}
 		t.Fatalf("alias receiver method must live under the real type, got %v", ids)
 	}
+}
+
+// idCollisionFixture는 점이 든 패키지 경로(example.com/m/x.y)와 패키지 x의 심볼 y가
+// 같은 ID가 되는 모듈이다. 빈 식별자 변수 초기화식(var _ = first())과 빈 함수
+// (func _())도 담는다.
+func idCollisionFixture(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.27\n",
+		"main.go": `package main
+
+import (
+	"example.com/m/x"
+	xy "example.com/m/x.y"
+)
+
+func main() { x.Use(); xy.Other() }
+`,
+		"x/x.go": `package x
+
+func y() {}
+
+func Use() { y() }
+
+type I interface{ M() }
+type T struct{}
+
+func (T) M() {}
+
+var _ I = T{}
+var _ = first()
+
+func first() int { return 1 }
+
+func _() { onlyBlank() }
+
+func onlyBlank() {}
+`,
+		"x/x2.go": `package x
+
+var _ = second()
+
+func second() int { return 2 }
+`,
+		"x.y/xy.go": `package xy
+
+func Other() {}
+`,
+		"x/z.go": `package x
+
+// Z의 타입 ID는 패키지 example.com/m/x.Z와 같다.
+type Z struct{}
+
+func (*Z) Error() string { return "z" }
+
+func MakeErr() error { return &Z{} }
+`,
+		"x.Z/z.go": `package xz
+
+func Zed() {}
+`,
+	})
+}
+
+// TestSymbolIDCollidingWithPackage는 패키지 ID와 겹치는 심볼이 접미사 붙은 ID로
+// 제 정점·간선을 갖고, 패키지 정점에 간선을 얹지 않는지 확인한다. 함수가 패키지를
+// 호출하는 간선은 거짓 사실이고, 심볼을 빼면 그 피호출자가 dead가 된다.
+func TestSymbolIDCollidingWithPackage(t *testing.T) {
+	doc := loadSymbol(t, idCollisionFixture(t))
+	const pkg = "example.com/m/x.y"
+	for _, e := range doc.Edges {
+		touches := e.From == pkg || e.To == pkg
+		legit := e.Kind == graph.EdgeImport || (e.Kind == graph.EdgeContains && e.From == pkg)
+		if touches && !legit {
+			t.Fatalf("symbol edge landed on package vertex %s: %+v", pkg, e)
+		}
+	}
+	sym := pkg + collisionSuffix
+	if v, ok := doc.VertexByID(sym); !ok || v.Kind != graph.KindFunc {
+		t.Fatalf("colliding symbol must keep a vertex under %s, got %+v", sym, v)
+	}
+	if !hasEdge(doc, "example.com/m/x.Use", sym, graph.EdgeCall) ||
+		!hasEdge(doc, "example.com/m/x", sym, graph.EdgeContains) {
+		t.Fatal("colliding symbol must keep its edges under the suffixed ID")
+	}
+	// 리시버 타입도 같은 규칙 — 외부 디스패치 Receiver가 타입 정점을 가리킨다.
+	zerr, _ := doc.VertexByID("example.com/m/x.(Z).Error")
+	if zerr.Receiver != "example.com/m/x.Z"+collisionSuffix || !slices.Contains(zerr.Satisfies, "error") {
+		t.Fatalf("receiver must point at the suffixed type vertex: %+v", zerr)
+	}
+}
+
+// TestSymbolIDCollidingWithTestMain은 --tests의 테스트 main 패키지(x.test)와
+// 패키지 x의 함수 test가 겹쳐도 그 함수와 피호출자가 그래프에 남는지 확인한다 —
+// 점 경로를 직접 만들지 않아도 흔한 이름만으로 생기는 충돌이다.
+func TestSymbolIDCollidingWithTestMain(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.27\n",
+		"main.go": `package main
+
+import "example.com/m/x"
+
+func main() { x.Run() }
+`,
+		"x/x.go":      "package x\n\nfunc Run() { test() }\n\nfunc test() { helper() }\n\nfunc helper() {}\n",
+		"x/x_test.go": "package x\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) { Run() }\n",
+	})
+	doc, err := Load(Options{Dir: dir, Level: graph.LevelSymbol, Tests: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sym := "example.com/m/x.test" + collisionSuffix
+	if !hasEdge(doc, "example.com/m/x.Run", sym, graph.EdgeCall) ||
+		!hasEdge(doc, sym, "example.com/m/x.helper", graph.EdgeCall) {
+		t.Fatalf("function test must keep its call edges beside the test main package")
+	}
+}
+
+// TestCollidingConstAtTypeLevel은 type 레벨(const 정점 없음)에서도 충돌 ID의
+// 참조가 패키지 정점에 얹히지 않는지 확인한다.
+func TestCollidingConstAtTypeLevel(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.27\n",
+		"main.go": `package main
+
+import (
+	"example.com/m/x"
+	_ "example.com/m/x.y"
+)
+
+func main() { _ = x.T{} }
+`,
+		"x/x.go":    "package x\n\nconst y = 2\n\ntype T [y]int\n",
+		"x.y/xy.go": "package xy\n",
+	})
+	doc, err := Load(Options{Dir: dir, Level: graph.LevelType})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasEdgeTo(doc, "example.com/m/x.T", "example.com/m/x.y") {
+		t.Fatal("a type-level reference to a colliding const must not land on the package vertex")
+	}
+}
+
+// TestBlankInitializersAreRoots는 빈 식별자 변수 초기화식이 보존 루트로 수확되는지
+// 확인한다 — var _ = f()는 프로그램 초기화 때 실행되고, var _ I = T{}는 T·I를
+// 쓴다. 빈 함수(func _())의 본문은 실행되지 않으므로 루트가 아니다.
+func TestBlankInitializersAreRoots(t *testing.T) {
+	doc := loadSymbol(t, idCollisionFixture(t))
+	const blank = "example.com/m/x._"
+	if _, ok := doc.VertexByID(blank); !ok || !slices.Contains(doc.Roots, blank) {
+		t.Fatalf("blank declarations must share one root vertex, roots=%v", doc.Roots)
+	}
+	for _, to := range []string{"example.com/m/x.first", "example.com/m/x.second",
+		"example.com/m/x.T", "example.com/m/x.I"} {
+		if !hasEdgeTo(doc, blank, to) {
+			t.Fatalf("blank initializer must reference %s", to)
+		}
+	}
+	if hasEdgeTo(doc, blank, "example.com/m/x.onlyBlank") {
+		t.Fatal("a blank function body never runs and must not become a root's edge")
+	}
+}
+
+// containsLimitation은 문서 limitation 중 부분 문자열을 담은 것이 있는지 본다.
+func containsLimitation(doc *graph.Document, part string) bool {
+	return slices.ContainsFunc(doc.Limitations, func(l string) bool { return strings.Contains(l, part) })
+}
+
+// hasEdgeTo는 종류와 상관없이 from→to 간선이 있는지 본다.
+func hasEdgeTo(doc *graph.Document, from, to string) bool {
+	return slices.ContainsFunc(doc.Edges, func(e graph.Edge) bool { return e.From == from && e.To == to })
 }

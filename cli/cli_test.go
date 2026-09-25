@@ -2403,3 +2403,116 @@ func Parse(s string) (int, error) { return 0, &ParseError{} }
 		t.Fatalf("old document must get the re-harvest limitation, not the rule claim: %s", out)
 	}
 }
+
+// TestDeadBlankInitializers는 빈 식별자 변수 초기화식에서만 쓰는 심볼이 dead로
+// 보고되지 않는지 확인한다 — var _ = f()는 초기화 때 실행되고, 컴파일 타임
+// 단언 var _ I = T{}는 T·I를 쓴다. 빈 함수 본문에서만 쓰는 심볼은 여전히 보고된다.
+func TestDeadBlankInitializers(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+type I interface{ M() }
+type T struct{}
+
+func (T) M() {}
+
+var _ I = T{}
+var _ = first()
+
+func first() int { return 1 }
+
+func _() { onlyBlank() }
+
+func onlyBlank() {}
+
+func main() {}
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead failed: %d %s", code, errb)
+	}
+	var rep struct {
+		Unreachable []struct{ ID string } `json:"unreachable"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("dead output is not JSON: %v", err)
+	}
+	reported := map[string]bool{}
+	for _, f := range rep.Unreachable {
+		reported[f.ID] = true
+	}
+	const m = "example.com/fixture"
+	for _, alive := range []string{m + ".first", m + ".T", m + ".I"} {
+		if reported[alive] {
+			t.Fatalf("%s runs at init or is used by a blank assertion but was reported: %s", alive, out)
+		}
+	}
+	if !reported[m+".onlyBlank"] {
+		t.Fatalf("a symbol used only by a blank function must still be reported: %s", out)
+	}
+	// RTA도 빈 초기화식을 실행 지점으로 본다 — 합성 init이 그 초기화식을 돈다.
+	code, out, errb = run(t, "dead", "--dir", dir, "--algo", "rta", "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead --algo rta failed: %d %s", code, errb)
+	}
+	if strings.Contains(out, `"`+m+`.first"`) {
+		t.Fatalf("rta must keep a function called by a blank initializer: %s", out)
+	}
+	// 판정이 살렸으면 explain도 경로를 보여야 한다 — 합성 init은 pkg._로 옮겨진다.
+	_, out, _ = run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", m+".first")
+	if !strings.Contains(out, "root: "+m+"._") {
+		t.Fatalf("rta explain must show the blank-initializer root: %s", out)
+	}
+}
+
+// TestDeadCollidingSymbol은 점 경로 패키지와 ID가 겹치는 함수가 접미사 ID로 남아
+// 그 피호출자가 dead로 보고되지 않고, CHA·RTA explain이 접미사 ID 경로를 보이며
+// 패키지 정점으로 "호출"하지 않는지 확인한다.
+func TestDeadCollidingSymbol(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.27\n",
+		"main.go": `package main
+
+import (
+	"example.com/m/x"
+	xy "example.com/m/x.y"
+)
+
+func main() { x.Use(); xy.Other() }
+`,
+		"x/x.go":    "package x\n\nfunc y() { helper() }\n\nfunc helper() {}\n\nfunc Use() { y() }\n",
+		"x.y/xy.go": "package xy\n\nfunc Other() {}\n",
+	})
+	for _, algo := range []string{"cha", "rta"} {
+		code, out, errb := run(t, "dead", "--dir", dir, "--algo", algo)
+		if code != 0 || strings.Contains(out, "example.com/m/x.helper") {
+			t.Fatalf("%s: callee of a colliding function must stay reachable: %d %s %s", algo, code, out, errb)
+		}
+		_, out, _ = run(t, "dead", "--dir", dir, "--algo", algo, "--explain", "example.com/m/x.helper")
+		if !strings.Contains(out, "-> example.com/m/x.y#symbol") || strings.Contains(out, "-> example.com/m/x.y\n") {
+			t.Fatalf("%s: explain must route through the suffixed ID, not the package: %s", algo, out)
+		}
+	}
+}
+
+// TestDeadRTAExplainTransitiveInit은 빈 식별자 루트가 없는 패키지의 합성 init을
+// 거쳐 도달한 초기화식도 RTA explain이 경로를 보이는지 확인한다 — 판정은 살렸는데
+// "no path"라고 하면 모순이다. 합성 init은 문서 정점이 아니라서 그렇게 표시한다.
+func TestDeadRTAExplainTransitiveInit(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport _ \"example.com/fixture/q\"\n\nfunc main() {}\n",
+		"q/q.go":  "package q\n\nimport \"example.com/fixture/r\"\n\nvar _ = r.X\n",
+		"r/r.go":  "package r\n\nvar X = rreg()\n\nfunc rreg() int { return 1 }\n",
+	})
+	const target = "example.com/fixture/r.rreg"
+	code, out, errb := run(t, "dead", "--dir", dir, "--algo", "rta", "--format", "json")
+	if code != 0 || strings.Contains(out, `"`+target+`"`) {
+		t.Fatalf("rta must keep rreg reachable through package initializers: %d %s %s", code, out, errb)
+	}
+	_, out, _ = run(t, "dead", "--dir", dir, "--algo", "rta", "--explain", target)
+	if !strings.Contains(out, "example.com/fixture/r#init (package initializer") ||
+		!strings.Contains(out, "-> "+target) {
+		t.Fatalf("rta explain must route through the synthetic initializer: %s", out)
+	}
+}
