@@ -28,7 +28,11 @@
   같은 이름 있는 변수 초기화식을 합성 init이 실행하는데 main RTA는 그것을 못 봤다.
   같은 var 블록에 `_`가 있어 이번에 살아났다 — 올바른 수정. 빈 선언이 없는
   패키지는 여전히 못 본다(아래 후보와 같은 뿌리).
-- 리뷰: code-reviewer 3회(1차 REQUEST CHANGES → 2차 REQUEST CHANGES로 설계 교체).
+- RTA explain: 빈 식별자 루트가 없는 합성 init도 순회용 ID `pkgpath#init`
+  (`source.PackageInitSuffix`, 문서 정점 아님)으로 인접 맵에 싣는다 — 전이적으로
+  실행되는 초기화식도 explain과 판정이 맞는다.
+- 리뷰: code-reviewer 3회(1차 REQUEST CHANGES → 2차 REQUEST CHANGES로 설계 교체 →
+  3차 COMMENT, MEDIUM 반영).
 - 실측: go-mssqldb 180·actionlint 37·자기 저장소 6 불변(벤치에 충돌·빈 초기화
   전용 심볼 없음).
 
@@ -122,9 +126,13 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 `schema`는 발행본에 없는 main 기능이다.
 
 다음 후보:
-- 정점 ID 형식 자체의 모호성 — `pkg.Name`과 점 경로 패키지가 겹칠 수 있다.
-  지금은 충돌 심볼을 빼고 limitation으로 센다. 근본 해결은 ID 형식 변경(문서 v3,
-  계열·isthmus 소비자 계약)이라 사용자 결정 대상.
+- 충돌 ID는 수확된 패키지 집합에 따라 달라진다(3차 리뷰 LOW) — 형제 `x.V2/` 추가만으로
+  `diff`가 `x.V2` 제거·`x.V2#symbol` 추가(거짓 breaking)를, `--tests` 유무가 다른
+  baseline이 fresh/stale을 낸다. README에 명시만 했다. 고치려면 diff·baseline이
+  `ID`와 `ID#symbol`을 (Package·Name·Kind)로 짝지어야 한다.
+- RTA의 합성 init 루트 여부가 그 패키지의 `var _` 유무에 좌우된다(3차 리뷰 LOW) —
+  원칙적으로는 deadcode처럼 main 패키지의 합성 init을 루트로 삼아야 한다(모든
+  import의 init을 전이 실행). 아래 "이름 있는 변수 초기화식" 후보와 같은 뿌리.
 - 같은 패키지의 여러 `init`·빈 선언은 정점 하나로 합쳐져 위치가 첫 선언만 남는다
   (둘 다 보존 루트라 도달성 영향 없음). `pkg._`의 `generated`는 처음 본 선언의
   파일을 따르고 kind는 const만 있어도 var다(리뷰 LOW).
