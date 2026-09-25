@@ -339,9 +339,11 @@ what blank `var _`/`const _` declarations use (`var _ I = (*T)(nil)` uses
 `T` and `I`) and what named variable initializers that execute a call use
 (`var registered = register()` runs `register` at init even if `registered`
 is never read). Initializers without a call (a table of function values,
-conversions, builtins, function-literal bodies) stay behind their variable.
-`dead --algo rta` roots every package's synthetic initializer for the same
-reason. A package path with a dot (`example.com/m/x.y`, or the
+conversions, builtins, function-literal bodies) stay behind their variable;
+an initializer expression that does execute a call is attached as a whole
+(function values and literal bodies in the same expression included — an
+over-approximation toward "alive"). `dead --algo rta` roots every loaded
+package's synthetic initializer for the same reason. A package path with a dot (`example.com/m/x.y`, or the
 `--tests` main package `x.test`) can equal a symbol ID (`y` or `test` in
 `example.com/m/x`); only such colliding symbol IDs get a `#symbol` suffix
 (`example.com/m/x.y#symbol`) — `#` cannot appear in an import path, so the
