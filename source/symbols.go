@@ -33,6 +33,10 @@ type harvester struct {
 	// packageIDs는 수확 전부터 있던 패키지 정점 ID다 — 심볼 ID가 이와 겹치면
 	// disambiguate가 접미사를 붙인다(h.id).
 	packageIDs map[string]bool
+	// concrete는 모듈의 구체 명명 타입이다 — 제네릭 인터페이스 인스턴스 호출의 구현자를
+	// 호출 지점에서 찾는 재료. instanceImpls는 그 결과 캐시(인스턴스 타입·메서드 → 구현 ID들).
+	concrete      []*types.Named
+	instanceImpls map[string][]string
 	// initRoots는 초기화 루트 정점 ID → doc.Vertices 인덱스다(위치 갱신용).
 	initRoots      map[string]int
 	generatedFiles map[string]bool // 파일 → 생성 파일 여부 캐시
@@ -50,7 +54,8 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		impls:    make(map[string][]string),
 		fieldIDs: make(map[types.Object]string),
 
-		packageIDs: make(map[string]bool),
+		packageIDs:    make(map[string]bool),
+		instanceImpls: make(map[string][]string),
 
 		initRoots:      make(map[string]int),
 		generatedFiles: make(map[string]bool),
@@ -289,6 +294,7 @@ func (h *harvester) addStructuralEdges(internal []*packages.Package) {
 			h.embedEdges(tn, named, p.Fset)
 		}
 	}
+	h.concrete = concrete
 	h.implementsEdges(concrete, ifaces)
 }
 
@@ -330,7 +336,7 @@ func (h *harvester) implementsEdges(concrete, ifaces []*types.Named) {
 			if !ok || iface.NumMethods() == 0 {
 				continue
 			}
-			if !types.Implements(t, iface) && !types.Implements(types.NewPointer(t), iface) {
+			if !implementsLoosely(t, iface, i) {
 				continue
 			}
 			// implements는 선언 위치가 아니라 타입 집합 계산의 산물이다 —
@@ -776,16 +782,98 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 			pos := position(p, ce.Pos())
 			h.edge(from, id, graph.EdgeCall, pos)
 			h.promotedFields(sel, from, pos)
-			if isInterface(sel.Recv()) {
-				for _, impl := range h.impls[id] {
-					h.edge(from, impl, graph.EdgeCall, pos)
-				}
+			for _, impl := range h.dispatchTargets(sel, fn, id) {
+				h.edge(from, impl, graph.EdgeCall, pos)
 			}
 		} else if fn, ok := p.TypesInfo.Uses[f.Sel].(*types.Func); ok && fn.Pkg() != nil {
 			// pkg.F() — 패키지 한정 선택자는 Selections가 아니라 Uses로 해석된다.
 			h.edge(from, h.id(fn), graph.EdgeCall, position(p, ce.Pos()))
 		}
 	}
+}
+
+// dispatchTargets는 인터페이스 메서드 선택의 CHA 구현 목록이다. 수신자가 인터페이스인
+// 경우뿐 아니라, struct에 임베드한 인터페이스에서 승격된 메서드(s.M() — 수신자는 struct,
+// 메서드는 인터페이스 소속)도 동적 디스패치다. 미리 계산한 impls가 있으면 그대로 쓴다 —
+// 외부 제네릭 인터페이스를 임베드한 모듈 인터페이스도 여기로 모인다. 비었으면 인스턴스화된
+// 모듈 제네릭 인터페이스(G[int])일 수 있다 — 원형은 타입 파라미터 때문에 Implements를
+// 물을 수 없어 impls가 비므로, 호출 지점의 인스턴스로 구현자를 찾는다. 모듈 밖
+// 인터페이스(io.Closer 등)는 그 경로로 가지 않는다 — satisfies·receiver 규칙이 리시버
+// 도달성으로 더 정밀하게 다룬다(모든 모듈 구현자로 퍼뜨리면 죽은 구현까지 살린다).
+func (h *harvester) dispatchTargets(sel *types.Selection, fn *types.Func, id string) []string {
+	recv := fn.Signature().Recv()
+	if !isInterface(sel.Recv()) && (recv == nil || !types.IsInterface(recv.Type())) {
+		return nil
+	}
+	if impls := h.impls[id]; len(impls) > 0 || recv == nil || !h.vertices[id] {
+		return impls
+	}
+	return h.instanceImplementers(recv.Type(), fn)
+}
+
+// instanceImplementers는 (인스턴스화된) 인터페이스 타입의 메서드 fn을 구현하는 모듈 구체
+// 타입의 메서드 ID들이다. 메서드는 이름이 아니라 인터페이스 메서드 객체로 찾는다 — 비공개
+// 메서드는 패키지까지 맞아야 찾힌다. 인터페이스 인스턴스에 타입 파라미터가 섞였거나(제네릭
+// 함수 안의 G[X]) 구체 타입이 제네릭 원형(Box[X])이면 Implements로 판정할 수 없어 같은
+// 메서드를 가진 것으로 과대 근사한다("살아 있다" 쪽). 결과는 캐시한다.
+func (h *harvester) instanceImplementers(iface types.Type, fn *types.Func) []string {
+	key := types.TypeString(iface, nil) + "\x00" + fn.Id()
+	if out, ok := h.instanceImpls[key]; ok {
+		return out
+	}
+	it, _ := iface.Underlying().(*types.Interface)
+	var out []string
+	for _, t := range h.concrete {
+		if it == nil || !implementsLoosely(t, it, iface) {
+			continue
+		}
+		sel := types.NewMethodSet(types.NewPointer(t)).Lookup(fn.Pkg(), fn.Name())
+		if sel == nil {
+			continue
+		}
+		if m, ok := sel.Obj().(*types.Func); ok && m.Pkg() != nil {
+			out = append(out, h.id(m))
+		}
+	}
+	h.instanceImpls[key] = out
+	return out
+}
+
+// implementsLoosely는 구체 타입이 인터페이스를 만족하는지 본다. 어느 한쪽에 타입
+// 파라미터가 남아 있으면(제네릭 원형 Box[X], 제네릭 함수 안의 G[X]) Implements로 판정할 수
+// 없어, 인터페이스 메서드마다 같은 이름·패키지의 메서드가 있고 모양(파라미터·결과 개수,
+// 가변 여부)이 맞는지로 과대 근사한다 — "살아 있다" 쪽이되 이름만 같은 메서드는 거른다.
+// implementsEdges(미리 계산)와 instanceImplementers(호출 지점)가 같은 판정을 쓴다.
+func implementsLoosely(t *types.Named, it *types.Interface, iface types.Type) bool {
+	if t.TypeParams().Len() == 0 && !mentionsUnnameable(iface) && !isGenericOrigin(iface) {
+		return types.Implements(t, it) || types.Implements(types.NewPointer(t), it)
+	}
+	mset := types.NewMethodSet(types.NewPointer(t))
+	for i := 0; i < it.NumMethods(); i++ {
+		want := it.Method(i)
+		sel := mset.Lookup(want.Pkg(), want.Name())
+		if sel == nil {
+			return false
+		}
+		have, ok := sel.Obj().(*types.Func)
+		if !ok || !sameShape(have.Signature(), want.Signature()) {
+			return false
+		}
+	}
+	return true
+}
+
+// isGenericOrigin은 타입 파라미터를 가진 명명 타입의 원형(Gen[X]의 선언)인지 본다 — 원형에는
+// Implements를 물을 수 없다(메서드가 타입 파라미터를 쓴다).
+func isGenericOrigin(t types.Type) bool {
+	n, ok := t.(*types.Named)
+	return ok && n.TypeParams().Len() > 0 && n.TypeArgs().Len() == 0
+}
+
+// sameShape는 두 서명의 파라미터·결과 개수와 가변 여부가 같은지 본다(타입은 보지 않는다).
+func sameShape(a, b *types.Signature) bool {
+	return a.Params().Len() == b.Params().Len() && a.Results().Len() == b.Results().Len() &&
+		a.Variadic() == b.Variadic()
 }
 
 // sigTypeEdges는 선언의 타입 표현식 안 타입 참조를 signature 간선으로 긋는다.
@@ -824,6 +912,13 @@ func (h *harvester) selectorEdge(p *packages.Package, sel *ast.SelectorExpr, fro
 		pos := position(p, sel.Pos())
 		h.refObject(s.Obj(), from, pos)
 		h.promotedFields(s, from, pos)
+		// 인터페이스 메서드 값(f := i.M)·메서드 표현식(e := I.M)도 나중에 불린다 — 호출처럼
+		// 구현으로 퍼뜨린다.
+		if fn, ok := s.Obj().(*types.Func); ok && fn.Pkg() != nil {
+			for _, impl := range h.dispatchTargets(s, fn, h.id(fn)) {
+				h.edge(from, impl, graph.EdgeReferences, pos)
+			}
+		}
 		return
 	}
 	h.refObject(p.TypesInfo.Uses[sel.Sel], from, position(p, sel.Pos()))

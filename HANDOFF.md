@@ -2,7 +2,35 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — universe 타입 임베드 수확 패닉 (2026-09-25, fix/universe-embed-panic)
+## 최근 완료 — CHA 팬아웃: struct 임베드 인터페이스·제네릭 인스턴스 (2026-09-25, fix/cha-embedded-generic-dispatch)
+
+PR #26 리뷰가 찾은 CHA 기존 거짓 dead 2건.
+- struct에 임베드한 인터페이스로 부르는 호출(`h.SEM()` — 수신자는 struct, 메서드는
+  인터페이스 소속): 팬아웃 조건을 수신자가 아니라 **메서드의 리시버**가 인터페이스인지로.
+- 제네릭 인터페이스 인스턴스 경유 호출(`g.Get()`, `g G[int]`): 원형은 타입 파라미터 때문에
+  Implements를 물을 수 없어 impls가 비었다 — 호출 지점의 인스턴스로 구현자를 찾고 캐시
+  (`instanceImplementers`, `h.concrete`).
+- 인터페이스 메서드 값(`f := i.M`)도 구현으로 references 팬아웃(전엔 호출만).
+- **모듈 밖 인터페이스는 팬아웃하지 않는다**(`!h.vertices[id]`) — 처음 구현에서 io.Closer
+  호출이 모든 모듈 구현자로 퍼져 go-mssqldb 테스트 전용 `memoryBuffer`가 살아났다(정밀도
+  손실). satisfies·receiver 규칙이 리시버 도달성으로 더 정밀하게 다룬다. 회귀 테스트로 고정.
+- 실측: 벤치 세 저장소 CHA·`--tests`·RTA main과 동일(해당 패턴 없음), fixture로 수정 전 실패.
+- 리뷰 반영(REQUEST CHANGES): 비공개 제네릭 인터페이스 호출이 `Lookup(nil, name)`으로 nil을
+  역참조해 **패닉**했다 — 인터페이스 메서드 객체로(`fn.Pkg()`·`fn.Id()`) 찾고 nil을 건너뛴다.
+  외부 제네릭 인터페이스를 임베드한 모듈 인터페이스(`interface{ dep.G[int] }`)는 정점 검사가
+  미리 계산한 impls까지 막아 main 대비 회귀였다 — impls가 있으면 정점 여부와 무관하게 쓴다.
+  제네릭 구체 타입(`Box[X]`)·타입 파라미터가 섞인 인스턴스(제네릭 함수 안 `G[X]`)는 Implements로
+  판정할 수 없어 같은 메서드를 가진 것으로 과대 근사(`implementsLoosely`). 메서드 표현식
+  (`e := I.M`)도 팬아웃. 경로별 fixture와 변이 4개 전부 잡힘.
+- 2차 리뷰 반영: 미리 계산(`implementsEdges`)과 호출 지점 계산이 같은 `implementsLoosely`를
+  쓴다 — 제네릭 원형 구현자(`Box[X]`)·제네릭 인터페이스 원형(`Gen[X]`)은 Implements로 판정할 수
+  없어, 같은 인터페이스에 비제네릭 구현자가 있으면 제네릭 구현자가 빠졌다. 판정 불가 시 메서드마다
+  이름·패키지·모양(파라미터·결과 개수, 가변)이 맞는지로 과대 근사(타입은 비교하지 않음 — 모양이
+  같고 타입만 다른 메서드는 여전히 살아난다).
+- 큰 저장소 실측(main 대비): pgx 695=695, x/tools 2407→2398(새 보고 0, 살아난 9건은 제네릭
+  `internal/graph.Graph[NodeID]`를 거친 실제 디스패치), 시간 차이 없음.
+
+## 이전 완료 — universe 타입 임베드 수확 패닉 (2026-09-25, PR #30 머지)
 
 PR #28 리뷰가 찾은 main의 크래시: `type E interface{ error; Code() int }`·`interface{ comparable }`·
 `struct{ error }`처럼 universe 타입을 임베드하면 type·symbol 수확이 nil 역참조로 패닉했다
@@ -43,9 +71,6 @@ PR #28 리뷰가 찾은 main의 크래시: `type E interface{ error; Code() int 
   판정하는 규칙과 같다). explain의 그래프 도달 집합은 CLI의 실제 루트로 계산.
 - 남은 것(리뷰 LOW, 기존 결함): RTA explain은 익명 클로저를 거치는 경로를 못 찾는다(클로저
   SSA 함수에 Object가 없어 이름이 없음) — 판정은 살렸는데 "no path"가 날 수 있다.
-- **리뷰가 찾은 CHA 기존 거짓 dead 2건(다음 작업)**: struct에 임베드한 인터페이스로 부르는
-  호출(`s.SEM()` — `sel.Recv()`가 인터페이스가 아니라 CHA 팬아웃이 안 됨), 제네릭 인터페이스
-  인스턴스 경유 호출(`G[int].Get`)의 구현 메서드가 CHA에서 unreachable.
 
 ## 이전 완료 — 초기화 루트(pkg._) 정리 (2026-09-25, PR #25 머지)
 

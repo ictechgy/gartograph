@@ -2804,3 +2804,159 @@ func TestJSONEmptyListsAreArrays(t *testing.T) {
 		}
 	}
 }
+
+// TestDeadCHAEmbeddedAndGenericInterfaceDispatch는 CHA 팬아웃이 struct에 임베드한 인터페이스로
+// 부르는 호출(s.SEM())과 제네릭 인터페이스 인스턴스 경유 호출(g.Get() — g G[int])에서도
+// 구현 메서드로 퍼지는지 확인한다 — 둘 다 구현이 거짓으로 dead였다.
+func TestDeadCHAEmbeddedAndGenericInterfaceDispatch(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "io"
+
+type SE interface{ SEM() }
+
+type Holder struct{ SE }
+
+type G[X any] interface{ Get() X }
+
+type T struct{}
+
+func (T) SEM()     {}
+func (T) Get() int { return 0 }
+
+// Unused는 모듈 밖 인터페이스(io.Closer)를 만족하지만 쓰이지 않는다 — 모듈 밖 인터페이스
+// 호출은 모든 모듈 구현자로 퍼뜨리지 않는다(satisfies 규칙이 리시버 도달성으로 다룬다).
+type Unused struct{}
+
+func (Unused) Close() error { return nil }
+
+type Closing struct{ io.Closer }
+
+func main() {
+	h := Holder{SE: T{}}
+	h.SEM()
+	var g G[int] = T{}
+	_ = g.Get()
+	f := g.Get
+	_ = f
+	c := Closing{}
+	if c.Closer != nil {
+		_ = c.Close()
+	}
+}
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead failed: %d %s", code, errb)
+	}
+	for _, alive := range []string{"example.com/fixture.(T).SEM", "example.com/fixture.(T).Get"} {
+		if strings.Contains(out, `"id": "`+alive+`"`) {
+			t.Fatalf("%s is reached through interface dispatch but was reported: %s", alive, out)
+		}
+	}
+	if !strings.Contains(out, `"id": "example.com/fixture.(Unused).Close"`) {
+		t.Fatalf("a call through an external interface must not keep every module implementer alive: %s", out)
+	}
+}
+
+// TestDeadCHADispatchEdgeCases는 CHA 팬아웃 보강의 경계를 경로별로 고정한다 — 비공개
+// 제네릭 인터페이스 호출(패닉 회귀), 외부 제네릭 인터페이스를 임베드한 모듈 인터페이스
+// (미리 계산한 impls 사용), 제네릭 구체 타입·제네릭 함수 안 호출(이름 기반 과대 근사),
+// 메서드 값·메서드 표현식으로만 쓰는 인터페이스 메서드.
+func TestDeadCHADispatchEdgeCases(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod":     "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep => ./dep\n",
+		"dep/go.mod": "module example.com/dep\n\ngo 1.27\n",
+		"dep/dep.go": "package dep\n\ntype G[X any] interface{ Get() X }\n",
+		"main.go": `package main
+
+import "example.com/dep"
+
+type g[X any] interface{ get() X }
+type Priv struct{}
+
+func (Priv) get() int { return 0 }
+
+type MyG interface{ dep.G[int] }
+type Ext struct{}
+
+func (Ext) Get() int { return 0 }
+
+type Gen[X any] interface{ Val() X }
+type Box[X any] struct{ x X }
+
+func (b Box[X]) Val() X { return b.x }
+
+// Plain은 비제네릭 구현자(Flat)와 제네릭 구현자(Cell[X])가 함께 있다 — 미리 계산한 impls가
+// 제네릭 원형을 빠뜨리면 Cell이 거짓 dead다.
+type Plain interface{ Num() int }
+type Flat struct{}
+
+func (Flat) Num() int { return 0 }
+
+type Cell[X any] struct{ x X }
+
+func (c Cell[X]) Num() X { return c.x }
+
+// Mismatch는 이름만 같고 모양(결과 개수)이 다른 제네릭 메서드 — 구현자가 아니다.
+type Want interface{ Pair() (int, int) }
+type Shape[X any] struct{}
+
+func (Shape[X]) Pair() int { return 0 }
+
+type InFunc struct{}
+
+func (InFunc) Val() string { return "" }
+
+func use[X any](v Gen[X]) X { return v.Val() }
+
+type MV interface{ Run() }
+type RunOnly struct{}
+
+func (RunOnly) Run() {}
+
+type ME interface{ Do() }
+type DoOnly struct{}
+
+func (DoOnly) Do() {}
+
+func main() {
+	var p g[int] = Priv{}
+	_ = p.get()
+	var m MyG = Ext{}
+	_ = m.Get()
+	var b Gen[int] = Box[int]{}
+	_ = b.Val()
+	_ = use[string](InFunc{})
+	var pl Plain = Cell[int]{}
+	_ = pl.Num()
+	_ = Flat{}
+	var w Want
+	if w != nil {
+		_, _ = w.Pair()
+	}
+	_ = Shape[int]{}
+	var mv MV = RunOnly{}
+	f := mv.Run
+	f()
+	e := ME.Do
+	e(DoOnly{})
+}
+`,
+	})
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("dead must not crash: %d %s", code, errb)
+	}
+	for _, alive := range []string{"(Priv).get", "(Ext).Get", "(Box).Val", "(InFunc).Val", "(RunOnly).Run",
+		"(DoOnly).Do", "(Cell).Num"} {
+		if strings.Contains(out, `"id": "example.com/fixture.`+alive+`"`) {
+			t.Fatalf("%s is reached through interface dispatch but was reported: %s", alive, out)
+		}
+	}
+	if !strings.Contains(out, `"id": "example.com/fixture.(Shape).Pair"`) {
+		t.Fatalf("a generic method with a different shape is not an implementer: %s", out)
+	}
+}
