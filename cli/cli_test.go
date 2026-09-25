@@ -2889,6 +2889,23 @@ type Box[X any] struct{ x X }
 
 func (b Box[X]) Val() X { return b.x }
 
+// Plain은 비제네릭 구현자(Flat)와 제네릭 구현자(Cell[X])가 함께 있다 — 미리 계산한 impls가
+// 제네릭 원형을 빠뜨리면 Cell이 거짓 dead다.
+type Plain interface{ Num() int }
+type Flat struct{}
+
+func (Flat) Num() int { return 0 }
+
+type Cell[X any] struct{ x X }
+
+func (c Cell[X]) Num() X { return c.x }
+
+// Mismatch는 이름만 같고 모양(결과 개수)이 다른 제네릭 메서드 — 구현자가 아니다.
+type Want interface{ Pair() (int, int) }
+type Shape[X any] struct{}
+
+func (Shape[X]) Pair() int { return 0 }
+
 type InFunc struct{}
 
 func (InFunc) Val() string { return "" }
@@ -2913,6 +2930,14 @@ func main() {
 	var b Gen[int] = Box[int]{}
 	_ = b.Val()
 	_ = use[string](InFunc{})
+	var pl Plain = Cell[int]{}
+	_ = pl.Num()
+	_ = Flat{}
+	var w Want
+	if w != nil {
+		_, _ = w.Pair()
+	}
+	_ = Shape[int]{}
 	var mv MV = RunOnly{}
 	f := mv.Run
 	f()
@@ -2925,9 +2950,13 @@ func main() {
 	if code != 0 {
 		t.Fatalf("dead must not crash: %d %s", code, errb)
 	}
-	for _, alive := range []string{"(Priv).get", "(Ext).Get", "(Box).Val", "(InFunc).Val", "(RunOnly).Run", "(DoOnly).Do"} {
+	for _, alive := range []string{"(Priv).get", "(Ext).Get", "(Box).Val", "(InFunc).Val", "(RunOnly).Run",
+		"(DoOnly).Do", "(Cell).Num"} {
 		if strings.Contains(out, `"id": "example.com/fixture.`+alive+`"`) {
 			t.Fatalf("%s is reached through interface dispatch but was reported: %s", alive, out)
 		}
+	}
+	if !strings.Contains(out, `"id": "example.com/fixture.(Shape).Pair"`) {
+		t.Fatalf("a generic method with a different shape is not an implementer: %s", out)
 	}
 }

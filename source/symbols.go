@@ -336,7 +336,7 @@ func (h *harvester) implementsEdges(concrete, ifaces []*types.Named) {
 			if !ok || iface.NumMethods() == 0 {
 				continue
 			}
-			if !types.Implements(t, iface) && !types.Implements(types.NewPointer(t), iface) {
+			if !implementsLoosely(t, iface, i) {
 				continue
 			}
 			// implements는 선언 위치가 아니라 타입 집합 계산의 산물이다 —
@@ -831,7 +831,7 @@ func (h *harvester) instanceImplementers(iface types.Type, fn *types.Func) []str
 		if sel == nil {
 			continue
 		}
-		if m, ok := sel.Obj().(*types.Func); ok {
+		if m, ok := sel.Obj().(*types.Func); ok && m.Pkg() != nil {
 			out = append(out, h.id(m))
 		}
 	}
@@ -839,13 +839,41 @@ func (h *harvester) instanceImplementers(iface types.Type, fn *types.Func) []str
 	return out
 }
 
-// implementsLoosely는 구체 타입이 인터페이스를 만족하는지 본다 — 어느 한쪽에 타입
-// 파라미터가 남아 있어 판정할 수 없으면 참(메서드 조회가 이름·패키지로 거른다).
+// implementsLoosely는 구체 타입이 인터페이스를 만족하는지 본다. 어느 한쪽에 타입
+// 파라미터가 남아 있으면(제네릭 원형 Box[X], 제네릭 함수 안의 G[X]) Implements로 판정할 수
+// 없어, 인터페이스 메서드마다 같은 이름·패키지의 메서드가 있고 모양(파라미터·결과 개수,
+// 가변 여부)이 맞는지로 과대 근사한다 — "살아 있다" 쪽이되 이름만 같은 메서드는 거른다.
+// implementsEdges(미리 계산)와 instanceImplementers(호출 지점)가 같은 판정을 쓴다.
 func implementsLoosely(t *types.Named, it *types.Interface, iface types.Type) bool {
-	if t.TypeParams().Len() > 0 || mentionsUnnameable(iface) {
-		return true
+	if t.TypeParams().Len() == 0 && !mentionsUnnameable(iface) && !isGenericOrigin(iface) {
+		return types.Implements(t, it) || types.Implements(types.NewPointer(t), it)
 	}
-	return types.Implements(t, it) || types.Implements(types.NewPointer(t), it)
+	mset := types.NewMethodSet(types.NewPointer(t))
+	for i := 0; i < it.NumMethods(); i++ {
+		want := it.Method(i)
+		sel := mset.Lookup(want.Pkg(), want.Name())
+		if sel == nil {
+			return false
+		}
+		have, ok := sel.Obj().(*types.Func)
+		if !ok || !sameShape(have.Signature(), want.Signature()) {
+			return false
+		}
+	}
+	return true
+}
+
+// isGenericOrigin은 타입 파라미터를 가진 명명 타입의 원형(Gen[X]의 선언)인지 본다 — 원형에는
+// Implements를 물을 수 없다(메서드가 타입 파라미터를 쓴다).
+func isGenericOrigin(t types.Type) bool {
+	n, ok := t.(*types.Named)
+	return ok && n.TypeParams().Len() > 0 && n.TypeArgs().Len() == 0
+}
+
+// sameShape는 두 서명의 파라미터·결과 개수와 가변 여부가 같은지 본다(타입은 보지 않는다).
+func sameShape(a, b *types.Signature) bool {
+	return a.Params().Len() == b.Params().Len() && a.Results().Len() == b.Results().Len() &&
+		a.Variadic() == b.Variadic()
 }
 
 // sigTypeEdges는 선언의 타입 표현식 안 타입 참조를 signature 간선으로 긋는다.
