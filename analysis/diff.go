@@ -328,21 +328,12 @@ func diffIfaceMethods(d *Diff, old, new *graph.Document) {
 // recordSignatureChange는 exported 심볼의 signature 간선 목표 차이를 적는다.
 // 비공개 심볼의 시그니처 변화는 API 계약과 무관해 보고하지 않는다.
 func recordSignatureChange(d *Diff, id string, ov *graph.Vertex,
-	oldT, newT map[string]bool) {
+	oldT, newT map[string]string) {
 	if !ov.Exported {
 		return
 	}
-	var added, removed []string
-	for t := range newT {
-		if !oldT[t] {
-			added = append(added, t)
-		}
-	}
-	for t := range oldT {
-		if !newT[t] {
-			removed = append(removed, t)
-		}
-	}
+	added := targetsOnlyIn(newT, oldT)   // 새 문서의 ID
+	removed := targetsOnlyIn(oldT, newT) // 옛 문서의 ID
 	if len(added) == 0 && len(removed) == 0 {
 		return
 	}
@@ -354,6 +345,17 @@ func recordSignatureChange(d *Diff, id string, ov *graph.Vertex,
 		d.Breaking = append(d.Breaking,
 			fmt.Sprintf("exported signature %s no longer references %s", id, t))
 	}
+}
+
+// targetsOnlyIn은 a에만 있는 목표를 a 문서의 실제 ID로 돌려준다.
+func targetsOnlyIn(a, b map[string]string) []string {
+	var out []string
+	for canonical, actual := range a {
+		if _, ok := b[canonical]; !ok {
+			out = append(out, actual)
+		}
+	}
+	return out
 }
 
 // diffEdges는 (from,to,kind) 삼중 집합의 차이를 채운다.
@@ -402,27 +404,28 @@ func verticesByID(d *graph.Document) map[string]*graph.Vertex {
 	return out
 }
 
-// signatureTargets는 심볼 vertexKey → signature 간선 목표(정규 ID) 집합이다.
-// signature 간선은 심볼에서 심볼(타입)로 향한다.
-func signatureTargets(d *graph.Document) map[string]map[string]bool {
-	out := map[string]map[string]bool{}
+// signatureTargets는 심볼 vertexKey → (정규 ID → 그 문서의 실제 목표 ID)다.
+// signature 간선은 심볼에서 심볼(타입)로 향한다. 비교는 정규 ID로 하되 보고는 실제
+// ID로 한다 — 정규 ID는 형제 x.U/가 있으면 패키지 정점을 가리킨다.
+func signatureTargets(d *graph.Document) map[string]map[string]string {
+	out := map[string]map[string]string{}
 	for _, e := range d.Edges {
 		if e.Kind != graph.EdgeSignature {
 			continue
 		}
 		from := "sym\x00" + graph.CanonicalID(e.From)
 		if out[from] == nil {
-			out[from] = map[string]bool{}
+			out[from] = map[string]string{}
 		}
-		out[from][graph.CanonicalID(e.To)] = true
+		out[from][graph.CanonicalID(e.To)] = e.To
 	}
 	return out
 }
 
 // edgeKey는 간선의 집합 동일성 키다 — 위치가 아니라 관계가 단위다.
 // 끝점은 충돌 접미사를 뗀다(vertexKey와 같은 이유). 간선 종류가 끝점의 범주를
-// 가른다 — import는 패키지끼리, 나머지는 심볼에 닿고 contains는 패키지나 타입에서
-// 심볼로 향하므로, 접미사를 떼도 다른 관계와 겹치지 않는다.
+// 가른다 — import는 패키지끼리, contains는 패키지에서 심볼로, 나머지는 심볼끼리라
+// 접미사를 떼도 다른 관계와 겹치지 않는다.
 func edgeKey(e graph.Edge) string {
 	return graph.CanonicalID(e.From) + "\x00" + graph.CanonicalID(e.To) + "\x00" + string(e.Kind)
 }

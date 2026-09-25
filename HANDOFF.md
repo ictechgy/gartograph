@@ -14,6 +14,11 @@ fresh/stale을 냈다(PR #19 3차 리뷰 LOW).
   조회는 `verticesByID`, 출력은 새 문서의 실제 ID. 간선 키도 끝점을 정규화.
 - baseline: `FindingBaselineKey`·`CycleBaselineKey`·`ViolationBaselineKey`(From/To)가
   정규 ID. 파일은 항목을 저장하고 키는 비교 시 계산하므로 옛 baseline에도 적용된다.
+- signature 목표도 정규 ID로 비교하되 각 문서의 실제 ID로 보고(added는 새 문서, removed는
+  옛 문서) — 정규 ID는 형제 `x.U/`가 있으면 패키지 정점을 가리킨다(리뷰 LOW).
+- 리뷰가 찾은 **기존 결함(범위 밖, 다음 작업)**: 수확기가 메서드 contains를 패키지에서
+  긋는데 `diffIfaceMethods`는 인터페이스 타입에서 나가는 contains만 봐서, 실제 수확
+  문서에서는 "인터페이스 메서드 추가 = breaking" 판정이 한 번도 작동하지 않는다.
 
 ## 이전 완료 — 정점 ID 충돌·빈 식별자 초기화식 (2026-09-25, PR #19 머지)
 
