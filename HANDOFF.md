@@ -9,9 +9,14 @@ PR #20 리뷰가 찾은 기존 결함: 수확기는 메서드 contains를 패키
 "공개 인터페이스 메서드 추가 = breaking"(README 약속)이 한 번도 작동하지 않았다.
 손으로 만든 타입→메서드 간선 테스트만 있어 못 잡았다.
 - 판정을 새 메서드 정점 기준으로: 소유자는 ID(`pkgpath.(I).M`, README 계약)에서
-  `graph.MethodOwner`로, 충돌 접미사 형태도 조회(`ownerVertex`). 소유 인터페이스가
+  `graph.MemberOwner`로, 충돌 접미사 형태도 조회(`ownerVertex`). 소유 인터페이스가
   공개이고 옛 문서에도 있어야 breaking.
 - 실제 수확 문서 회귀 `TestDiffInterfaceGainedMethodHarvested`(수정 전 exit 0).
+- 리뷰 반영: 임베드 경로 — 비공개 임베드 인터페이스가 메서드를 얻으면 그것을
+  (전이적으로) 임베드한 기존 공개 인터페이스로 전파(worklist), 기존 공개 인터페이스가
+  새로 인터페이스를 임베드하면 breaking. 모듈 밖 인터페이스 임베드(`io.Reader`)는
+  외부 간선이 생략돼 여전히 못 본다(README 명시). 판정 조건마다 정확 비교 테스트 —
+  변이 9개 전부 잡힘. `MethodOwner` → `MemberOwner`(필드 ID도 받는다).
 
 ## 이전 완료 — 패키지 변수 초기화식을 실행 지점으로 (2026-09-25, PR #21 머지)
 
@@ -48,7 +53,6 @@ fresh/stale을 냈다(PR #19 3차 리뷰 LOW).
   정규 ID. 파일은 항목을 저장하고 키는 비교 시 계산하므로 옛 baseline에도 적용된다.
 - signature 목표도 정규 ID로 비교하되 각 문서의 실제 ID로 보고(added는 새 문서, removed는
   옛 문서) — 정규 ID는 형제 `x.U/`가 있으면 패키지 정점을 가리킨다(리뷰 LOW).
-
 
 ## 이전 완료 — 정점 ID 충돌·빈 식별자 초기화식 (2026-09-25, PR #19 머지)
 

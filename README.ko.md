@@ -74,7 +74,8 @@ gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트�
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 # (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·
-#  인터페이스 메서드 추가·struct 필드 계약 파괴·공개 상수 값 변경)
+#  인터페이스 메서드 추가(직접·모듈 안 임베드 경유·새 임베드 — 모듈 밖 인터페이스
+#  임베드는 안 보임)·struct 필드 계약 파괴·공개 상수 값 변경)
 gartograph metrics                             # Ca/Ce/불안정성 + 추상성(A)·주 계열
                                                # 거리(D=|A+I-1|) + orphan 패키지
                                                # (A/D는 타입 레벨 수확이 필요)
