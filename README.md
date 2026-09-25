@@ -336,10 +336,11 @@ Vertex IDs: `pkg/path` for packages, `pkg/path.Name` for package-level
 symbols, `pkg/path.(Recv).Name` for methods. All blank `var _`/`const _`
 declarations of a package share one retention-root vertex `pkg/path._`
 (initializers run at program init, and `var _ I = (*T)(nil)` uses `T` and
-`I`), like `init`. A package path with a dot (`example.com/m/x.y`) can equal
-a symbol ID (`y` in `example.com/m/x`); such symbols get no vertex and no
-edges rather than borrowing the package vertex, and `limitations` counts
-them. Vertex `kind`:
+`I`), like `init`. A package path with a dot (`example.com/m/x.y`, or the
+`--tests` main package `x.test`) can equal a symbol ID (`y` or `test` in
+`example.com/m/x`); only such colliding symbol IDs get a `#symbol` suffix
+(`example.com/m/x.y#symbol`) — `#` cannot appear in an import path, so the
+package keeps its plain path and every other ID is unchanged. Vertex `kind`:
 `module`/`package`/`type`/`func`/`method`/`var`/`const`. Vertices carry
 `generated: true` when they come from files marked
 `// Code generated ... DO NOT EDIT.` — marked, never hidden. Type vertices

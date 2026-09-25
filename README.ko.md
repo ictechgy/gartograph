@@ -259,9 +259,10 @@ gartograph dead   --baseline .dead-baseline.json --strict
 메서드는 `pkg/path.(Recv).Name`. 패키지의 빈 식별자 `var _`·`const _` 선언은
 보존 루트 정점 `pkg/path._` 하나를 공유합니다(초기화식은 프로그램 초기화 때
 실행되고 `var _ I = (*T)(nil)`은 `T`·`I`를 씁니다) — `init`과 같은 방식입니다.
-점이 든 패키지 경로(`example.com/m/x.y`)는 심볼 ID(`example.com/m/x`의 `y`)와
-같아질 수 있습니다 — 그런 심볼은 패키지 정점을 빌리지 않고 정점·간선 없이
-빠지며 `limitations`에 그 수가 실립니다. `// Code generated ... DO NOT EDIT.`
+점이 든 패키지 경로(`example.com/m/x.y`, `--tests`의 테스트 main 패키지 `x.test`)는
+심볼 ID(`example.com/m/x`의 `y`·`test`)와 같아질 수 있습니다 — 그렇게 겹치는 심볼
+ID에만 `#symbol` 접미사가 붙습니다(`example.com/m/x.y#symbol`). `#`는 import 경로에
+쓸 수 없어 패키지는 경로 그대로이고 다른 ID는 바뀌지 않습니다. `// Code generated ... DO NOT EDIT.`
 마커 파일 출신 정점은 `generated: true`를 답니다 — 숨기지 않고 표시합니다.
 type 정점은 `interface: true` 또는 `fields`(선언 순서의 `"name:Type"` 목록)를
 답니다 — `diff`가 인터페이스 메서드 추가와 struct 필드 계약 파괴를

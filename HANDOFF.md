@@ -8,21 +8,27 @@
 - **점 경로 충돌(재현)**: 패키지 `example.com/m/x.y`와 `x`의 심볼 `y`가 같은 ID.
   심볼 정점이 조용히 사라지고, 그 간선이 패키지 정점에 얹혀 `x → x.y contains`
   (패키지가 패키지를 담음)·`x.Use → x.y call`(함수가 패키지를 호출) 같은 거짓
-  사실이 됐다. 외부 디스패치 `Receiver`도 패키지를 가리킬 수 있었다.
-  수정: `packageIDs`와 겹치는 심볼은 정점·간선·루트를 만들지 않고
-  `idCollisions`/`collidedEdges`(서로 다른 간선 집합 — 호출 횟수 아님)로 세어
-  limitation. 규칙 — 수확기 간선 중 패키지 ID에 닿아도 되는 것은 그 패키지가 자기
-  심볼을 담는 contains뿐. 리시버가 충돌한 메서드는 Receiver 없이 satisfies를
-  유지하고 보존 루트가 된다(과소 근사 방지). RTA 인접 맵도 패키지 경로와 같은 ID를
-  거른다. type 레벨처럼 충돌 정점 없이 버린 간선만 있어도 limitation을 낸다.
+  사실이 됐다. `--tests`에서는 테스트 main 패키지 `x.test`와 함수 `test`만으로 생긴다.
+  수정(사용자 결정): **겹치는 심볼 ID에만 `#symbol` 접미사**(`disambiguate`,
+  `collisionSuffix`). `#`는 import 경로에 못 쓰므로 유일하고 다른 ID는 불변.
+  수확기는 `h.id(obj)`, RTA는 문서를 받아 같은 규칙(`rtaNamer`)으로 이름 짓는다.
+- **버린 설계: 충돌 심볼 빼기**(1·2차 구현). 정점·간선을 버리고 limitation으로 세면
+  그 심볼만 부르는 피호출자가 거짓 dead가 되고(`--tests`의 `test`로 흔히 재현),
+  리시버 충돌 메서드를 루트로 살리면 orphan이 가려지고, RTA explain이 판정과
+  모순됐다. 2차 리뷰 REQUEST CHANGES로 폐기.
 - **빈 식별자 초기화식(재현 중 발견)**: `var _ = first()`·`var _ I = T{}`의 참조가
   `_` 정점 부재로 limitation 없이 버려져 first·T·I가 dead로 보고됐다. 수정:
   패키지당 보존 루트 정점 `pkg._`(init과 같은 방식). `func _()`·`type _` 본문은
   실행·참조되지 않으므로 제외. RTA는 `pkg._` 루트가 있으면 그 패키지의 합성
   `init`을 루트에 더한다. metrics orphan은 `pkg._` 루트를 보지 않는다(컴파일 타임
-  단언은 패키지 보존 표지가 아니다 — init·keep과 다르다).
-- 리뷰: code-reviewer REQUEST CHANGES(HIGH 1·MEDIUM 2·LOW 4) — HIGH·MEDIUM·LOW 2
-  반영, 나머지는 아래 후보.
+  단언은 패키지 보존 표지가 아니다 — init·keep과 다르다). RTA 합성 init은 `pkg._`
+  ID로 이름 지어 explain이 초기화식 경로를 보인다.
+- 실측(main 대비): CHA·`--tests` 결과는 세 저장소 동일. go-mssqldb `--algo rta`
+  237→195 — krb5·ntlm 인증 제공자 등록(`AuthProviderFunc = ProviderFunc(getAuth)`)
+  같은 이름 있는 변수 초기화식을 합성 init이 실행하는데 main RTA는 그것을 못 봤다.
+  같은 var 블록에 `_`가 있어 이번에 살아났다 — 올바른 수정. 빈 선언이 없는
+  패키지는 여전히 못 본다(아래 후보와 같은 뿌리).
+- 리뷰: code-reviewer 3회(1차 REQUEST CHANGES → 2차 REQUEST CHANGES로 설계 교체).
 - 실측: go-mssqldb 180·actionlint 37·자기 저장소 6 불변(벤치에 충돌·빈 초기화
   전용 심볼 없음).
 
@@ -127,6 +133,7 @@ isthmus 도메인 판정은 `target === 'persistence'` 기준(PR #111·#112).
 - **이름 있는 변수 초기화식의 부작용(재현, 기존 결함)**: `var registered = register()`에서
   `registered`를 아무도 읽지 않으면 `register`가 dead로 나온다 — 초기화 때 실행되는데.
   초기화식 호출을 변수가 아니라 패키지 초기화 루트에 귀속시키는 설계 변경이 필요.
+  RTA는 합성 init을 모든 패키지 루트로 삼으면 같이 풀린다(지금은 `pkg._`가 있을 때만).
 - RTA 루트 매핑은 패키지 멤버 함수만 본다 — 메서드 루트(keep·충돌 리시버)는
   RTA 루트가 되지 않는다(기존 동작).
 
