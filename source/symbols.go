@@ -69,6 +69,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	wantSymbols := level == graph.LevelSymbol
 	doc.InterfaceMethodSets = true     // fillTypeShape가 type 레벨부터 인터페이스 Methods를 채운다
 	doc.InitializerRoots = wantSymbols // specEdges가 심볼 레벨에서 pkg._를 수확한다
+	doc.InterfaceTypeSets = true       // fillTypeShape가 인터페이스 TypeSet도 채운다
 
 	h.addSymbolVertices(internal, wantSymbols)
 	h.addStructuralEdges(internal)
@@ -161,6 +162,7 @@ func fillTypeShape(v *graph.Vertex, tn *types.TypeName) {
 	case *types.Interface:
 		v.Interface = true
 		v.Methods = interfaceMethods(u)
+		v.TypeSet = interfaceTypeSet(u)
 	case *types.Struct:
 		v.Fields = structFields(u)
 	}
@@ -175,6 +177,39 @@ func interfaceMethods(iface *types.Interface) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// interfaceTypeSet은 제약 인터페이스의 명시적 타입 원소를 정렬된 항목으로 적는다 — 유니언은
+// 항을 정렬해 " | "로 잇고(~ 포함), 비인터페이스 타입 원소는 그 타입이다. 임베드한
+// 인터페이스는 건너뛴다 — 그 타입 집합은 그 인터페이스 정점의 사실이다. 원소가 없으면 nil.
+func interfaceTypeSet(iface *types.Interface) []string {
+	var out []string
+	for i := 0; i < iface.NumEmbeddeds(); i++ {
+		switch et := iface.EmbeddedType(i).(type) {
+		case *types.Union:
+			out = append(out, unionEntry(et))
+		default:
+			if !types.IsInterface(et) {
+				out = append(out, canonicalType(et))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// unionEntry는 유니언의 항을 정규 표기로 정렬해 잇는다.
+func unionEntry(u *types.Union) string {
+	terms := make([]string, u.Len())
+	for i := range terms {
+		term := u.Term(i)
+		terms[i] = canonicalType(term.Type())
+		if term.Tilde() {
+			terms[i] = "~" + terms[i]
+		}
+	}
+	sort.Strings(terms)
+	return strings.Join(terms, " | ")
 }
 
 // structFields는 struct의 필드를 "name:Type" 형태로 선언 순서대로 적는다.

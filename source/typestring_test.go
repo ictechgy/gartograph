@@ -30,3 +30,33 @@ func TestInterfaceMethodsCanonical(t *testing.T) {
 		t.Fatalf("embedded external methods and qualified unexported methods expected, got %q", c)
 	}
 }
+
+// TestInterfaceTypeSets는 제약 인터페이스의 타입 원소가 typeSet 사실로 실리는지 확인한다 —
+// 원소마다 한 항목, 유니언 항은 정렬된 정규 표기라 순서·별칭(byte/uint8) 차이에 흔들리지
+// 않는다. 메서드만 있는 인터페이스는 typeSet이 없다.
+func TestInterfaceTypeSets(t *testing.T) {
+	doc := loadSymbol(t, testutil.WriteModule(t, map[string]string{"a/a.go": `package a
+
+type Number interface{ ~int64 | ~int }
+
+type Bytes interface {
+	~[]byte | string
+	Len() int
+}
+
+type Plain interface{ Do() }
+`}))
+	if !doc.InterfaceTypeSets {
+		t.Fatal("documents must carry the interfaceTypeSets marker")
+	}
+	for id, want := range map[string][]string{
+		"example.com/fixture/a.Number": {"~int | ~int64"},
+		"example.com/fixture/a.Bytes":  {"string | ~[]uint8"},
+		"example.com/fixture/a.Plain":  nil,
+	} {
+		v, _ := doc.VertexByID(id)
+		if !slices.Equal(v.TypeSet, want) {
+			t.Fatalf("%s: typeSet %q, want %q", id, v.TypeSet, want)
+		}
+	}
+}
