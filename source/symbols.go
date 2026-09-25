@@ -337,12 +337,17 @@ func (h *harvester) implementsEdges(concrete, ifaces []*types.Named) {
 			// 지어낸 위치를 싣지 않는다.
 			h.edge(h.id(t.Obj()), h.id(i.Obj()), graph.EdgeImplements, nil)
 			for j := 0; j < iface.NumMethods(); j++ {
+				// universe error.Error(임베드된 error에서 온 메서드)는 패키지가 없어 정점 ID를
+				// 만들 수 없다 — 구현 메서드는 satisfies error로 살아난다.
 				m := iface.Method(j)
+				if m.Pkg() == nil {
+					continue
+				}
 				sel := tset.Lookup(m.Pkg(), m.Name())
 				if sel == nil {
 					continue
 				}
-				if fn, ok := sel.Obj().(*types.Func); ok {
+				if fn, ok := sel.Obj().(*types.Func); ok && fn.Pkg() != nil {
 					h.impls[h.id(m)] = append(h.impls[h.id(m)], h.id(fn))
 				}
 			}
@@ -1040,7 +1045,9 @@ func namedOf(t types.Type) *types.TypeName {
 	if alias, ok := t.(*types.Alias); ok {
 		t = types.Unalias(alias)
 	}
-	if named, ok := t.(*types.Named); ok {
+	// universe 타입(error·comparable)은 패키지가 없어 정점이 없다 — 돌려주면 임베드 간선
+	// 대상의 ID를 만들다 nil 역참조로 죽는다(interface{ error; … }, struct{ error }).
+	if named, ok := t.(*types.Named); ok && named.Obj().Pkg() != nil {
 		return named.Obj()
 	}
 	return nil

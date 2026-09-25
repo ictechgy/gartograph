@@ -2,7 +2,19 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 최근 완료 — JSON 빈 목록을 []로 (2026-09-25, fix/json-empty-lists)
+## 최근 완료 — universe 타입 임베드 수확 패닉 (2026-09-25, fix/universe-embed-panic)
+
+PR #28 리뷰가 찾은 main의 크래시: `type E interface{ error; Code() int }`·`interface{ comparable }`·
+`struct{ error }`처럼 universe 타입을 임베드하면 type·symbol 수확이 nil 역참조로 패닉했다
+(universe 객체는 패키지가 없어 `objectID`가 죽는다). `namedOf`가 universe 명명 타입을 걸러
+임베드 간선을 긋지 않는다(정점이 없으니 유령 간선 금지와도 맞다). 벤치 결과 동일.
+- 리뷰 반영(REQUEST CHANGES): 같은 패닉이 `implementsEdges`에 두 갈래로 남아 있었다 —
+  `error`를 임베드한 모듈 인터페이스를 구현하는 타입(승격된 universe `Error`가 인터페이스
+  메서드), `struct{ error }`가 모듈 인터페이스를 구현(구현 메서드가 universe `Error`). 둘 다
+  건너뛴다 — 구현 메서드는 `satisfies error`로 살아난다. 리뷰어 fixture f1~f4를 type·symbol
+  수확·dead(CHA·RTA·--tests)로 돌려 패닉 0.
+
+## 이전 완료 — JSON 빈 목록을 []로 (2026-09-25, PR #27 머지)
 
 결과가 없으면 `"unreachable": null`처럼 목록 필드가 null로 나갔다(SARIF `results: null`은
 명세 위반). CLI JSON 산출물(보고서·`emitJSON`·baseline·MCP·SARIF·bridges·schema)을
