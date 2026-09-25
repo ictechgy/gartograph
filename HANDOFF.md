@@ -10,8 +10,13 @@ HANDOFF 선택 과제 두 개 + 조사 중 발견한 노이즈 하나.
   (`referencesModule`, 선언 타입 포함 — `var _ I = (*T)(nil)`의 I)을 적용.
 - generated: 합쳐진 `pkg._`의 위치를 손으로 쓴 기여 선언 쪽으로(`preferHandWritten`) —
   기여가 전부 생성 파일일 때만 generated. kind는 합성 루트라 늘 var(문서화).
-- 옛 문서: 문서 표시 `initializerRoots`. 없으면 CHA dead가 재수확을 권한다(RTA는 모든
-  합성 init을 루트로 삼아 무관). 같은 패키지의 여러 `init`은 여전히 한 정점(위치는 첫
+- 옛 문서: 문서 표시 `initializerRoots`. 없으면 CHA dead(CLI·MCP 공통
+  `initializerRootsLimitation`)가 재수확을 권한다 — "이전 문서"라고 단정하지 않고 표시가
+  없다는 사실만(표시 도입 전 개발 빌드 문서엔 pkg._가 일부 있을 수 있다). RTA는 모든 합성
+  init을 루트로 삼아 무관.
+- 리뷰 반영(LOW 5): 루트를 만들지 않는 빈 선언의 외부 참조도 센다(`blankSource` — 패키지
+  ID를 출발점으로, 모듈 목표가 없어 간선은 안 생김). 전엔 같은 패키지의 다른 빈 선언이
+  루트를 먼저 만들었는지(선언 순서)에 따라 수치가 달라졌다. 같은 패키지의 여러 `init`은 여전히 한 정점(위치는 첫
   선언, 둘 다 루트라 도달성 무관).
 
 ## 이전 완료 — RTA가 메서드 루트를 루트로 (2026-09-25, PR #24 머지)

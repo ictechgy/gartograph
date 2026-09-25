@@ -261,7 +261,8 @@ gartograph dead   --baseline .dead-baseline.json --strict
 하나 있습니다(`init`과 같은 방식, kind `var`). 기여하는 선언이 모듈 심볼을 참조할 때만
 만들어지고(열거형의 `const ( _ = iota )`는 만들지 않음), 위치는 손으로 쓴 기여 선언이
 있으면 그쪽이라 기여가 전부 생성 파일일 때만 `generated`입니다. 문서는
-`initializerRoots: true`를 싣고, 표시 없는 옛 저장 문서에 `dead`는 재수확을 권합니다 — 빈 식별자 `var _`·`const _` 선언이 쓰는 것
+`initializerRoots: true`를 싣고, 표시 없는 옛 저장 문서에 `dead`(CLI·MCP)는 재수확을
+권합니다. 초기화 루트는 빈 식별자 `var _`·`const _` 선언이 쓰는 것
 (`var _ I = (*T)(nil)`은 `T`·`I`를 씀)과 호출을 실행하는 이름 있는 변수 초기화식이
 쓰는 것(`var registered = register()`는 `registered`를 아무도 읽지 않아도 초기화 때
 `register`를 실행)을 참조합니다. 호출이 없는 초기화식(함수 값 표·형 변환·builtin·함수

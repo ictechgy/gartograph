@@ -2673,7 +2673,7 @@ func TestDeadOldDocumentWithoutInitRoots(t *testing.T) {
 	if err := os.WriteFile(fresh, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, out, _ := run(t, "dead", "--graph", fresh); strings.Contains(out, "predates package-initialization roots") {
+	if _, out, _ := run(t, "dead", "--graph", fresh); strings.Contains(out, "lacks the initializerRoots marker") {
 		t.Fatalf("a current document must not get the re-harvest note: %s", out)
 	}
 	delete(doc, "initializerRoots")
@@ -2682,7 +2682,7 @@ func TestDeadOldDocumentWithoutInitRoots(t *testing.T) {
 	if err := os.WriteFile(old, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, out, _ := run(t, "dead", "--graph", old); !strings.Contains(out, "predates package-initialization roots") {
+	if _, out, _ := run(t, "dead", "--graph", old); !strings.Contains(out, "lacks the initializerRoots marker") {
 		t.Fatalf("an old document must get the re-harvest note: %s", out)
 	}
 }
