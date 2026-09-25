@@ -108,8 +108,10 @@ func main() { run() }
 func run() {}
 func unused() {}
 `,
+		// ghost는 어느 패키지와도 맞지 않는다 — mapping의 빈 목록이 null이면 안 된다.
 		".gartograph.yml": `components:
   app: ["."]
+  ghost: ["nothing/**"]
 deps: {}
 `,
 	})
@@ -138,6 +140,12 @@ deps: {}
 			t.Fatalf("tool call %d errored: %v", i, result)
 		}
 		texts[i] = result["content"].([]any)[0].(map[string]any)["text"].(string)
+	}
+	// 결과가 없는 목록(순환 0개, limitation 없음, 빈 컴포넌트)도 null이 아니라 []다.
+	for i, text := range texts {
+		if strings.Contains(text, "null") {
+			t.Fatalf("tool call %d must not emit null lists: %s", i, text)
+		}
 	}
 	if !strings.Contains(texts[0], `"vertices"`) {
 		t.Fatalf("summary missing counts: %s", texts[0])
