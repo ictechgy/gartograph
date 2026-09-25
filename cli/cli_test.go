@@ -2780,6 +2780,7 @@ func main() {
 	if !strings.Contains(out, "root: example.com/fixture.main") || !strings.Contains(out, "-> example.com/fixture.(I).Called") {
 		t.Fatalf("rta explain must show the call into the interface method: %s", out)
 	}
+}
 
 // TestJSONEmptyListsAreArrays는 결과가 없는 목록 필드가 null이 아니라 []로 나가는지
 // 확인한다 — 소비자가 null과 "없음"을 따로 다루게 하면 안 되고, SARIF는 results가
