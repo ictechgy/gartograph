@@ -12,8 +12,16 @@
 - diff: 두 문서 모두 표시가 있으면 사실로 판정(추가 = gained, 같은 이름 서명 변경 =
   changed signature, 선언 정점이 없으면 "via embedding"). 한쪽이라도 옛 문서면 PR #22의
   정점 기반 판정(선언·모듈 안 임베드 전파·새 임베드).
-- 인터페이스에서 임베드로 빠진 메서드는 여전히 보고하지 않는다(선언 메서드 제거는 정점
-  제거로 breaking).
+- 리뷰 반영(MEDIUM 3·LOW 5): **정규 타입 표기** `source/typestring.go`(`canonicalType` —
+  별칭 풀기, byte→uint8, 타입 파라미터 위치 P0…, 스택 순회로 재귀 없음). `methods`·
+  `fields`·이름 없는 인터페이스 이름이 공유 — `interface{}`→`any`, `I[T]`→`I[E]` 같은 표기
+  리팩터의 거짓 breaking 제거. **전환 주의**: 이 변경 전 도구로 만든 문서와 diff하면
+  `fields`에 표기 차이(any↔interface{}, byte↔uint8)가 한 번 나올 수 있다.
+  임베드로 빠진 메서드는 "lost method … via embedding"(호출자 파괴), 선언 메서드를 임베드로
+  옮긴 리팩터는 메서드 집합이 같으면 정점 제거로도 breaking 아님(`stillInMethodSet`),
+  인터페이스→struct는 "no longer an interface", 모듈 안 임베드는 "via embedded X",
+  type 레벨은 선언·임베드 구분 없이, 같은 패키지 비공개 메서드는 짧은 이름. 변이 13개 전부
+  잡힘. 제약 인터페이스의 타입 집합(유니언) 변경은 보지 않는다(README 명시).
 
 ## 이전 완료 — diff의 인터페이스 메서드 추가 판정 복구 (2026-09-25, PR #22 머지)
 

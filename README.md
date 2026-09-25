@@ -329,7 +329,11 @@ source (symbol-level harvests; older documents lack it), and
 `interfaceMethodSets: true` when interface type vertices carry `methods`
 (the full method set, embeddings included, as sorted `Name(params) results`
 entries — without the marker an absent list means "not harvested", with it
-"no methods").
+"no methods"). Types in `fields` and `methods` are canonical — aliases
+resolved, `byte`→`uint8`, type parameters by position (`P0`…) — so a
+spelling-only refactor (`interface{}`→`any`, renaming `T`→`E`) is not a
+breaking change; type-set changes of constraint interfaces (unions, `~T`)
+are not compared.
 
 Edges carry `positions` — every source site where the relation holds
 (import decls for `import`, call expressions for `call`, and so on).

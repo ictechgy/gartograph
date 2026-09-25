@@ -283,9 +283,11 @@ breaking으로 분류하는 재료입니다.
 `error`·이름 없는 표기)가 그 메서드를 설명하지 못할 때만 싣습니다 — 목록이 비지
 않으므로 도달성은 같습니다. 문서는 이름 없는 인터페이스까지 수확했으면
 `anonymousDispatch: true`를 싣습니다(심볼 레벨 수확, 옛 문서엔 없음). 인터페이스 타입
-정점은 `methods`(임베드 포함 전체 메서드 집합, 정렬된 `Name(params) results`)를 답고,
+정점은 `methods`(임베드 포함 전체 메서드 집합, 정렬된 `Name(params) results`)를 담고,
 문서는 `interfaceMethodSets: true`를 싣습니다 — 이 표시가 없으면 목록 부재는 "몰랐다",
-있으면 "메서드 없음"입니다.
+있으면 "메서드 없음"입니다. `fields`·`methods`의 타입은 정규 표기입니다(별칭을 풀고
+`byte`→`uint8`, 타입 파라미터는 선언 위치 `P0`…) — 표기만 바뀐 리팩터가 거짓 breaking이 되지
+않게. 제약 인터페이스의 타입 집합(유니언·`~T`) 변경은 보지 않습니다.
 간선 종류: `import`/`contains`/`embeds`/`implements`/`references`/`call`/
 `signature`(선언 시그니처 안의 타입 참조 — `contains`와 달리 의존 관계).
 인터페이스 호출은 CHA 팬아웃으로 인터페이스 메서드와 모든 구현 메서드에
