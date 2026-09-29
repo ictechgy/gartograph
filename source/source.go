@@ -63,6 +63,14 @@ func Load(opts Options) (*graph.Document, error) {
 	if err != nil {
 		return nil, err
 	}
+	return documentFrom(pkgs, opts)
+}
+
+// documentFrom은 이미 로드한 패키지로 opts.Level의 문서를 만든다. Load와 schema가
+// 같은 로드 결과로 같은 그래프를 얻도록 로드와 문서화를 나눴다 — schema 사실의
+// symbol.usr가 impact 그래프의 정점 ID와 같은 규칙(충돌 접미사·exclude 포함)을 따라야
+// 하기 때문이다.
+func documentFrom(pkgs []*packages.Package, opts Options) (*graph.Document, error) {
 	// Root는 절대 경로로 남긴다 — Position.File이 절대 경로라, 이후
 	// 파일→정점 해석이 어느 cwd에서든 같은 결과를 내야 한다.
 	root, err := filepath.Abs(opts.Dir)
