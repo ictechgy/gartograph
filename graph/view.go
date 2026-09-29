@@ -62,6 +62,7 @@ func (d *Document) View(l Level) (*Document, error) {
 		InterfaceMethodSets: d.InterfaceMethodSets,
 		InterfaceTypeSets:   d.InterfaceTypeSets,
 		InitializerRoots:    d.InitializerRoots,
+		DispatchEvidence:    d.DispatchEvidence,
 	}
 	alive := make(map[string]bool)
 	for _, v := range d.Vertices {

@@ -116,3 +116,18 @@ func TestVertexByID(t *testing.T) {
 		t.Fatal("unexpected vertex y")
 	}
 }
+
+// TestSortMergesCandidate는 같은 관계를 합칠 때 한 지점이라도 확정이면 확정으로
+// 남는지 확인한다 — 팬아웃 표시가 확정 지점을 덮으면 근거 등급이 약해진다.
+func TestSortMergesCandidate(t *testing.T) {
+	doc := &Document{Edges: []Edge{
+		{From: "a", To: "b", Kind: EdgeCall, Candidate: true},
+		{From: "a", To: "b", Kind: EdgeCall},
+		{From: "a", To: "c", Kind: EdgeCall, Candidate: true},
+		{From: "a", To: "c", Kind: EdgeCall, Candidate: true},
+	}}
+	doc.Sort()
+	if len(doc.Edges) != 2 || doc.Edges[0].Candidate || !doc.Edges[1].Candidate {
+		t.Fatalf("candidate merge wrong: %+v", doc.Edges)
+	}
+}

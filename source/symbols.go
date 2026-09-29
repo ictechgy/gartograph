@@ -71,6 +71,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	doc.InterfaceMethodSets = true     // fillTypeShape가 type 레벨부터 인터페이스 Methods를 채운다
 	doc.InitializerRoots = wantSymbols // specEdges가 심볼 레벨에서 pkg._를 수확한다
 	doc.InterfaceTypeSets = true       // fillTypeShape가 인터페이스 TypeSet도 채운다
+	doc.DispatchEvidence = wantSymbols // CHA 팬아웃(candidateEdge)은 심볼 레벨에서만 생긴다
 
 	h.addSymbolVertices(internal, wantSymbols)
 	h.addStructuralEdges(internal)
@@ -907,7 +908,7 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 			h.edge(from, id, graph.EdgeCall, pos)
 			h.promotedFields(sel, from, pos)
 			for _, impl := range h.dispatchTargets(sel, fn, id) {
-				h.edge(from, impl, graph.EdgeCall, pos)
+				h.candidateEdge(from, impl, graph.EdgeCall, pos)
 			}
 		} else if fn, ok := p.TypesInfo.Uses[f.Sel].(*types.Func); ok && fn.Pkg() != nil {
 			// pkg.F() — 패키지 한정 선택자는 Selections가 아니라 Uses로 해석된다.
@@ -1040,7 +1041,7 @@ func (h *harvester) selectorEdge(p *packages.Package, sel *ast.SelectorExpr, fro
 		// 구현으로 퍼뜨린다.
 		if fn, ok := s.Obj().(*types.Func); ok && fn.Pkg() != nil {
 			for _, impl := range h.dispatchTargets(s, fn, h.id(fn)) {
-				h.edge(from, impl, graph.EdgeReferences, pos)
+				h.candidateEdge(from, impl, graph.EdgeReferences, pos)
 			}
 		}
 		return
@@ -1150,6 +1151,18 @@ func (h *harvester) vertex(v graph.Vertex) {
 // pos는 이 관계가 성립하는 소스 지점이다 — 같은 관계가 지점마다 반복되면
 // 간선은 하나인 채 positions에 지점만 쌓인다.
 func (h *harvester) edge(from, to string, kind graph.EdgeKind, pos *graph.Position) {
+	h.addEdge(from, to, kind, pos, false)
+}
+
+// candidateEdge는 인터페이스 디스패치의 CHA 팬아웃 간선을 긋는다 — 대상은 가능한 구현일
+// 뿐 컴파일러가 확정하지 않았다(Edge.Candidate). 같은 관계가 확정 지점에서도 그어지면
+// 확정으로 남는다.
+func (h *harvester) candidateEdge(from, to string, kind graph.EdgeKind, pos *graph.Position) {
+	h.addEdge(from, to, kind, pos, true)
+}
+
+// addEdge는 edge·candidateEdge의 공통 본체다. candidate는 이 지점이 팬아웃 전용인지다.
+func (h *harvester) addEdge(from, to string, kind graph.EdgeKind, pos *graph.Position, candidate bool) {
 	if !h.vertices[from] || !h.vertices[to] {
 		if h.vertices[from] && kind != graph.EdgeContains {
 			h.extRefs++
@@ -1161,9 +1174,12 @@ func (h *harvester) edge(from, to string, kind graph.EdgeKind, pos *graph.Positi
 		if pos != nil {
 			h.doc.Edges[i].Positions = append(h.doc.Edges[i].Positions, *pos)
 		}
+		if !candidate {
+			h.doc.Edges[i].Candidate = false
+		}
 		return
 	}
-	e := graph.Edge{From: from, To: to, Kind: kind}
+	e := graph.Edge{From: from, To: to, Kind: kind, Candidate: candidate}
 	if pos != nil {
 		e.Positions = []graph.Position{*pos}
 	}

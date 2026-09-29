@@ -54,6 +54,8 @@ func dedupeEdges(edges []Edge) []Edge {
 	for i, e := range edges {
 		if i > 0 && sameEdge(e, edges[i-1]) {
 			out[len(out)-1].Positions = append(out[len(out)-1].Positions, e.Positions...)
+			// 한 지점이라도 확정 관계면 합친 관계도 확정이다.
+			out[len(out)-1].Candidate = out[len(out)-1].Candidate && e.Candidate
 			continue
 		}
 		out = append(out, e)
