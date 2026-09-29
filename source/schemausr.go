@@ -9,7 +9,6 @@ package source
 import (
 	"go/ast"
 	"go/types"
-	"strings"
 
 	"github.com/ictechgy/gartograph/graph"
 	"golang.org/x/tools/go/packages"
@@ -144,13 +143,6 @@ func (s *schemaScan) attachSymbols() {
 			s.missingUsrs++
 			continue
 		}
-		fact.Symbol = &FactSymbol{QualifiedName: qualifiedName(fact.owner), Usr: fact.owner}
+		fact.Symbol = &FactSymbol{QualifiedName: graph.ShortName(fact.owner), Usr: fact.owner}
 	}
-}
-
-// qualifiedName은 정점 ID의 사람이 읽는 짧은 이름이다 — import 경로의 마지막 요소부터다
-// ("example.com/m/store.(Repo).List" → "store.(Repo).List"). 식별자에는 '/'가 올 수
-// 없어 마지막 '/' 뒤는 항상 패키지 이름부터 시작한다.
-func qualifiedName(id string) string {
-	return id[strings.LastIndex(id, "/")+1:]
 }

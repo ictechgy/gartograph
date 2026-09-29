@@ -182,20 +182,6 @@ func TestSchemaUsrsAreGraphVertices(t *testing.T) {
 	}
 }
 
-// TestQualifiedName은 짧은 이름이 import 경로의 마지막 요소부터인지 본다.
-func TestQualifiedName(t *testing.T) {
-	cases := map[string]string{
-		"example.com/m/store.(Repo).List": "store.(Repo).List",
-		"example.com/m.F":                 "m.F",
-		"main.F":                          "main.F",
-	}
-	for id, want := range cases {
-		if got := qualifiedName(id); got != want {
-			t.Errorf("qualifiedName(%q) = %q, want %q", id, got, want)
-		}
-	}
-}
-
 // missingUsrCount는 missing-relation-usrs limitation의 수를 읽는다(없으면 0).
 func missingUsrCount(doc *BridgeFactsDocument) int {
 	for _, lim := range doc.Limitations {
