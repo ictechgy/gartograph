@@ -79,6 +79,23 @@ check 2 "bad rules format" rules --format xml
 check 2 "bad level"        graph --level bogus
 check 2 "level mismatch"   cycles --graph /dev/null
 check 0 "tags flag"        graph --tags customtag
+# 순회 문서(isthmus language-traversal): 사용법 오류와 root-not-found는 64다.
+check 0  "reach"                 reach example.com/contract/lib.Run
+check 64 "reach root-not-found"  reach example.com/missing
+check 64 "reach no roots"        reach
+check 64 "reach control char"    reach $'bad\tid'
+check 64 "reach depth range"     reach --depth 129 example.com/contract/lib.Run
+check 0  "impact traversal"      impact --format language-traversal example.com/contract/lib.Run
+check 64 "impact traversal miss" impact --format language-traversal example.com/missing
+check 64 "impact traversal file" impact --format language-traversal --files main.go
+check 2  "impact bad format"     impact --format xml example.com/contract/lib
+
+# root-not-found는 문서를 표준 출력에 쓴 채 64다 — 빈 출력이면 계약 위반이다.
+out="$("$BIN" reach example.com/missing --dir "$FIX" 2>/dev/null || true)"
+case "$out" in
+*'"root-not-found"'*) ;;
+*) echo "FAIL reach root-not-found must write the document" >&2; fails=$((fails+1)) ;;
+esac
 
 if [ "$fails" -gt 0 ]; then
 	echo "$fails contract checks failed" >&2
