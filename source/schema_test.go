@@ -285,7 +285,7 @@ type Orphan struct {
 }
 `,
 	})
-	doc, err := SchemaFacts(dir, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -335,7 +335,7 @@ func main() {
 }
 `,
 	})
-	doc, err := SchemaFacts(dir, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestSchemaFactsEmpty(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
 		"main.go": "package main\n\nfunc main() { println(\"hi\") }\n",
 	})
-	doc, err := SchemaFacts(dir, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestSchemaFactsEmpty(t *testing.T) {
 
 // TestSchemaFactsBadDir는 존재하지 않는 디렉터리가 오류를 돌려주는지 본다.
 func TestSchemaFactsBadDir(t *testing.T) {
-	if _, err := SchemaFacts("/no/such/dir/gartograph-test", "test"); err == nil {
+	if _, err := SchemaFacts(Options{Dir: "/no/such/dir/gartograph-test"}, "test"); err == nil {
 		t.Fatal("missing dir must return an error")
 	}
 }
@@ -458,7 +458,7 @@ func compute() any { return nil }
 var other string
 `,
 	})
-	doc, err := SchemaFacts(dir, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -533,7 +533,7 @@ func main() { run("SELECT 1") }
 		// 별도 패키지에 두어 main의 타입 정보가 깨지지 않게 한다.
 		"broken/broken.go": "package broken\n\nfunc broken( {\n",
 	})
-	doc, err := SchemaFacts(dir, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}

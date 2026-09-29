@@ -1441,7 +1441,13 @@ func cmdSchema(args []string, stdout, stderr io.Writer) int {
 	if fs.Parse(args) != nil {
 		return 2
 	}
-	doc, err := source.SchemaFacts(*dir, Version)
+	// usr 확인용 그래프는 impact와 같은 exclude로 만든다 — 기본 impact 그래프에
+	// 없는 정점 ID를 usr로 실으면 trace가 순회에서 찾지 못하는 유령 신원이 된다.
+	opts := source.Options{Dir: *dir}
+	if err := applyConfigExclude(&opts); err != nil {
+		return fail(stderr, err)
+	}
+	doc, err := source.SchemaFacts(opts, Version)
 	if err != nil {
 		return fail(stderr, err)
 	}

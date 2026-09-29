@@ -42,6 +42,19 @@ type RelationFact struct {
 	Method   string          `json:"method,omitempty"`
 	Dynamic  bool            `json:"dynamic"`
 	Location *BridgeLocation `json:"location"`
+	// Symbol은 사실을 감싸는 그래프 선언이다. usr는 `impact`·`reach`와 같은 심볼 정점
+	// ID라 isthmus trace가 순회 도달 집합과 이 사실을 문자열 일치로 잇는다. 감싸는
+	// 심볼 정점이 없으면 생략하고 missing-relation-usrs limitation으로 센다.
+	Symbol *FactSymbol `json:"symbol,omitempty"`
+	// owner는 수확 중 기록한 감싸는 선언의 후보 ID다 — 그래프 정점인지 확인한 뒤에만
+	// Symbol이 된다(직렬화하지 않는다).
+	owner string
+}
+
+// FactSymbol은 계약의 사실 symbol이다 — qualifiedName은 필수, usr는 생산자 안정 ID다.
+type FactSymbol struct {
+	QualifiedName string `json:"qualifiedName"`
+	Usr           string `json:"usr"`
 }
 
 // BridgeLocation은 계약의 1 기반 소스 위치다.
@@ -51,18 +64,27 @@ type BridgeLocation struct {
 	Column int    `json:"column"`
 }
 
-// SchemaFacts는 dir 아래 Go 소스를 스캔해 persistence target의
+// SchemaFacts는 opts.Dir 아래 Go 소스를 스캔해 persistence target의
 // bridge-facts v1 문서를 만든다. go 문서가 사실을 담는 유일한 target이다.
-func SchemaFacts(dir, toolVersion string) (*BridgeFactsDocument, error) {
-	root, err := realPath(dir)
+// opts의 Dir·Exclude만 쓴다 — 레벨은 늘 symbol이다. Exclude는 스캔 범위가 아니라
+// usr 확인용 그래프(impact가 .gartograph.yml exclude로 만드는 그래프)에만 적용된다.
+func SchemaFacts(opts Options, toolVersion string) (*BridgeFactsDocument, error) {
+	root, err := realPath(opts.Dir)
 	if err != nil {
 		return nil, err
 	}
-	pkgs, err := load(Options{Dir: root, Level: graph.LevelSymbol})
+	loadOpts := Options{Dir: root, Level: graph.LevelSymbol, Exclude: opts.Exclude}
+	pkgs, err := load(loadOpts)
 	if err != nil {
 		return nil, err
 	}
-	scan := &schemaScan{root: root}
+	// 같은 로드 결과로 impact와 같은 심볼 그래프를 만든다 — usr는 이 그래프의
+	// 정점일 때만 싣는다(유령 ID 금지).
+	symbolDoc, err := documentFrom(pkgs, loadOpts)
+	if err != nil {
+		return nil, err
+	}
+	scan := &schemaScan{root: root, ids: newSymbolIDs(symbolDoc)}
 	for _, p := range pkgs {
 		if !keep(p, false) {
 			continue
@@ -70,6 +92,7 @@ func SchemaFacts(dir, toolVersion string) (*BridgeFactsDocument, error) {
 		scan.unparsed += len(p.Errors)
 		scanPackage(scan, p)
 	}
+	scan.attachSymbols()
 	facts := scan.facts()
 	// 계약: target은 사실이 있을 때만 설정된다 — 빈 문서는 target null이다.
 	var target any
@@ -101,8 +124,14 @@ type schemaScan struct {
 	unattributed int       // 관계를 알 수 없는 컬럼 태그 수
 	unresolved   int       // TableName을 찾지 못한 모델 인자 수
 	dynamic      int       // 리터럴로 읽히지 않아 조인 불가한 SQL 인자 수
+	missingUsrs  int       // 감싸는 심볼 정점이 없어 usr를 싣지 못한 사실 수
 	latest       time.Time // 읽은 소스의 최신 mtime
 	seen         map[string]bool
+	// ids는 usr 확인용 심볼 그래프의 정점 색인이다.
+	ids symbolIDs
+	// owner는 지금 훑는 선언의 감싸는 그래프 정점 후보 ID다(없으면 빈 문자열).
+	// 호출·리터럴 스캔 함수가 인자 없이 같은 귀속을 쓰도록 스캔 상태에 둔다.
+	owner string
 }
 
 // scanPackage는 패키지의 모든 파일을 훑어 사실을 모은다.
@@ -127,6 +156,7 @@ func scanPackage(scan *schemaScan, p *packages.Package) {
 			Method:   tag.column,
 			Dynamic:  false,
 			Location: scan.locate(p.Fset, tag.pos),
+			owner:    tag.owner,
 		})
 	}
 	for _, site := range models {
@@ -140,6 +170,7 @@ func scanPackage(scan *schemaScan, p *packages.Package) {
 			Channel:  table,
 			Dynamic:  false,
 			Location: scan.locate(p.Fset, site.pos),
+			owner:    site.owner,
 		})
 	}
 }
@@ -149,24 +180,40 @@ type columnTag struct {
 	typeName string
 	column   string
 	pos      token.Pos
+	owner    string // 태그가 놓인 타입 선언의 정점 ID
 }
 
 // modelSite는 TableName 귀속을 기다리는 모델 인자다.
 type modelSite struct {
 	typeName string
 	pos      token.Pos
+	owner    string // 모델 인자를 감싸는 선언의 정점 ID
 }
 
-// scanFile은 파일 하나의 선언·호출·리터럴을 관측한다.
+// scanFile은 파일 하나의 선언·호출·리터럴을 관측한다. 선언 단위로 훑는 이유는
+// 사실마다 감싸는 그래프 선언(declOwners)을 정하기 위해서다 — 심볼 수확(declEdges)이
+// 간선 출발점으로 쓰는 정점과 같은 귀속이다.
 func scanFile(scan *schemaScan, p *packages.Package, f *ast.File,
 	tableNames map[string]string, tags *[]columnTag, models *[]modelSite) {
 	scan.mtime(p, f)
-	ast.Inspect(f, func(n ast.Node) bool {
+	for _, decl := range f.Decls {
+		for _, part := range declParts(scan, p, decl) {
+			scan.owner = part.owner
+			scanNode(scan, p, part.node, tableNames, tags, models)
+		}
+	}
+	scan.owner = ""
+}
+
+// scanNode는 노드 아래의 선언·호출·리터럴을 지금 귀속(scan.owner)으로 관측한다.
+func scanNode(scan *schemaScan, p *packages.Package, root ast.Node,
+	tableNames map[string]string, tags *[]columnTag, models *[]modelSite) {
+	ast.Inspect(root, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
 			scanTableName(scan, p, node, tableNames)
-		case *ast.GenDecl:
-			*tags = append(*tags, structTags(node)...)
+		case *ast.TypeSpec:
+			*tags = append(*tags, structTags(node, scan.owner)...)
 		case *ast.CallExpr:
 			scanCall(scan, p, node, models)
 		case *ast.BasicLit:
@@ -213,6 +260,7 @@ func scanTableName(scan *schemaScan, p *packages.Package, decl *ast.FuncDecl,
 		Channel:  name,
 		Dynamic:  false,
 		Location: scan.locate(p.Fset, lit.Pos()),
+		owner:    scan.owner,
 	})
 }
 
@@ -240,34 +288,33 @@ func singleStringReturn(body *ast.BlockStmt) (*ast.BasicLit, bool) {
 	return lit, ok && lit.Kind == token.STRING
 }
 
-// structTags는 GenDecl 안의 struct 필드 태그에서 컬럼 이름을 읽는다.
+// structTags는 타입 선언의 struct 필드 태그에서 컬럼 이름을 읽는다.
 // `db:"name"`·`sql:"name"`은 첫 쉼표 앞이 이름이고, `gorm:"column:name"`은
 // column 키다 — 어떤 형태도 관계 이름은 담지 않으므로 귀속은 나중이다.
-func structTags(decl *ast.GenDecl) []columnTag {
+// owner는 태그가 놓인 타입 선언의 정점 ID다 — 심볼 수확도 타입 선언 안의 참조를
+// 그 타입 정점에서 긋는다(specEdges). 필드 정점이 아닌 타입으로 두는 이유는
+// 태그가 타입의 행 매핑 전체를 선언하기 때문이다 — 핸들러가 타입에 닿으면(Scan 대상,
+// 반환 타입) 그 컬럼들에 기댄다고 보는 쪽이 영향 분석에서 안전한 과대 근사다.
+func structTags(typeSpec *ast.TypeSpec, owner string) []columnTag {
+	st, ok := typeSpec.Type.(*ast.StructType)
+	if !ok {
+		return nil
+	}
 	var out []columnTag
-	for _, spec := range decl.Specs {
-		typeSpec, ok := spec.(*ast.TypeSpec)
-		if !ok {
+	for _, field := range st.Fields.List {
+		if field.Tag == nil {
 			continue
 		}
-		st, ok := typeSpec.Type.(*ast.StructType)
-		if !ok {
+		column := tagColumn(field.Tag.Value)
+		if column == "" || column == "-" {
 			continue
 		}
-		for _, field := range st.Fields.List {
-			if field.Tag == nil {
-				continue
-			}
-			column := tagColumn(field.Tag.Value)
-			if column == "" || column == "-" {
-				continue
-			}
-			out = append(out, columnTag{
-				typeName: typeSpec.Name.Name,
-				column:   column,
-				pos:      field.Tag.Pos(),
-			})
-		}
+		out = append(out, columnTag{
+			typeName: typeSpec.Name.Name,
+			column:   column,
+			pos:      field.Tag.Pos(),
+			owner:    owner,
+		})
 	}
 	return out
 }
@@ -449,6 +496,7 @@ func scanCall(scan *schemaScan, p *packages.Package, call *ast.CallExpr, models 
 					Channel:  name,
 					Dynamic:  false,
 					Location: scan.locate(p.Fset, lit.Pos()),
+					owner:    scan.owner,
 				})
 				return
 			}
@@ -457,7 +505,7 @@ func scanCall(scan *schemaScan, p *packages.Package, call *ast.CallExpr, models 
 	case argModel:
 		// Model(&T{})·AutoMigrate(&T{}) — 타입 인자를 TableName에 묶는다.
 		if typeName := modelTypeName(arg); typeName != "" {
-			*models = append(*models, modelSite{typeName: typeName, pos: arg.Pos()})
+			*models = append(*models, modelSite{typeName: typeName, pos: arg.Pos(), owner: scan.owner})
 		} else {
 			scan.unresolved++
 		}
@@ -557,6 +605,7 @@ func scanLiteral(scan *schemaScan, p *packages.Package, lit *ast.BasicLit) {
 			Channel:  name,
 			Dynamic:  false,
 			Location: scan.locate(p.Fset, lit.Pos()),
+			owner:    scan.owner,
 		})
 	}
 }
@@ -764,6 +813,7 @@ func (s *schemaScan) pushDynamic(p *packages.Package, expr ast.Expr) {
 		Channel:  text,
 		Dynamic:  true,
 		Location: s.locate(p.Fset, expr.Pos()),
+		owner:    s.owner,
 	})
 }
 
@@ -855,6 +905,13 @@ func (s *schemaScan) limitations() []string {
 		out = append(out, fmt.Sprintf(
 			"unresolved-model-types: %d gorm model argument(s) had no TableName binding",
 			s.unresolved))
+	}
+	if s.missingUsrs > 0 {
+		// isthmus 체인 전용 접두사다 — check 심각도에는 영향이 없고 trace가 그
+		// 사실에서 순회로 이어 가지 못한다는 것을 드러낸다.
+		out = append(out, fmt.Sprintf(
+			"missing-relation-usrs: %d relation-use fact(s) are outside any symbol vertex of the impact graph; they carry no symbol",
+			s.missingUsrs))
 	}
 	if s.dynamic > 0 {
 		// isthmus가 미사용 진단을 unverified로 내리는 근거다 — 접두사를
