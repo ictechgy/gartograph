@@ -60,9 +60,14 @@ gartograph bridges --out go-facts.json
 # SQL 관계 참조를 수확한다(platform "go", target "persistence").
 gartograph schema --out go-schema-facts.json
 
+# isthmus http route 선언 생성 — net/http ServeMux·chi·gin·echo 라우트를
+# (method, 정규 경로 템플릿)과 핸들러 정점 ID로(platform "go", target "http", roles ["server"])
+gartograph routes --role server --out go-routes.json
+
 # isthmus trace용 language-traversal 문서 — root가 기대는 쪽(reach)과
-# root에 기대는 쪽(impact)을 여러 root 한 번에
-gartograph reach 'example.com/shop.(Handler).GetOrder' 'example.com/shop.(Handler).ListUsers'
+# root에 기대는 쪽(impact)을 여러 root 한 번에. struct 필드 타입은 그 필드를 쓰는 선언에서만
+# 따라간다(--type-edges members, 기본). --type-edges all은 이전의 넓은 도달이다.
+gartograph reach --roots-from go-routes.json
 gartograph impact --format language-traversal --roots-from go-schema-facts.json
 gartograph rules --strict                     # .gartograph.yml 레이어 규칙 검사
 
@@ -354,10 +359,100 @@ breaking으로 분류하는 재료입니다.
 (모든 지점이 CHA 팬아웃인 관계)를 수확했다는 표시입니다. 표시 없는 옛 저장 문서로 순회하면
 등급을 싣지 않고 `evidence-unassessed:` 한계를 답니다.
 
-`isthmus trace`는 핸들러 도달과 relation-use를 usr 정확 일치로 잇습니다. go 플랫폼에는
-아직 http route-decl 사실이 없어(isthmus가 go 문서의 target을 null·persistence로만
-받습니다) Go 백엔드는 지금 relation → relation-use → 역방향 순회 → 심볼까지 이어집니다.
-route 선택에는 Go 라우트 선언이 먼저 필요합니다.
+`--type-edges members|all`(기본 `members`)은 struct 필드 타입을 따라가는 방식입니다. 심볼 수확은
+struct의 필드 타입 참조를 타입 정점에서 긋기 때문에, `all`에서는 공유 `Handler` struct의 모든 메서드가
+리시버를 거쳐 모든 필드 뒤의 행 타입에 닿았고(`/api/health` → `users` 컬럼), 역방향에서는 필드 타입이
+컨테이너의 모든 메서드로 퍼졌습니다. `members`는 필드 선언에서 나온 간선 `T → X`(모든 위치가 필드 줄
+안에 있는 references·signature)를 필드 정점으로 옮깁니다(`T.f → X`). `T`에 닿아도 `X`에는 닿지 않고,
+`f`를 읽는 코드는 여전히 닿습니다. 두 방향 모두 평범한 그래프 하나라 계약의 `depth = via depth + 1`과
+roots 포함 규칙이 그대로 성립합니다. `members`가 포기하는 것: 필드 이름 없이 struct 값 전체를
+리플렉션에 넘기는 경로(`json.Marshal(h)`, ORM `Save(&u)`)는 임베드가 아닌 필드 타입에 닿지 않습니다
+(임베드는 `embeds` 간선이라 그대로이고, 타입 자신과 그 태그에는 닿습니다). 실제로 잘라낸 곳이 있으면
+센 값과 함께 `type-edges-members:` 한계를 싣습니다 — 이전 과대 근사가 필요하면 `--type-edges all`로
+다시 돌립니다. 간선 위치가 없는 옛 그래프 문서는 옮길 간선이 없어 `all`과 같습니다. `impact`의 json
+형식은 바뀌지 않습니다(거기에 `--type-edges`를 주면 사용법 오류 2).
+
+`isthmus trace`는 route 선언(`routes`)을 핸들러 도달에, 핸들러 도달을 relation-use에 usr 정확 일치로
+잇습니다 — route → 핸들러 → relation-use → 테이블, 그리고 그 역방향.
+
+## isthmus 교환 — 서버 라우트(`routes`)
+
+`gartograph routes --role server`는 isthmus bridge-facts http 문서(`platform: "go"`, `target: "http"`,
+`roles: ["server"]`, `dispatch: "specificity"`, `sourceSets.tests: "excluded"`)를 냅니다. 등록이 받는
+(method, 정규 템플릿)마다 `route-decl` 하나입니다. 호출은 이름이 아니라 타입(패키지 경로, 리시버 타입,
+이름)으로 알아봅니다.
+
+| 라우터 | 등록 | 접두사 합성 |
+|---|---|---|
+| net/http `ServeMux`, `http.Handle`·`HandleFunc`(DefaultServeMux) | `Handle`, `HandleFunc` | `mux.Handle("/api/", http.StripPrefix("/api", inner))`는 `inner`를 `/api` 아래에 붙입니다 |
+| chi v5(`Mux`, `Router`) | `Get`…`Trace`, `Handle`·`HandleFunc`(`"POST /x"` 포함), `Method`·`MethodFunc` | `Route`, `Mount`(chi 라우터; 불투명 핸들러는 `P`·`P/`·`P/*`), `Group`, `With` |
+| gin v1(`RouterGroup`, `IRoutes`, `IRouter`) | `GET`…`OPTIONS`, `Handle`, `Any`, `Match`, `Static*` | `Group`(`joinPaths`: 상대 경로의 끝 슬래시를 보존하는 `path.Join`) |
+| echo v4(`Echo`, `Group`) | `GET`…`CONNECT`, `Add`, `Any`, `Match`, `Static*`, `File*` | `Group`(문자열 연결), `Host`(`narrowed`) |
+
+라우터 값은 변수·struct 필드·함수 파라미터·결과·chi `Route`·`Group` 콜백을 흐름에 둔감하게 따라갑니다.
+생성 호출까지 추적하지 못한 라우터의 등록(모듈 밖에서만 불리는 `Register(g *gin.RouterGroup)`)은
+`pathAnchor: "base"`와 `templateSuffixes` 스코프의 `unresolved-route-prefix:`로 냅니다. 상수가 아닌
+경로는 `dynamic` 사실과 `route-coverage:`, 상수가 아닌 동사(chi `Method`, gin·echo `Match`)는 사실 없이
+그 템플릿 스코프의 `route-coverage:`입니다. 계약 밖 동사(`CONNECT`·`PROPFIND`)는 아무것도 내지 않습니다
+— 모델링된 호출이 보낼 수 없습니다.
+
+패턴 의미론은 공식 소스(Go 1.27.1 `net/http` `pattern.go`·`routing_tree.go`, chi v5.2.5 `tree.go`·
+`mux.go`, gin v1.10.1 `tree.go`·`routergroup.go`·`utils.go`, echo v4.16.0 `router.go`·`group.go`)로 읽고
+실제 라우터로 확인했습니다(아래 오라클).
+
+- ServeMux(Go 1.22+): `[METHOD ][HOST]/PATH`. 리터럴은 `url.PathUnescape` 뒤에 비교합니다. `{x}`는
+  비어 있지 않은 세그먼트 하나(끝 슬래시와는 맞지 않음), `{x...}`와 끝 `/`는 빈 나머지까지 받으므로
+  `/a/` → `/a/{**}`와 `/a/`, 루트 `/` → `/{**}`와 `catchAllPrefix` `/`, `{$}`는 끝 슬래시만입니다.
+  패닉하거나 절대 맞지 않는(method 있는 정리되지 않은 경로) 패턴은 내지 않습니다. host 패턴은
+  `narrowed`입니다. go.mod의 `go`가 1.22 미만이거나 go.mod `godebug httpmuxgo121=1`·
+  `//go:debug httpmuxgo121=1`이면 옛 리터럴·하위 트리 패턴입니다.
+- chi: `{name}`·`{name:regexp}`는 다음 tail 바이트까지라 `/{name}.json`은 부분 세그먼트입니다. 정규식은
+  고정(`^…$`)되고 `paramConstraints`가 됩니다(`[0-9]+`·`\d+`는 `int`, 그 밖은 패턴을 담은 `regex`).
+  `*`는 패턴 끝에만 오고 빈 나머지도 받습니다. 뒤에 리터럴이 붙은 부분 파라미터는 빈 값을 받아
+  `/f/{name}.json`은 `/f/.json`도 냅니다(계약의 빈 값 변형). 한 세그먼트의 파라미터 둘은 정규 템플릿이
+  아닙니다(`route-coverage:`).
+- gin: `:name`은 `/`까지입니다(`/:file.json`은 이름이 `file.json`인 세그먼트 전체 파라미터). 리터럴
+  접두사 뒤에 올 수 있습니다(`/avatar_:n` → `/avatar_{}`). `*name`은 `/` 뒤 경로 끝에만 오고 `/x/`도
+  받습니다.
+- echo: `:name`은 `/`까지(`\:`는 리터럴 콜론), `*`는 빈 값까지 나머지 전부입니다. 자식 없는 파라미터
+  노드는 `/`를 넘어 나머지 전부를 받습니다(`Find`의 `isLeaf`) — 그런 라우트는 `trailingSlash:
+  "optional"`과 템플릿·동사 스코프의 `route-coverage:`를 답니다. `e.Static("/static", …)`은
+  `/static*`를 등록합니다: `/static`·`/static/`·`/static/{**}`와 `/staticX` 경로를 위한
+  `route-coverage:`(부모 접두사 스코프).
+- 경로 중간의 세그먼트 전체 파라미터의 빈 값 변형(chi·gin은 `/users//posts`를 받음)은 내지 않습니다 —
+  정리되지 않은 경로에서만 생기고 라우트마다 `route-decl-without-call` 경고를 늘립니다. 같은 라우터에
+  같은 템플릿의 명시적 선언이 있으면 변형은 뺍니다.
+
+`trailingSlash`: ServeMux는 `strict`(`/`로 끝나는 템플릿은 슬래시 없는 요청을 301로 보내 생략), chi·echo는
+`strict`(모듈이 `middleware.StripSlashes`·`RedirectSlashes`나 echo `Add/RemoveTrailingSlash`를 쓰면 생략),
+gin은 `optional`(`RedirectTrailingSlash` 기본 true가 다른 형태에 301/307로 답함), 엔진이 상수 `false`로
+두면 `strict`. `{**}` 템플릿은 생략합니다.
+
+디스패치는 넷 모두 `specificity`입니다. ServeMux는 어느 쪽도 더 구체적이지 않은 두 패턴을 등록 때
+거부하므로, 실행되는 프로그램에서는 트리 순서(리터럴 → 단일 와일드카드 → 다중 와일드카드, 왼쪽부터,
+역추적)가 곧 가장 구체적인 매치입니다. chi·gin·echo 기수 트리도 왼쪽부터 정적 → 파라미터 → catch-all
+순서로 역추적합니다. 소비자와의 알려진 차이(최악이 거짓 match, 거짓 error는 없음): chi는 정규식을 부분
+세그먼트보다 먼저 봅니다. chi·gin·echo의 GET 라우트는 HEAD에 답하지 않지만(405/404, 요청으로 확인)
+소비자는 HEAD 호출을 GET 선언에 잇습니다. OPTIONS는 echo만 아는 경로에 204로 답합니다.
+
+`symbol.usr`는 핸들러 정점 ID입니다: 메서드 값(`s.handleX`)·함수, 핸들러 인자가 없는 핸들러 생성 함수
+호출(`handleX(db)` — 반환 클로저의 간선이 그 함수에서 나감), 핸들러 인자가 하나인 래퍼의 안쪽
+핸들러(`auth(h)`, `http.TimeoutHandler`), `http.HandlerFunc(f)`, 모듈 타입의 `ServeHTTP`. 함수 리터럴(이나
+그것을 담은 지역 변수)은 감싸는 선언으로 귀속하고 `anonymous-route-handlers:`로 셉니다. 모듈 밖
+핸들러(정적 파일 서버, `promhttp.Handler()`)와 exclude 패키지는 symbol 없이 `missing-route-usrs:`로
+셉니다. 수확하지 않는 라우터 import(gorilla/mux, httprouter, fiber, chi v1–v4 경로, echo v3/v5,
+grpc-gateway 등)는 스코프 없는 `route-coverage:`를 더해, 사실 0건 문서가 "스캔했으나 없음"으로 읽히지
+않게 합니다. 문서는 쓰기 전에 계약 자기 검증(템플릿·동사·catch-all 접두사 원본)을 거칩니다.
+`conformance/`에 isthmus `http-template`·`http-dispatch` 벡터를 벤더링했고(`conformance.lock`) 생산자
+사례 51건을 모두 통과합니다.
+
+`experiments/routes-oracle`(별도 모듈, `run.sh`가 proxy.golang.org에서 chi·gin·echo를 받음)은 합성
+ServeMux·chi·gin·echo 서버를 만들어 문서를 각 라우터 자신의 표(`chi.Walk`, `Engine.Routes()`, echo
+`Routes()`·`Routers()`, reflect로 읽은 ServeMux 등록 색인)와 표본 요청 실행으로 대조합니다: 네 라우터
+모두 정밀도·재현율 100%입니다(사실/항목 19/16, 28/34, 20/24, 19/23).
+
+서버가 여럿인 모듈(`main` 패키지가 여럿)은 `--pattern ./cmd/api/...`와 `--service NAME`으로 서버마다
+문서를 따로 내야 합니다. 아니면 라우트가 한 scope를 공유해 `route-decl-conflict`로 부딪힙니다.
 
 ## MCP 서버
 

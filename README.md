@@ -74,9 +74,16 @@ gartograph bridges --out go-facts.json
 # and db/sql/gorm column tags (platform "go", target "persistence").
 gartograph schema --out go-schema-facts.json
 
+# Emit isthmus http route declarations: net/http ServeMux, chi, gin, echo
+# routes as (method, canonical path template) with the handler's vertex id
+# (platform "go", target "http", roles ["server"]).
+gartograph routes --role server --out go-routes.json
+
 # isthmus language-traversal documents for `isthmus trace`: what the roots
-# depend on (reach) and what depends on them (impact), many roots in one pass
-gartograph reach 'example.com/shop.(Handler).GetOrder' 'example.com/shop.(Handler).ListUsers'
+# depend on (reach) and what depends on them (impact), many roots in one pass.
+# Struct field types are followed from the fields that name them
+# (--type-edges members, the default); --type-edges all restores the old spread.
+gartograph reach --roots-from go-routes.json
 gartograph impact --format language-traversal --roots-from go-schema-facts.json
 
 # Check layer rules from .gartograph.yml
@@ -488,11 +495,133 @@ document over the same dependency edges as `impact`:
   or a non-symbol `--level` with the traversal format) exit 64 with empty
   stdout.
 
-`isthmus trace` then joins handler reach to relation uses by exact usr. The Go
-platform has no http route-decl facts yet (isthmus accepts only null or
-persistence targets for `go`), so a Go backend currently chains relation →
-relation-use → reverse traversal → symbols; route selection needs Go route
-declarations first.
+`--type-edges members|all` (default `members`) decides how struct field types
+are followed. The symbol harvest draws a struct's field-type references from the
+type vertex, so with `all` every method of a shared `Handler` struct reached the
+row types behind every field through its receiver (`/api/health` → the `users`
+columns), and in reverse a field type spread to every method of its container.
+`members` moves each field-declaration edge `T → X` (references/signature whose
+every position lies on a field line) to the field vertex (`T.f → X`): reaching
+`T` no longer reaches `X`; code that reads `f` still does. Both directions stay
+one plain graph, so `depth = via depth + 1` and the roots-inclusion rule of the
+contract hold. What `members` gives up: a whole struct value handed to
+reflection without naming the field (`json.Marshal(h)`, an ORM `Save(&u)`) does
+not reach the non-embedded field types (embedding is an `embeds` edge and is
+kept; the type itself and its own tags are still reached). When it cut anything
+the document says so with a counted `type-edges-members:` limitation; rerun with
+`--type-edges all` for the previous over-approximation. Old graph documents
+without edge positions have nothing to move and traverse as `all`. The plain
+`impact` JSON format is unchanged (`--type-edges` there is a usage error).
+
+`isthmus trace` then joins route declarations (`routes`) to handler reach and
+handler reach to relation uses by exact usr — route → handler → relation-use →
+tables and back.
+
+## isthmus exchange — server routes (`routes`)
+
+`gartograph routes --role server` writes an isthmus bridge-facts http document
+(`platform: "go"`, `target: "http"`, `roles: ["server"]`,
+`dispatch: "specificity"`, `sourceSets.tests: "excluded"`) with one
+`route-decl` per (method, canonical template) a registration serves. Calls are
+recognized by type (package path, receiver type, name), not by name:
+
+| Router | Registrations | Prefix composition |
+|---|---|---|
+| net/http `ServeMux`, `http.Handle`/`HandleFunc` (DefaultServeMux) | `Handle`, `HandleFunc` | `mux.Handle("/api/", http.StripPrefix("/api", inner))` mounts `inner` under `/api` |
+| chi v5 (`Mux`, `Router`) | `Get`…`Trace`, `Handle`/`HandleFunc` (`"POST /x"` too), `Method`/`MethodFunc` | `Route`, `Mount` (chi routers; an opaque handler serves `P`, `P/`, `P/*`), `Group`, `With` |
+| gin v1 (`RouterGroup`, `IRoutes`, `IRouter`) | `GET`…`OPTIONS`, `Handle`, `Any`, `Match`, `Static*` | `Group` (`joinPaths`: `path.Join` keeping the relative trailing slash) |
+| echo v4 (`Echo`, `Group`) | `GET`…`CONNECT`, `Add`, `Any`, `Match`, `Static*`, `File*` | `Group` (string concatenation), `Host` (`narrowed`) |
+
+Router values are followed flow-insensitively through variables, struct fields,
+function parameters/results and chi `Route`/`Group` callbacks. A registration
+whose router cannot be traced to a constructor (a `Register(g *gin.RouterGroup)`
+called only from outside the module) is emitted with `pathAnchor: "base"` and a
+`templateSuffixes`-scoped `unresolved-route-prefix:` limitation. A non-constant
+path is a `dynamic` fact plus `route-coverage:`; a non-constant method (chi
+`Method`, gin/echo `Match`) emits no fact and a `route-coverage:` limitation
+scoped to that template. Methods outside the contract (`CONNECT`, `PROPFIND`)
+emit nothing: no modeled call can send them.
+
+Pattern semantics were read from the official sources (Go 1.27.1 `net/http`
+`pattern.go`/`routing_tree.go`, chi v5.2.5 `tree.go`/`mux.go`, gin v1.10.1
+`tree.go`/`routergroup.go`/`utils.go`, echo v4.16.0 `router.go`/`group.go`) and
+checked against the real routers (below):
+
+- ServeMux (Go 1.22+): `[METHOD ][HOST]/PATH`; literals compare after
+  `url.PathUnescape`; `{x}` is one non-empty segment (not the trailing slash);
+  `{x...}` and a trailing `/` match the rest including nothing, so `/a/` →
+  `/a/{**}` plus `/a/`; the root `/` → `/{**}` plus `catchAllPrefix` `/`;
+  `{$}` is the trailing slash only. A pattern that panics or can never match
+  (unclean path with a method) emits nothing. A host pattern is `narrowed`. `go`
+  below 1.22 in go.mod, a go.mod `godebug httpmuxgo121=1` or a
+  `//go:debug httpmuxgo121=1` switches to the old literal/subtree patterns.
+- chi: `{name}`/`{name:regexp}` run to the next tail byte, so `/{name}.json` is
+  a partial segment; a regexp is anchored and becomes `paramConstraints`
+  (`int` for `[0-9]+`/`\d+`, otherwise `regex` with the pattern); `*` only ends
+  a pattern and also matches nothing. A partial parameter followed by a literal
+  accepts an empty value, so `/f/{name}.json` also emits `/f/.json` (the
+  contract's empty-value variant). Two parameters in one segment are not a
+  canonical template (`route-coverage:`).
+- gin: `:name` runs to `/` (`/:file.json` is a whole-segment parameter named
+  `file.json`) and may follow a literal prefix (`/avatar_:n` → `/avatar_{}`);
+  `*name` ends a path after `/` and matches `/x/` too.
+- echo: `:name` runs to `/` (`\:` is a literal colon); `*` matches the rest
+  including nothing. A parameter node without children takes the rest of the
+  path across `/` (`isLeaf` in `Find`): those routes get `trailingSlash:
+  "optional"` and a `route-coverage:` limitation scoped to their templates and
+  methods. `e.Static("/static", …)` registers `/static*`: `/static`,
+  `/static/`, `/static/{**}` plus a `route-coverage:` limitation (prefix of the
+  parent) for `/staticX` paths.
+- Empty-value variants for whole-segment parameters in the middle of a path
+  (chi and gin accept `/users//posts`) are not emitted: they only come from
+  unclean paths and would add a `route-decl-without-call` warning per route.
+  A variant is dropped when the same router declares that template explicitly.
+
+`trailingSlash`: ServeMux `strict`, except templates ending in `/` (a request
+without the slash is redirected with 301) which omit it; chi and echo `strict`,
+omitted when the module uses `middleware.StripSlashes`/`RedirectSlashes` or echo
+`Add/RemoveTrailingSlash`; gin `optional` (`RedirectTrailingSlash` defaults to
+true and answers 301/307 to the other form), `strict` when the engine sets it to
+a constant `false`; omitted for `{**}` templates.
+
+Dispatch is `specificity` for all four. ServeMux rejects at registration two
+patterns where neither is more specific, so in a running program its tree order
+(literal, then single wildcard, then multi wildcard, left to right with
+backtracking) is exactly the most specific match; the chi/gin/echo radix trees
+also try static before parameters before catch-alls from the left with
+backtracking. Known differences from the consumer (false matches at worst, never
+a false error): chi tries a regexp before a partial segment; chi, gin and echo
+GET routes do not answer HEAD (405/404, checked by request) although the
+consumer joins HEAD calls to GET declarations; for OPTIONS only echo answers a
+known path (204), chi and gin do not.
+
+`symbol.usr` is the handler's vertex id: a method value (`s.handleX`) or
+function; a handler constructor call without handler arguments (`handleX(db)`,
+whose returned closure's edges start at that function); the inner handler of a
+wrapper with exactly one handler argument (`auth(h)`, `http.TimeoutHandler`);
+`http.HandlerFunc(f)`; the `ServeHTTP` method of a module type. A function
+literal (or a local variable holding one) is attributed to the enclosing
+declaration and counted in `anonymous-route-handlers:`. Handlers outside the
+module (static file servers, `promhttp.Handler()`) and excluded packages carry
+no symbol and are counted in `missing-route-usrs:`. Imports of routers
+gartograph does not harvest (gorilla/mux, httprouter, fiber, chi v1–v4 paths,
+echo v3/v5, grpc-gateway, …) add an unscoped `route-coverage:` limitation, so
+a zero-fact document never reads as "scanned, none". The document is
+self-checked against the contract (templates, methods, catch-all prefix
+originals) before it is written; `conformance/` vendors the isthmus
+`http-template` and `http-dispatch` vectors (`conformance.lock`), and all 51
+producer cases pass.
+
+`experiments/routes-oracle` (a separate module; `run.sh` fetches chi, gin and
+echo from proxy.golang.org) builds synthetic ServeMux/chi/gin/echo servers and
+compares the document with each router's own table (`chi.Walk`,
+`Engine.Routes()`, echo `Routes()`/`Routers()`, the ServeMux registration index
+read by reflection) by executing sample requests: precision and recall are 100%
+for all four (19/16, 28/34, 20/24, 19/23 facts/entries).
+
+A module with several servers (separate `main` packages) should emit one
+document per server with `--pattern ./cmd/api/...` and `--service NAME`;
+otherwise their routes share one scope and collide as `route-decl-conflict`.
 
 ## MCP server
 
@@ -528,6 +657,7 @@ tool call answers over the same snapshot. Example client config:
 - ~~`fileRules`, cycles/dead SARIF + baselines, deeper `diff` breaking
   classification~~ — done
 - ~~`schema` usr, `reach` / `impact --format language-traversal`~~ — done
+- ~~`routes --role server` (ServeMux·chi·gin·echo), `--type-edges members`~~ — done
 
 ## License
 
