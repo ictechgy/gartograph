@@ -22,7 +22,7 @@ import (
 
 // Version은 CLI가 스스로를 보고하는 버전 문자열이다. 릴리스는
 // -ldflags "-X .../cli.Version=<태그>"로 이 값을 덮어쓴다.
-var Version = "0.8.0"
+var Version = "0.9.0"
 
 // Run은 인자를 해석해 명령을 실행하고 종료 코드를 돌려준다.
 // os.Exit 대신 반환값을 쓰는 것은 종료 코드 계약을 테스트하기 위함이다.
@@ -68,7 +68,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdUnusedDeps(args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMcp(args[1:], stdout, stderr)
-	case "version":
+	// --version은 isthmus verify-installed-compatibility.mjs가 `<tool> --version`의
+	// 마지막 semver를 읽기 때문에 둔다 — version 하위 명령과 같은 한 줄을 낸다.
+	case "version", "--version":
 		fmt.Fprintln(stdout, "gartograph "+Version)
 		return 0
 	case "help", "-h", "--help":
@@ -116,7 +118,7 @@ Usage:
                      isthmus http route declarations or route calls (platform "go")
   gartograph unused-deps [--strict] [--format text|json] [flags]
   gartograph mcp    serve the graph over MCP stdio [flags]
-  gartograph version
+  gartograph version | --version
 
 Harvest flags (graph, cycles, dead, rules, query):
   --dir PATH    module root to analyze (default ".")
