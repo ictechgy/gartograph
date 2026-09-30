@@ -99,8 +99,9 @@ Usage:
   gartograph impact <id> [--depth N] [--max N] [--level L] [flags]
   gartograph impact --since <git-rev>|--files F... [--depth N] [flags]
   gartograph impact --format language-traversal <id>... [--roots-from FILE|-] [--depth N] [--max N]
-                    [--revision REV] [--generated-at TS] [flags]   isthmus dependents traversal
-  gartograph reach  <id>... [--roots-from FILE|-] [--depth N] [--max N]
+                    [--type-edges members|all] [--revision REV] [--generated-at TS] [flags]
+                    isthmus dependents traversal
+  gartograph reach  <id>... [--roots-from FILE|-] [--depth N] [--max N] [--type-edges members|all]
                     [--revision REV] [--generated-at TS] [flags]   isthmus dependencies traversal
   gartograph path   <from-id> <to-id> [--level L] [flags]
   gartograph shared <id> <id> [more ids...] [--level L] [flags]
@@ -944,6 +945,10 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	}
 	switch *format {
 	case "json":
+		if tf.typeEdgesSet {
+			fmt.Fprintln(stderr, "error: --type-edges applies only to --format language-traversal")
+			return 2
+		}
 	case formatTraversal:
 		return impactTraversal(fs, positional, opts, *graphPath, *depth, *maxN, tf, stdout, stderr)
 	default:

@@ -91,6 +91,9 @@ check 64 "impact traversal file" impact --format language-traversal --files main
 check 2  "impact bad format"     impact --format xml example.com/contract/lib
 
 check 64 "impact traversal flag" impact --format language-traversal --depth=abc example.com/contract/lib.Run
+check 0  "reach type-edges all"  reach --type-edges all example.com/contract/lib.Run
+check 64 "reach type-edges bad"  reach --type-edges fields example.com/contract/lib.Run
+check 2  "impact json type-edges" impact --type-edges all example.com/contract/lib
 # isthmus http route-decl 문서(routes): 사용법 오류는 2다.
 check 0 "routes"                routes --role server
 check 2 "routes client role"    routes --role client

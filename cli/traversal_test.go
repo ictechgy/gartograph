@@ -249,6 +249,7 @@ func TestTraversalUsageErrors(t *testing.T) {
 		"roots-from null":     {"reach", "--dir", dir, "--roots-from", writeTemp(t, "null"), fx + ".main"},
 		"impact 순회 형식 플래그 오류": {"impact", "--format", "language-traversal", "--dir", dir, "--depth=abc", fx + ".main"},
 		"impact 순회 형식 = 표기":   {"impact", "--format=language-traversal", "--dir", dir, "--bogus", fx + ".main"},
+		"type-edges 값":        {"reach", "--dir", dir, "--type-edges", "fields", fx + ".main"},
 	}
 	for name, args := range cases {
 		code, out, _ := run(t, args...)
@@ -258,6 +259,74 @@ func TestTraversalUsageErrors(t *testing.T) {
 	}
 	if code, _, _ := run(t, "impact", "--format", "bogus", "--dir", dir, fx+".main"); code != 2 {
 		t.Fatalf("unknown impact format must stay a usage error 2, got %d", code)
+	}
+	if code, _, _ := run(t, "impact", "--type-edges", "all", "--dir", dir, fx+".main"); code != 2 {
+		t.Fatalf("--type-edges with the json impact format must be a usage error 2, got %d", code)
+	}
+}
+
+// typeEdgesFixture는 공유 Handler struct 데모다: health는 리시버만, users는 users 필드와 저장소를 쓴다.
+func typeEdgesFixture(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{"main.go": `package main
+
+import "database/sql"
+
+type User struct {
+	Email string ` + "`db:\"email\"`" + `
+}
+
+type Store struct {
+	db   *sql.DB
+	rows []User
+}
+
+func (s *Store) List() { s.db.Query("SELECT email FROM users") }
+
+type Handler struct {
+	store *Store
+	name  string
+}
+
+func (h *Handler) health() {}
+
+func (h *Handler) users() { h.store.List() }
+
+func main() { h := &Handler{}; h.health(); h.users() }
+`})
+}
+
+// TestReachTypeEdges는 기본(members)이 health 핸들러를 Store·User에서 떼고 users 핸들러의 도달은
+// 지키며, --type-edges all이 이전 과대 근사를 돌려주는지 본다. 좁힌 곳은 셈과 함께 한계로 싣는다.
+func TestReachTypeEdges(t *testing.T) {
+	dir := typeEdgesFixture(t)
+	reached := func(args ...string) (map[string]bool, traversalOut) {
+		code, out, errb := run(t, append([]string{"reach", "--dir", dir}, args...)...)
+		if code != 0 {
+			t.Fatalf("reach %v: %d %s", args, code, errb)
+		}
+		doc := parseTraversal(t, out)
+		set := map[string]bool{}
+		for _, r := range doc.Reached {
+			set[r.Symbol.Usr] = true
+		}
+		return set, doc
+	}
+	health, doc := reached(fx + ".(Handler).health")
+	if health[fx+".Store"] || health[fx+".User"] || !health[fx+".Handler"] {
+		t.Errorf("members: health reached %v", health)
+	}
+	if !strings.Contains(strings.Join(doc.Limitations, "\n"), "type-edges-members: 1 symbol(s)") {
+		t.Errorf("limitations = %v", doc.Limitations)
+	}
+	users, _ := reached(fx + ".(Handler).users")
+	for _, want := range []string{fx + ".(Handler).store", fx + ".Store", fx + ".(Store).List"} {
+		if !users[want] {
+			t.Errorf("members lost %s from users: %v", want, users)
+		}
+	}
+	if all, _ := reached("--type-edges", "all", fx+".(Handler).health"); !all[fx+".Store"] || !all[fx+".User"] {
+		t.Errorf("--type-edges all must keep the previous reach: %v", all)
 	}
 }
 
