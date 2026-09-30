@@ -123,6 +123,7 @@ type schemaScan struct {
 	unparsed     int       // 타입 로더·파서가 실패한 패키지의 오류 수
 	unattributed int       // 관계를 알 수 없는 컬럼 태그 수
 	unresolved   int       // TableName을 찾지 못한 모델 인자 수
+	sqlFunctions int       // 의존 관계를 증명하지 못한 테이블 값 함수 피연산자 수
 	dynamic      int       // 리터럴로 읽히지 않아 조인 불가한 SQL 인자 수
 	missingUsrs  int       // 감싸는 심볼 정점이 없어 usr를 싣지 못한 사실 수
 	latest       time.Time // 읽은 소스의 최신 mtime
@@ -599,7 +600,9 @@ func scanLiteral(scan *schemaScan, p *packages.Package, lit *ast.BasicLit) {
 	if !sqlVerbPattern.MatchString(text) {
 		return
 	}
-	for _, name := range sqlRelations(text) {
+	relations, unresolved := sqlRelations(text)
+	scan.sqlFunctions += unresolved
+	for _, name := range relations {
 		scan.push(RelationFact{
 			Kind:     "relation-use",
 			Channel:  name,
@@ -625,9 +628,10 @@ var relationKeywords = map[string]bool{
 // sqlRelations는 SQL 텍스트에서 관계 이름을 읽는다.
 // 한정 이름(`schema.table`)은 그대로 두고, 이름 자체에 점이 있는 인용
 // 식별자("a.b")는 한 세그먼트로 읽는다 — escape는 사실 기록 시에 한다.
-func sqlRelations(text string) []string {
+func sqlRelations(text string) ([]string, int) {
 	tokens := lexSQL(text)
 	var out []string
+	unresolved := 0
 	seen := map[string]bool{}  // TRUNCATE TABLE처럼 겹치는 키워드 창의 중복을 막는다
 	consumed := map[int]bool{} // 이름·수식어로 소비된 토큰 — 키워드로 재발화하지 않는다
 	for i, tok := range tokens {
@@ -655,6 +659,36 @@ func sqlRelations(text string) []string {
 			if name == "" {
 				break
 			}
+			// FROM/JOIN의 함수 이름은 테이블이 아니다. 괄호 안 SQL은 바깥 스캔이 읽는다.
+			if (strings.EqualFold(tok.text, "from") || strings.EqualFold(tok.text, "join")) && next < len(tokens) && !tokens[next].quoted && tokens[next].text == "(" {
+				unresolved++
+				for k := j; k < next; k++ {
+					consumed[k] = true
+				}
+				depth := 1
+				next++
+				for next < len(tokens) && depth > 0 {
+					if !tokens[next].quoted {
+						if tokens[next].text == "(" {
+							depth++
+						}
+						if tokens[next].text == ")" {
+							depth--
+						}
+					}
+					next++
+				}
+				if next+1 < len(tokens) && strings.EqualFold(tokens[next].text, "as") {
+					next += 2
+				} else if next+1 < len(tokens) && tokens[next+1].text == "," {
+					next++
+				}
+				if next < len(tokens) && tokens[next].text == "," {
+					j = next + 1
+					continue
+				}
+				break
+			}
 			if !seen[name] {
 				seen[name] = true
 				out = append(out, name)
@@ -669,7 +703,7 @@ func sqlRelations(text string) []string {
 			break
 		}
 	}
-	return out
+	return out, unresolved
 }
 
 // lexSQL은 SQL 텍스트를 어휘로 나눈다 — 인용 식별자는 내용을 보존하고
@@ -891,6 +925,9 @@ func (s *schemaScan) facts() []any {
 // 계약상 항상 배열이라 빈 경우에도 nil이 아닌 빈 슬라이스를 돌려준다.
 func (s *schemaScan) limitations() []string {
 	out := []string{}
+	if s.sqlFunctions > 0 {
+		out = append(out, fmt.Sprintf("unjoined-dynamic-relations: %d table-valued SQL function operand(s) have unmodeled relation dependencies", s.sqlFunctions))
+	}
 	if s.unparsed > 0 {
 		out = append(out, fmt.Sprintf(
 			"unparsed-sources: %d package load or parse error(s); relation uses there are uncounted",
