@@ -305,7 +305,12 @@ func typeKey(t types.Type) string {
 	return named.Obj().Pkg().Path() + "." + named.Obj().Name()
 }
 
-// isRouterType은 흐름 분석이 추적할 타입인지 본다.
+// isRouterType은 흐름 분석이 추적할 타입인지 본다 — 라우터·핸들러와 route-call이 base URL을 읽는
+// resty 클라이언트 값(clientapi.go restyValueTypes)이다.
 func isRouterType(t types.Type) bool {
-	return t != nil && routerTypes[typeKey(t)]
+	if t == nil {
+		return false
+	}
+	key := typeKey(t)
+	return routerTypes[key] || restyValueTypes[key]
 }

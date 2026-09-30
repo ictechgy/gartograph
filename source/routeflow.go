@@ -143,7 +143,19 @@ type routeFlow struct {
 	ginAssigns  []ginAssign
 	// slashMiddleware는 끝 슬래시를 바꾸는 미들웨어를 쓰는 프레임워크다.
 	slashMiddleware map[routeFramework]bool
-	ids             symbolIDs
+	// restyCalls는 resty 클라이언트 설정(base URL·path param) 호출과 필드 대입이다(route-call 전용).
+	restyCalls []restyCall
+	ids        symbolIDs
+}
+
+// restyCall은 resty 설정 하나다. 고정점 뒤에 recv를 평가해 어느 클라이언트의 설정인지 푼다.
+type restyCall struct {
+	kind restySetterKind
+	recv ast.Expr
+	args []ast.Expr
+	pkg  *packages.Package
+	// trimmed는 base URL 끝 `/`를 떼는 설정인지다(SetBaseURL 참, BaseURL 필드 직접 대입 거짓).
+	trimmed bool
 }
 
 // ginAssign은 gin Engine 설정 필드 대입이다(고정점 뒤에 대상 엔진을 푼다).
@@ -334,6 +346,7 @@ func (w *flowWalker) assign(s *ast.AssignStmt) {
 		for i := range s.Lhs {
 			w.flowInto(s.Lhs[i], s.Rhs[i])
 			w.observeGinSetting(s.Lhs[i], s.Rhs[i])
+			w.observeRestyBase(s.Lhs[i], s.Rhs[i])
 		}
 		return
 	}
@@ -483,8 +496,13 @@ func (w *flowWalker) call(call *ast.CallExpr) {
 	if fn == nil {
 		return
 	}
-	if spec, ok := routeAPI[funcKey(fn)]; ok {
+	key := funcKey(fn)
+	if spec, ok := routeAPI[key]; ok {
 		w.registration(call, spec)
+	}
+	if kind, ok := restySetters[key]; ok && len(call.Args) > 0 {
+		w.f.restyCalls = append(w.f.restyCalls, restyCall{kind: kind, recv: receiverExpr(call), args: call.Args,
+			pkg: w.p, trimmed: kind == setBaseURL})
 	}
 	if w.f.decls[fn] {
 		w.bindArguments(call, fn)
@@ -575,6 +593,20 @@ func (w *flowWalker) observeGinSetting(lhs, rhs ast.Expr) {
 	w.f.ginAssigns = append(w.f.ginAssigns, ginAssign{target: sel.X, value: rhs, pkg: w.p})
 }
 
+// observeRestyBase는 resty Client의 BaseURL·HostURL 필드 직접 대입을 base 설정으로 모은다. SetBaseURL과
+// 달리 끝 `/`를 떼지 않는다. parseRequestURL은 BaseURL이 비면 HostURL을 쓰므로 둘 다 후보다.
+func (w *flowWalker) observeRestyBase(lhs, rhs ast.Expr) {
+	sel, ok := unparen(lhs).(*ast.SelectorExpr)
+	if !ok || (sel.Sel.Name != "BaseURL" && sel.Sel.Name != "HostURL") {
+		return
+	}
+	s := w.info().Selections[sel]
+	if s == nil || s.Kind() != types.FieldVal || typeKey(s.Recv()) != restyPath+".Client" {
+		return
+	}
+	w.f.restyCalls = append(w.f.restyCalls, restyCall{kind: setBaseURL, recv: sel.X, args: []ast.Expr{rhs}, pkg: w.p})
+}
+
 // observeMiddleware는 끝 슬래시를 바꾸는 미들웨어 참조를 기록한다.
 func (w *flowWalker) observeMiddleware(id *ast.Ident) {
 	fn, ok := w.info().Uses[id].(*types.Func)
@@ -636,8 +668,24 @@ func passThrough(info *types.Info, expr ast.Expr) ast.Expr {
 		if tv, ok := info.Types[e.Fun]; ok && tv.IsType() && len(e.Args) == 1 {
 			return e.Args[0]
 		}
+		if isRestyChain(calleeFunc(info, e)) {
+			return receiverExpr(e)
+		}
 	}
 	return nil
+}
+
+// isRestyChain은 수신 resty 값(Client·Request)을 그대로 이어 주는 메서드인지 본다 — R()·NewRequest()와
+// SetHeader 같은 체인 설정은 결과가 같은 클라이언트의 값이다.
+func isRestyChain(fn *types.Func) bool {
+	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != restyPath {
+		return false
+	}
+	sig := fn.Signature()
+	if sig.Recv() == nil || sig.Results().Len() == 0 {
+		return false
+	}
+	return restyValueTypes[typeKey(sig.Recv().Type())] && restyValueTypes[typeKey(sig.Results().At(0).Type())]
 }
 
 // evalObject는 변수·필드 객체의 칸이다. http.DefaultServeMux는 기본 mux 노드다.
@@ -672,6 +720,9 @@ func (f *routeFlow) evalCall(info *types.Info, p *packages.Package, call *ast.Ca
 	key := funcKey(fn)
 	if fw, ok := routerConstructors[key]; ok {
 		return nodeSet{f.node(call.Lparen, fw, nodeRoot, 0, p, call): true}
+	}
+	if restyConstructors[key] {
+		return nodeSet{f.node(call.Lparen, fwResty, nodeRoot, 0, p, call): true}
 	}
 	if spec, ok := routeAPI[key]; ok && spec.kind == regDerive {
 		return nodeSet{f.node(call.Lparen, spec.fw, nodeDerived, spec.derive, p, call): true}
