@@ -2,6 +2,15 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
+## 릴리스 준비 — v0.9.0 (2026-09-30, release/v0.9.0)
+
+`cli.Version` 0.8.0 → 0.9.0(릴리스 workflow가 태그와 대조). 최상위 `--version` 추가 — isthmus
+`verify-installed-compatibility.mjs`가 `<tool> --version` 출력 끝의 semver를 읽기 때문(출력은 `version`과 같은
+`gartograph 0.9.0`). 포함: PR #34(schema `symbol.usr`, `reach`·`impact --format language-traversal`, 간선
+`candidate`·문서 `dispatchEvidence`), #35(`routes --role server` net/http·chi·gin·echo, `--type-edges members|all`),
+#36(`routes --role client` net/http·resty v2·http-wrappers). 벡터 lock은 isthmus 3a45450. 새 출력은 isthmus 3a45450
+이상(0.10.0 예정)이 있어야 소비된다. 태그·발행·tap 갱신은 머지 후 따로(tap은 여전히 수동, HOMEBREW_TAP_TOKEN 없음).
+
 ## 진행 중 — Go 클라이언트 route-call (2026-09-30, feature/client-routes, PR #36)
 
 API 영향 추적 개선 #3(Go 쪽). `routes --role client`가 isthmus http route-call(platform go)을 낸다.
