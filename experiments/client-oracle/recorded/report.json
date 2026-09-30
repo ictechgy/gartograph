@@ -1,0 +1,396 @@
+{
+  "versions": {
+    "resty": "v2.17.2"
+  },
+  "summary": {
+    "dynamic": 2,
+    "matched": 30,
+    "scenarios": 32
+  },
+  "scenarios": [
+    {
+      "name": "ClientPost",
+      "request": {
+        "method": "POST",
+        "host": "api.example.test",
+        "path": "/v1/client-post"
+      },
+      "facts": [
+        "POST /v1/client-post root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "ConstConcat",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1/items/41"
+      },
+      "facts": [
+        "GET /v1/items/{} root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "DotSegmentsKept",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1/./x/../y"
+      },
+      "facts": [
+        "GET /v1/./x/../y root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "DoubleSlashKept",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1//double"
+      },
+      "facts": [
+        "GET /v1//double root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "EmptyMethod",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1/empty"
+      },
+      "facts": [
+        "GET /v1/empty root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "FieldBase",
+      "request": {
+        "method": "GET",
+        "host": "runtime.example.test",
+        "path": "/prefix/v1/field/42"
+      },
+      "facts": [
+        "GET /v1/field/{} base"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "JoinPathDots",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/a/c"
+      },
+      "facts": [
+        "GET /a/c root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "JoinPathTrailing",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1/users/43/"
+      },
+      "facts": [
+        "GET /v1/users/{}/ root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "LiteralQuery",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1/items"
+      },
+      "facts": [
+        "GET /v1/items root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "MaskedToken",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1/tokens/a1b2c3d4e5f6a7b8c9d0"
+      },
+      "facts": [
+        "GET /v1/tokens/{} root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "NewRequestDelete",
+      "request": {
+        "method": "DELETE",
+        "host": "api.example.test",
+        "path": "/v1/carts/44"
+      },
+      "facts": [
+        "DELETE /v1/carts/{} root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "PartialSegment",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/files/45.json"
+      },
+      "facts": [
+        "GET \u003cdynamic\u003e root prefix=/files/ host=api.example.test"
+      ],
+      "result": "dynamic"
+    },
+    {
+      "name": "PathJoin",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v2/items/46"
+      },
+      "facts": [
+        "GET /v2/items/{} root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "PostForm",
+      "request": {
+        "method": "POST",
+        "host": "api.example.test",
+        "path": "/v1/form"
+      },
+      "facts": [
+        "POST /v1/form root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "QueryTailLocal",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1/search"
+      },
+      "facts": [
+        "GET /v1/search root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "ResolveAbsolutePath",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/abs/path"
+      },
+      "facts": [
+        "GET /abs/path root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "ResolveDots",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1/orders/7"
+      },
+      "facts": [
+        "GET /v1/orders/7 root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "RestyAbsolute",
+      "request": {
+        "method": "GET",
+        "host": "elsewhere.example.test",
+        "path": "/x"
+      },
+      "facts": [
+        "GET /x root host=elsewhere.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "RestyBaseField",
+      "request": {
+        "method": "DELETE",
+        "host": "legacy.example.test",
+        "path": "//items"
+      },
+      "facts": [
+        "DELETE //items root host=legacy.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "RestyBaseTrim",
+      "request": {
+        "method": "GET",
+        "host": "orders.example.test",
+        "path": "/v2/orders/48"
+      },
+      "facts": [
+        "GET /v2/orders/{} root host=orders.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "RestyDynamicBase",
+      "request": {
+        "method": "GET",
+        "host": "runtime.example.test",
+        "path": "/prefix/dyn/99"
+      },
+      "facts": [
+        "GET /dyn/{} base"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "RestyExecute",
+      "request": {
+        "method": "PATCH",
+        "host": "orders.example.test",
+        "path": "/v2/exec"
+      },
+      "facts": [
+        "PATCH /v2/exec root host=orders.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "RestyPathParam",
+      "request": {
+        "method": "PUT",
+        "host": "orders.example.test",
+        "path": "/v2/users/49/profile"
+      },
+      "facts": [
+        "PUT /v2/users/{}/profile root host=orders.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "RestyPathParamsMap",
+      "request": {
+        "method": "GET",
+        "host": "orders.example.test",
+        "path": "/v2/repos/o/50"
+      },
+      "facts": [
+        "GET /v2/repos/{}/{} root host=orders.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "RestyRawParam",
+      "request": {
+        "method": "GET",
+        "host": "plain.example.test",
+        "path": "/files/a/b"
+      },
+      "facts": [
+        "GET \u003cdynamic\u003e root prefix=/files/ host=plain.example.test"
+      ],
+      "result": "dynamic"
+    },
+    {
+      "name": "RestyRelative",
+      "request": {
+        "method": "POST",
+        "host": "orders.example.test",
+        "path": "/v2/orders"
+      },
+      "facts": [
+        "POST /v2/orders root host=orders.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "RestyUnsetPlaceholder",
+      "request": {
+        "method": "GET",
+        "host": "plain.example.test",
+        "path": "/raw/%7Bid%7D"
+      },
+      "facts": [
+        "GET /raw/%7Bid%7D root host=plain.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "SprintfVersion",
+      "request": {
+        "method": "POST",
+        "host": "api.example.test",
+        "path": "/v2/orders/51"
+      },
+      "facts": [
+        "POST /v2/orders/{} root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "TrimSuffixBase",
+      "request": {
+        "method": "GET",
+        "host": "api.example.test",
+        "path": "/v1/trim"
+      },
+      "facts": [
+        "GET /v1/trim root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "URLStructEscaped",
+      "request": {
+        "method": "HEAD",
+        "host": "api.example.test",
+        "path": "/caf%C3%A9%20menu/x"
+      },
+      "facts": [
+        "HEAD /caf%C3%A9%20menu/x root host=api.example.test"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "URLStructHostValue",
+      "request": {
+        "method": "GET",
+        "host": "accounts.example.test",
+        "path": "/v1/accounts/52"
+      },
+      "facts": [
+        "GET /v1/accounts/{} root"
+      ],
+      "result": "matched"
+    },
+    {
+      "name": "WrapperSend",
+      "request": {
+        "method": "POST",
+        "host": "runtime.example.test",
+        "path": "/prefix/v1/wrapped/53"
+      },
+      "facts": [
+        "POST /v1/wrapped/{} base"
+      ],
+      "result": "matched"
+    }
+  ]
+}
