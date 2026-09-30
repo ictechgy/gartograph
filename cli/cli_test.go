@@ -51,6 +51,19 @@ func TestUsageErrors(t *testing.T) {
 	}
 }
 
+// TestVersionFlag는 --version이 version 하위 명령과 같은 한 줄을 내는지 확인한다.
+// isthmus verify-installed-compatibility.mjs는 `<tool> --version` 출력 끝의 semver를 읽는다.
+func TestVersionFlag(t *testing.T) {
+	_, want, _ := run(t, "version")
+	code, got, errb := run(t, "--version")
+	if code != 0 || errb != "" {
+		t.Fatalf("--version: expected 0 and empty stderr, got %d %q", code, errb)
+	}
+	if got != want || got != "gartograph "+Version+"\n" {
+		t.Fatalf("--version output %q, want %q", got, want)
+	}
+}
+
 // TestGraphJSON은 graph 명령이 파싱 가능한 결정적 JSON을 내는지 확인한다.
 func TestGraphJSON(t *testing.T) {
 	dir := fixture(t)

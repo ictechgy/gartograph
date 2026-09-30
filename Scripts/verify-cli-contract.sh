@@ -106,6 +106,14 @@ check 2 "routes server wrappers" routes --role server --wrappers w.json
 check 2 "routes missing wrappers" routes --role client --wrappers /nonexistent/w.json
 check 2 "routes bad timestamp"  routes --generated-at yesterday
 
+# --version은 version 하위 명령과 같은 한 줄이다 — isthmus 설치본 대조가 `<tool> --version`을 읽는다.
+want="$("$BIN" version)"
+got="$("$BIN" --version)" || { echo "FAIL --version exit code" >&2; fails=$((fails+1)); }
+if [ "$got" != "$want" ] || ! printf '%s' "$got" | grep -Eq '^gartograph [0-9]+\.[0-9]+\.[0-9]+'; then
+	echo "FAIL --version must match version: got '$got', want '$want'" >&2
+	fails=$((fails+1))
+fi
+
 # 사용법 오류는 표준 출력을 비운다 — root-not-found 문서와 구별되는 신호다.
 out="$("$BIN" reach $'bad\tid' --dir "$FIX" 2>/dev/null || true)"
 if [ -n "$out" ]; then

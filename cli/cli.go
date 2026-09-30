@@ -68,7 +68,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdUnusedDeps(args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMcp(args[1:], stdout, stderr)
-	case "version":
+	// --version은 isthmus verify-installed-compatibility.mjs가 `<tool> --version`의
+	// 마지막 semver를 읽기 때문에 둔다 — version 하위 명령과 같은 한 줄을 낸다.
+	case "version", "--version":
 		fmt.Fprintln(stdout, "gartograph "+Version)
 		return 0
 	case "help", "-h", "--help":
@@ -116,7 +118,7 @@ Usage:
                      isthmus http route declarations or route calls (platform "go")
   gartograph unused-deps [--strict] [--format text|json] [flags]
   gartograph mcp    serve the graph over MCP stdio [flags]
-  gartograph version
+  gartograph version | --version
 
 Harvest flags (graph, cycles, dead, rules, query):
   --dir PATH    module root to analyze (default ".")
