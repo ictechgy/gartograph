@@ -6,11 +6,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BIN="${1:-}"
+# BUILT는 이 스크립트가 만든 임시 디렉터리다 — 인자로 받은 바이너리의 디렉터리는 지우지 않는다
+# (예전에는 dirname "$BIN"을 지워 /usr/local/bin 같은 경로를 넘기면 그 디렉터리가 사라질 수 있었다).
+BUILT=""
 if [ -z "$BIN" ]; then
-	BIN="$(mktemp -d)/gartograph"
+	BUILT="$(mktemp -d)"
+	BIN="$BUILT/gartograph"
 	go build -o "$BIN" ./cmd/gartograph
 fi
-trap 'rm -rf "$(dirname "$BIN")" "$FIX"' EXIT
+trap 'rm -rf ${BUILT:+"$BUILT"} "$FIX"' EXIT
 
 # fixture: main → lib.Run 도달, lib.Unused 미도달, web→db 금지 의존
 FIX="$(mktemp -d)"
