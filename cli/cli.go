@@ -62,6 +62,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdBridges(args[1:], stdout, stderr)
 	case "schema":
 		return cmdSchema(args[1:], stdout, stderr)
+	case "routes":
+		return cmdRoutes(args[1:], stdout, stderr)
 	case "unused-deps":
 		return cmdUnusedDeps(args[1:], stdout, stderr)
 	case "mcp":
@@ -108,6 +110,8 @@ Usage:
   gartograph init   [--dir PATH]  scaffold .gartograph.yml from observed imports
   gartograph bridges [--dir PATH] [--out FILE]  isthmus bridge-facts (platform "go")
   gartograph schema  [--dir PATH] [--out FILE]  isthmus persistence relation-uses (platform "go")
+  gartograph routes  [--role server] [--dir PATH] [--pattern P]... [--service NAME]
+                     [--generated-at TS] [--out FILE]  isthmus http route declarations (platform "go")
   gartograph unused-deps [--strict] [--format text|json] [flags]
   gartograph mcp    serve the graph over MCP stdio [flags]
   gartograph version

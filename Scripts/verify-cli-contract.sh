@@ -91,6 +91,10 @@ check 64 "impact traversal file" impact --format language-traversal --files main
 check 2  "impact bad format"     impact --format xml example.com/contract/lib
 
 check 64 "impact traversal flag" impact --format language-traversal --depth=abc example.com/contract/lib.Run
+# isthmus http route-decl 문서(routes): 사용법 오류는 2다.
+check 0 "routes"                routes --role server
+check 2 "routes client role"    routes --role client
+check 2 "routes bad timestamp"  routes --generated-at yesterday
 
 # 사용법 오류는 표준 출력을 비운다 — root-not-found 문서와 구별되는 신호다.
 out="$("$BIN" reach $'bad\tid' --dir "$FIX" 2>/dev/null || true)"
