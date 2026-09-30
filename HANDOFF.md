@@ -19,7 +19,8 @@ Go 핸들러에서 시작할 수 있다.
   ServeMux 등록 색인(reflect)으로 표본 요청 대조 — 네 라우터 모두 정밀도·재현율 100%. 첫 실행이 echo
   leaf 파라미터의 trailingSlash(strict→optional)와 불투명 chi Mount 펼침 누락을 잡았다.
 - `--type-edges members|all`(기본 members, analysis/typeedges.go): 필드 선언의 타입 구조 간선을 필드
-  정점으로 옮긴다. 처음 설계("리시버로만 닿은 타입" 그림자 상태)는 한 정점이 두 상태를 가져 문서의
+  정점으로 옮긴다. 어느 필드인지는 타입 정점의 필드 목록(Vertex.Fields 정규 타입)으로 정한다 — 위치 기반
+  귀속은 `db *sql.DB` 다음 줄 필드까지 db에 묶어 e2e에서 과대 근사가 되살아났다. 처음 설계("리시버로만 닿은 타입" 그림자 상태)는 한 정점이 두 상태를 가져 문서의
   via depth·roots 포함 규칙(isthmus 검증)을 깼다 — 평범한 그래프 변환으로 바꿨다. 손실: 필드 이름 없는
   struct 값 전체 리플렉션 경로(문서 한계 `type-edges-members: N`, all로 복구).
 - e2e(scratch, isthmus 76b6141 + schemagraph 703a21f 오프라인 빌드, chi 백엔드 + sqlite users·orders·
@@ -27,6 +28,11 @@ Go 핸들러에서 시작할 수 있다.
   의존자 orders·user_totals, `/api/users/{}/orders` → orders. all은 `/api/health` → orders 컬럼(공유
   Handler 경유 과대 근사). relation 선택: members orders → `/api/users/{}/orders`만, all은 세 route 전부.
   `check`: 호출 2건 match, 없는 경로·동사 불일치 error, 끝 슬래시 warning.
+
+- GLM 리뷰 3회(routes diff, type-edges diff 2회) — 재현한 것은 고치고(dynamic 앵커, 주소를 꺼낸 gin 설정,
+  공백 계수, 필드 귀속, 좁힌 수 계산) 계약 밖 동사 공백·모듈 단위 미들웨어 판정·impact 텍스트 형식은 반박.
+  자기 검토로 --pattern이 import 패키지를 보지 않던 것, gin·echo 동사 대소문자, 순환 사슬 누락,
+  verify-cli-contract가 인자 바이너리 디렉터리를 지우던 위험을 고쳤다.
 
 남은 것: go route-call(클라이언트) — isthmus가 url-compose 벡터 전까지 받지 않음. gorilla/mux 등은
 registration-order 생산자 필요(지금은 route-coverage 공백). 경로 중간 파라미터의 빈 값 변형(`//`)은 의도적

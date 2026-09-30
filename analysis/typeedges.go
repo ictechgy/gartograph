@@ -108,7 +108,12 @@ func (idx fieldIndex) fieldOwners(e graph.Edge) []string {
 	}
 	target := graph.CanonicalID(e.To)
 	member := graph.CanonicalID(e.From)
+	// 타입 정점 ID는 "경로.이름"이다(선언 타입이라 타입 인자가 붙지 않는다). 점이 없는 ID는 모양을 모르므로
+	// 옮기지 않는다.
 	pkgEnd := strings.LastIndex(member, ".")
+	if pkgEnd < 0 {
+		return nil
+	}
 	var out []string
 	for _, f := range fields {
 		name, typ, ok := strings.Cut(f, ":")
