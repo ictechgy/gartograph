@@ -1,0 +1,15 @@
+{
+  "format": "http-wrappers",
+  "version": 1,
+  "wrappers": [
+    {
+      "language": "go",
+      "kind": "function",
+      "owner": "example.com/clientoracle/fixtures/clientapp.API",
+      "name": "Send",
+      "methodArg": { "label": "method" },
+      "pathArg": { "index": 1 },
+      "pathAnchor": "base"
+    }
+  ]
+}

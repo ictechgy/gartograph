@@ -111,8 +111,9 @@ Usage:
   gartograph init   [--dir PATH]  scaffold .gartograph.yml from observed imports
   gartograph bridges [--dir PATH] [--out FILE]  isthmus bridge-facts (platform "go")
   gartograph schema  [--dir PATH] [--out FILE]  isthmus persistence relation-uses (platform "go")
-  gartograph routes  [--role server] [--dir PATH] [--pattern P]... [--service NAME]
-                     [--generated-at TS] [--out FILE]  isthmus http route declarations (platform "go")
+  gartograph routes  [--role server|client] [--dir PATH] [--pattern P]... [--service NAME]
+                     [--wrappers FILE] [--generated-at TS] [--out FILE]
+                     isthmus http route declarations or route calls (platform "go")
   gartograph unused-deps [--strict] [--format text|json] [flags]
   gartograph mcp    serve the graph over MCP stdio [flags]
   gartograph version

@@ -98,9 +98,12 @@ check 64 "impact traversal flag" impact --format language-traversal --depth=abc 
 check 0  "reach type-edges all"  reach --type-edges all example.com/contract/lib.Run
 check 64 "reach type-edges bad"  reach --type-edges fields example.com/contract/lib.Run
 check 2  "impact json type-edges" impact --type-edges all example.com/contract/lib
-# isthmus http route-decl 문서(routes): 사용법 오류는 2다.
+# isthmus http route-decl·route-call 문서(routes): 사용법 오류는 2다.
 check 0 "routes"                routes --role server
-check 2 "routes client role"    routes --role client
+check 0 "routes client role"    routes --role client
+check 2 "routes unknown role"   routes --role both
+check 2 "routes server wrappers" routes --role server --wrappers w.json
+check 2 "routes missing wrappers" routes --role client --wrappers /nonexistent/w.json
 check 2 "routes bad timestamp"  routes --generated-at yesterday
 
 # 사용법 오류는 표준 출력을 비운다 — root-not-found 문서와 구별되는 신호다.

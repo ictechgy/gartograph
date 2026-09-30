@@ -2,6 +2,43 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
+## 진행 중 — Go 클라이언트 route-call (2026-09-30, feature/client-routes, PR #36)
+
+API 영향 추적 개선 #3(Go 쪽). `routes --role client`가 isthmus http route-call(platform go)을 낸다.
+isthmus 3a45450(#133)부터 go route-call을 받는다(그 전 c395c59는 거부).
+- 인식(source/clientapi.go, 타입 확인): net/http `Get·Head·Post·PostForm`(패키지 함수·`*Client`),
+  `NewRequest(WithContext)`(요청을 만든 자리가 사실), resty v2 `R()/NewRequest()` 체인의 `Get…Patch`·`Execute`,
+  http-wrappers v1 `"language": "go"` 선언(source/httpwrappers.go — owner: 패키지 함수는 import 경로, 메서드는
+  `import경로.타입`, constructor는 struct 리터럴 `import경로.T`·name `T`; label = 파라미터·필드 이름; 두 해석이
+  다 되는 owner는 패키지 함수 우선). 메서드 식 호출은 리시버를 인자에서 뺀다.
+- URL 식 평가(source/urlexpr.go): 재귀 없이 노드 목록으로(cycles --level symbol). 상수·`+`·Sprintf·한 번
+  대입된 지역/비공개 패키지 변수·query 꼬리 지역·url.URL 리터럴·Parse·JoinPath·ResolveReference·path.Join·
+  TrimSuffix. 공개 패키지 변수는 다른 모듈이 바꿀 수 있어 값(baseRef). 동사 인자도 같은 추적.
+- 조립(source/urlcompose.go)·결합(source/urljoin.go): isthmus 결합 이름 `rfc3986`·`go-join-path`·
+  `resty-base-url`. url-compose 벡터(isthmus 3a45450) 이 생산자 대상 63건(producer:gartograph 22) 통과,
+  생산자 사례 합계 114. 원문 입력은 테스트가 실제 url.JoinPath·ResolveReference·path.Join과 대조.
+- resty 흐름은 routeflow에 얹었다(restyValueTypes를 추적 타입에 더하고, 체인 메서드는 passThrough로
+  수신 클라이언트를 넘김 — eval↔evalCall 재귀를 만들지 않기 위해). base·path param 설정은 restyCalls, 요청마다
+  수신 노드별로 따로 푼다.
+- 오라클(experiments/client-oracle, `run.sh`): 합성 호출 32개를 HTTP_PROXY로 127.0.0.1 httptest에 보내 기록 —
+  일치 30·dynamic 2·불일치 0. 벡터(3a45450)와 어긋나는 사례 없음. resty 소스 확인 사항(BaseURL 직접 대입은 끝
+  `/`를 안 뗌 → `//items`, path param이 없으면 `{id}` 그대로 → `%7Bid%7D`)이 실제 요청으로 확인됐다. 오프라인
+  재대조는 source/clientoracle_test.go.
+- e2e(scratch, 패치 없는 isthmus 3a45450): Go ServeMux 서버 `GET /users/{id}` → `usersvc.(server).getUser` ←
+  Go 클라이언트 `users.FetchUser`(users/users.go:9, authority users.example.test) → 역방향 `profile.Show`(depth 1)
+  → `webapp.main`(depth 2). gap은 reach-completeness-unknown·persistence-unscanned뿐. `check`는 오라클 사실 32건을
+  모두 파싱.
+- GLM 리뷰 1회: 재현한 6건 수정(메서드 식 인자 위치, 모르는 raw 키가 알려진 escape 키를 덮음, 노드 사이 path
+  param 섞임, pathArg 바인딩 실패가 조용히 사라짐, owner 문자열의 가짜 메서드 키, 경로만 있는 URL의
+  unresolved-base-url 계수, 지역 변수 동사). 반박: 추적 못 한 클라이언트의 `{name}`을 치환·원문 두 사실로
+  내자는 제안(원문 사실이 거짓 error가 된다 — `{}`만 낸다), net/http 경로만 있는 URL을 root로 내자는 제안
+  (RoundTripper가 앞자리를 붙일 수 있어 base 유지, 계수만 뺌). 자기 검토로 authority 문법을 isthmus와 같게
+  좁혔다(넓으면 문서가 거부된다).
+
+남은 것: 모델링하지 않은 클라이언트(fasthttp·req·resty v1/v3 등)는 route-call-coverage 공백. 함수 결과로
+만든 URL(`c.url("/x")`)은 값이라 dynamic이다. resty v3(`resty.dev/v3`)는 isthmus HTTP-WRAPPERS에 결합 규칙이 있으나 아직
+인식하지 않는다.
+
 ## 진행 중 — Go 서버 route-decl과 --type-edges members (2026-09-30, feature/server-routes)
 
 API 영향 추적 Phase 7 후속. isthmus 76b6141(#131)이 go http route-decl을 받게 되어 route 선택 trace가

@@ -1,0 +1,1948 @@
+{
+  "format": "isthmus-conformance",
+  "version": 1,
+  "suite": "url-compose",
+  "description": "Shared producer rules for turning client URL expressions and declared HTTP wrapper calls into route-call templates: interpolation, query tails, base joins, stripping, masking, and wrapper argument binding.",
+  "contract": "docs/HTTP-WRAPPERS.md",
+  "cases": [
+    {
+      "id": "interpolation/whole-segment",
+      "ruleId": "compose.interpolation",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/api/v1/items/"
+          },
+          {
+            "value": "id"
+          }
+        ]
+      },
+      "expect": {
+        "template": "/api/v1/items/{}"
+      }
+    },
+    {
+      "id": "interpolation/middle-segment",
+      "ruleId": "compose.interpolation",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/users/"
+          },
+          {
+            "value": "user"
+          },
+          {
+            "literal": "/items/"
+          },
+          {
+            "value": "item"
+          }
+        ]
+      },
+      "expect": {
+        "template": "/users/{}/items/{}"
+      }
+    },
+    {
+      "id": "interpolation/partial-segment-is-dynamic",
+      "ruleId": "compose.interpolation",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/files/"
+          },
+          {
+            "value": "name"
+          },
+          {
+            "literal": ".json"
+          }
+        ]
+      },
+      "expect": {
+        "channelPrefix": "/files/"
+      },
+      "expectDynamic": true,
+      "note": "Only an interpolation that fills a whole segment becomes {}. Partial call segments are dynamic even though server templates may use p{}s."
+    },
+    {
+      "id": "interpolation/glued-to-literal-is-dynamic",
+      "ruleId": "compose.interpolation",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/items"
+          },
+          {
+            "value": "suffix"
+          }
+        ]
+      },
+      "expect": {
+        "channelPrefix": "/items"
+      },
+      "expectDynamic": true
+    },
+    {
+      "id": "interpolation/two-in-segment",
+      "ruleId": "compose.interpolation",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/v"
+          },
+          {
+            "value": "major"
+          },
+          {
+            "literal": "."
+          },
+          {
+            "value": "minor"
+          }
+        ]
+      },
+      "expect": {
+        "channelPrefix": "/v"
+      },
+      "expectDynamic": true
+    },
+    {
+      "id": "interpolation/leading-value-is-base",
+      "ruleId": "compose.interpolation",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "value": "baseUrl"
+          },
+          {
+            "literal": "/items"
+          }
+        ]
+      },
+      "expectDynamic": true,
+      "note": "A value before the first literal slash is a base expression; apply compose.base-join instead of this rule."
+    },
+    {
+      "id": "query-tail/literal-question-mark",
+      "ruleId": "compose.query-tail",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/items?page="
+          },
+          {
+            "value": "page"
+          }
+        ]
+      },
+      "expect": {
+        "template": "/items",
+        "queryTailStripped": true
+      }
+    },
+    {
+      "id": "query-tail/first-question-mark",
+      "ruleId": "compose.query-tail",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/search?q="
+          },
+          {
+            "value": "q"
+          },
+          {
+            "literal": "&next=/x?y"
+          }
+        ]
+      },
+      "expect": {
+        "template": "/search",
+        "queryTailStripped": true
+      }
+    },
+    {
+      "id": "query-tail/after-path-value",
+      "ruleId": "compose.query-tail",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/items/"
+          },
+          {
+            "value": "id"
+          },
+          {
+            "literal": "?expand=true"
+          }
+        ]
+      },
+      "expect": {
+        "template": "/items/{}",
+        "queryTailStripped": true
+      }
+    },
+    {
+      "id": "query-tail/fragment",
+      "ruleId": "compose.query-tail",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/docs#section"
+          }
+        ]
+      },
+      "expect": {
+        "template": "/docs",
+        "queryTailStripped": true
+      }
+    },
+    {
+      "id": "suffix/proven-query-local",
+      "ruleId": "compose.suffix",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/api/v1/articles"
+          },
+          {
+            "queryTail": "suffix"
+          }
+        ]
+      },
+      "expect": {
+        "template": "/api/v1/articles",
+        "queryTailStripped": true
+      },
+      "note": "A trailing local whose initializer provably starts with '?' or is empty/orEmpty on every other branch is a query tail."
+    },
+    {
+      "id": "suffix/unproven-local",
+      "ruleId": "compose.suffix",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/api/v1/articles"
+          },
+          {
+            "value": "suffix"
+          }
+        ]
+      },
+      "expect": {
+        "channelPrefix": "/api/v1/articles"
+      },
+      "expectDynamic": true
+    },
+    {
+      "id": "suffix/query-local-not-last",
+      "ruleId": "compose.suffix",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/a"
+          },
+          {
+            "queryTail": "q"
+          },
+          {
+            "literal": "/b"
+          }
+        ]
+      },
+      "expect": {
+        "channelPrefix": "/a"
+      },
+      "expectDynamic": true
+    },
+    {
+      "id": "normalize/non-ascii-literal",
+      "ruleId": "compose.normalize",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/café/"
+          },
+          {
+            "value": "id"
+          }
+        ]
+      },
+      "expect": {
+        "template": "/caf%C3%A9/{}"
+      }
+    },
+    {
+      "id": "normalize/literal-brace",
+      "ruleId": "compose.normalize",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "parts": [
+          {
+            "literal": "/tpl/{x}"
+          }
+        ]
+      },
+      "expect": {
+        "template": "/tpl/%7Bx%7D"
+      }
+    },
+    {
+      "id": "base-join/rfc3986-absolute-path",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": null,
+        "path": "/items"
+      },
+      "expect": {
+        "template": "/items",
+        "pathAnchor": "root"
+      }
+    },
+    {
+      "id": "base-join/rfc3986-relative-path",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": null,
+        "path": "items"
+      },
+      "expect": {
+        "template": "/items",
+        "pathAnchor": "base"
+      }
+    },
+    {
+      "id": "base-join/slash-join-absolute-path",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "join": "slash-join",
+        "base": null,
+        "path": "/items"
+      },
+      "expect": {
+        "template": "/items",
+        "pathAnchor": "base"
+      }
+    },
+    {
+      "id": "base-join/slash-join-relative-path",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "join": "slash-join",
+        "base": null,
+        "path": "items"
+      },
+      "expect": {
+        "template": "/items",
+        "pathAnchor": "base"
+      }
+    },
+    {
+      "id": "base-join/dio-literal-base",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "join": "dio-concat",
+        "base": "https://api.example.com/v1",
+        "path": "/items"
+      },
+      "expect": {
+        "template": "/v1/items",
+        "pathAnchor": "root"
+      }
+    },
+    {
+      "id": "base-join/dio-unknown-base-rooted",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "join": "dio-concat",
+        "base": null,
+        "path": "/items"
+      },
+      "expect": {
+        "template": "/items",
+        "pathAnchor": "base"
+      }
+    },
+    {
+      "id": "base-join/dio-unknown-base-relative",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "join": "dio-concat",
+        "base": null,
+        "path": "items"
+      },
+      "expectDynamic": true,
+      "expectLimitation": "ambiguous-base-join:"
+    },
+    {
+      "id": "base-join/spring-literal-base-rooted",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-source",
+      "source": "https://github.com/spring-projects/spring-framework/blob/v6.2.19/spring-web/src/main/java/org/springframework/web/util/UriComponentsBuilder.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-uri-builder",
+        "base": "http://users.internal:8081/api",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root",
+        "authority": "users.internal:8081"
+      },
+      "note": "DefaultUriBuilderFactory copies the base builder and appends the template path as a plain string (FullPathComponentBuilder.append)."
+    },
+    {
+      "id": "base-join/spring-literal-base-double-slash",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-source",
+      "source": "https://github.com/spring-projects/spring-framework/blob/v6.2.19/spring-web/src/main/java/org/springframework/web/util/UriComponentsBuilder.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-uri-builder",
+        "base": "http://users.internal:8081/api/",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root"
+      },
+      "note": "The concatenation is /api//users; getSanitizedPath collapses every // in the path (not only after the scheme)."
+    },
+    {
+      "id": "base-join/spring-literal-base-relative",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-source",
+      "source": "https://github.com/spring-projects/spring-framework/blob/v6.2.19/spring-web/src/main/java/org/springframework/web/util/UriComponentsBuilder.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-uri-builder",
+        "base": "http://users.internal:8081/api",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/apiusers",
+        "pathAnchor": "root"
+      },
+      "note": "No slash is inserted between the base path and a relative template."
+    },
+    {
+      "id": "base-join/spring-host-only-base-relative",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/spring-projects/spring-framework/blob/v6.2.19/spring-web/src/main/java/org/springframework/web/util/HierarchicalUriComponents.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-uri-builder",
+        "base": "http://users.internal:8081",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root"
+      },
+      "note": "With no base path the URI string inserts / after the authority, so the relative template is not glued to the host (unlike dio). Confirmed by the kartograph Spring client oracle."
+    },
+    {
+      "id": "base-join/spring-keeps-dot-segments",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/spring-projects/spring-framework/blob/v6.2.19/spring-web/src/main/java/org/springframework/web/util/DefaultUriBuilderFactory.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-uri-builder",
+        "base": "http://users.internal:8081/api",
+        "path": "/users/./me/../self"
+      },
+      "expect": {
+        "template": "/api/users/./me/../self",
+        "pathAnchor": "root"
+      },
+      "note": "DefaultUriBuilderFactory never calls normalize(); the kartograph oracle recorded the request path with the dot segments intact."
+    },
+    {
+      "id": "base-join/spring-unknown-base-rooted",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#base-결합",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-uri-builder",
+        "base": null,
+        "path": "/users//42"
+      },
+      "expect": {
+        "template": "/users/42",
+        "pathAnchor": "base"
+      },
+      "note": "Unknown base: a rooted template is a base-anchored suffix; // collapses in the template too."
+    },
+    {
+      "id": "base-join/spring-unknown-base-relative",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#base-결합",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-uri-builder",
+        "base": null,
+        "path": "users"
+      },
+      "expectDynamic": true,
+      "expectLimitation": "ambiguous-base-join:",
+      "note": "Without the base path the plain concatenation cannot be resolved (like dio)."
+    },
+    {
+      "id": "base-join/spring-root-uri-literal-rooted",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-source",
+      "source": "https://github.com/spring-projects/spring-boot/blob/v3.5.16/spring-boot-project/spring-boot/src/main/java/org/springframework/boot/web/client/RootUriTemplateHandler.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-root-uri",
+        "base": "http://legacy.internal:8080/v1",
+        "path": "/orders"
+      },
+      "expect": {
+        "template": "/v1/orders",
+        "pathAnchor": "root",
+        "authority": "legacy.internal:8080"
+      },
+      "note": "RestTemplateBuilder.rootUri prepends the root only to templates starting with /; the result is parsed without a base (// collapses)."
+    },
+    {
+      "id": "base-join/spring-root-uri-relative",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-source",
+      "source": "https://github.com/spring-projects/spring-boot/blob/v3.5.16/spring-boot-project/spring-boot/src/main/java/org/springframework/boot/web/client/RootUriTemplateHandler.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-root-uri",
+        "base": "http://legacy.internal:8080/v1",
+        "path": "orders"
+      },
+      "expectDynamic": true,
+      "note": "A template not starting with / gets no root and has no host, so no request path can be claimed."
+    },
+    {
+      "id": "base-join/spring-root-uri-unknown-rooted",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#base-결합",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-root-uri",
+        "base": null,
+        "path": "/orders"
+      },
+      "expect": {
+        "template": "/orders",
+        "pathAnchor": "base"
+      }
+    },
+    {
+      "id": "base-join/spring-http-exchange-slash-inserted",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-source",
+      "source": "https://github.com/spring-projects/spring-framework/blob/v6.2.19/spring-web/src/main/java/org/springframework/web/service/invoker/HttpServiceMethod.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-http-exchange",
+        "base": "http://users.internal:8081/svc",
+        "typeUrl": "/api",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/svc/api/users",
+        "pathAnchor": "root"
+      },
+      "note": "HttpServiceMethod.initUrl inserts / only when the type url does not end with / and the method url does not start with /; the result then joins the client base like spring-uri-builder."
+    },
+    {
+      "id": "base-join/spring-http-exchange-double-slash",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-source",
+      "source": "https://github.com/spring-projects/spring-framework/blob/v6.2.19/spring-web/src/main/java/org/springframework/web/service/invoker/HttpServiceMethod.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-http-exchange",
+        "base": null,
+        "typeUrl": "/api/",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "base"
+      }
+    },
+    {
+      "id": "base-join/spring-http-exchange-relative",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-source",
+      "source": "https://github.com/spring-projects/spring-framework/blob/v6.2.19/spring-web/src/main/java/org/springframework/web/service/invoker/HttpServiceMethod.java",
+      "appliesTo": [
+        "producer:kartograph"
+      ],
+      "input": {
+        "join": "spring-http-exchange",
+        "base": null,
+        "typeUrl": "api",
+        "path": "users"
+      },
+      "expectDynamic": true,
+      "expectLimitation": "ambiguous-base-join:"
+    },
+    {
+      "id": "strip/userinfo-query-fragment",
+      "ruleId": "compose.strip",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "url": "https://user:secret@API.Example.com/v1/items?token=abc#top"
+      },
+      "expect": {
+        "template": "/v1/items",
+        "authority": "api.example.com",
+        "queryTailStripped": true
+      }
+    },
+    {
+      "id": "strip/port-kept",
+      "ruleId": "compose.strip",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "url": "http://api.example.com:8080/v1"
+      },
+      "expect": {
+        "template": "/v1",
+        "authority": "api.example.com:8080"
+      }
+    },
+    {
+      "id": "strip/root",
+      "ruleId": "compose.strip",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "url": "https://api.example.com"
+      },
+      "expect": {
+        "template": "/",
+        "authority": "api.example.com"
+      }
+    },
+    {
+      "id": "mask/high-entropy-id",
+      "ruleId": "compose.mask",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "authority": "api.example.com",
+        "template": "/v1/items/550e8400-e29b-41d4-a716-446655440000"
+      },
+      "expect": {
+        "template": "/v1/items/{}",
+        "maskedSegments": 1
+      }
+    },
+    {
+      "id": "mask/long-word-kept",
+      "ruleId": "compose.mask",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "authority": "api.example.com",
+        "template": "/internationalization/settings"
+      },
+      "expect": {
+        "template": "/internationalization/settings",
+        "maskedSegments": 0
+      }
+    },
+    {
+      "id": "mask/short-token-kept",
+      "ruleId": "compose.mask",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "authority": "api.example.com",
+        "template": "/v2/abc123"
+      },
+      "expect": {
+        "template": "/v2/abc123",
+        "maskedSegments": 0
+      }
+    },
+    {
+      "id": "mask/slack-webhook",
+      "ruleId": "compose.mask",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "authority": "hooks.slack.com",
+        "template": "/services/T0000/B0000/XXXXXXXXXXXXXXXX"
+      },
+      "expect": {
+        "template": "/{}/{}/{}/{}",
+        "maskedSegments": 4
+      }
+    },
+    {
+      "id": "mask/discord-webhook",
+      "ruleId": "compose.mask",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "authority": "discord.com",
+        "template": "/api/webhooks/123/abcDEF"
+      },
+      "expect": {
+        "template": "/api/webhooks/{}/{}",
+        "maskedSegments": 2
+      }
+    },
+    {
+      "id": "mask/param-segments-untouched",
+      "ruleId": "compose.mask",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "authority": "api.example.com",
+        "template": "/v1/{}/a1b2c3d4e5f6a7b8c9"
+      },
+      "expect": {
+        "template": "/v1/{}/{}",
+        "maskedSegments": 1
+      }
+    },
+    {
+      "id": "method/enum-case",
+      "ruleId": "wrapper.method",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "declaration": {
+          "methodArg": {
+            "label": "method"
+          },
+          "methodEnum": {
+            "get": "GET",
+            "post": "POST"
+          }
+        },
+        "call": {
+          "args": [
+            {
+              "label": "method",
+              "value": {
+                "enumCase": "get"
+              }
+            },
+            {
+              "label": "path",
+              "value": {
+                "literal": "/x"
+              }
+            }
+          ]
+        }
+      },
+      "expect": {
+        "method": "GET"
+      }
+    },
+    {
+      "id": "method/enum-constant-name",
+      "ruleId": "wrapper.method",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "declaration": {
+          "methodArg": {
+            "index": 0
+          },
+          "methodEnum": {
+            "GET": "GET",
+            "DELETE": "DELETE"
+          }
+        },
+        "call": {
+          "args": [
+            {
+              "value": {
+                "enumCase": "DELETE"
+              }
+            },
+            {
+              "value": {
+                "literal": "/x"
+              }
+            }
+          ]
+        }
+      },
+      "expect": {
+        "method": "DELETE"
+      }
+    },
+    {
+      "id": "method/enum-without-verb",
+      "ruleId": "wrapper.method",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "declaration": {
+          "methodArg": {
+            "label": "method"
+          },
+          "methodEnum": {
+            "get": "GET"
+          }
+        },
+        "call": {
+          "args": [
+            {
+              "label": "method",
+              "value": {
+                "enumCase": "custom"
+              }
+            }
+          ]
+        }
+      },
+      "expectDynamic": true
+    },
+    {
+      "id": "method/default-argument",
+      "ruleId": "wrapper.method",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "declaration": {
+          "methodArg": {
+            "index": 2,
+            "label": "method"
+          },
+          "defaultMethod": "POST"
+        },
+        "call": {
+          "args": [
+            {
+              "value": {
+                "literal": "/x"
+              }
+            },
+            {
+              "value": {
+                "value": "token"
+              }
+            }
+          ]
+        }
+      },
+      "expect": {
+        "method": "POST"
+      }
+    },
+    {
+      "id": "method/named-out-of-order",
+      "ruleId": "wrapper.method",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "declaration": {
+          "methodArg": {
+            "index": 2,
+            "label": "method"
+          },
+          "defaultMethod": "POST"
+        },
+        "call": {
+          "args": [
+            {
+              "label": "path",
+              "value": {
+                "literal": "/x"
+              }
+            },
+            {
+              "label": "auth",
+              "value": {
+                "value": "t"
+              }
+            },
+            {
+              "label": "method",
+              "value": {
+                "literal": "GET"
+              }
+            }
+          ]
+        }
+      },
+      "expect": {
+        "method": "GET"
+      }
+    },
+    {
+      "id": "method/positional",
+      "ruleId": "wrapper.method",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "declaration": {
+          "methodArg": {
+            "index": 0
+          }
+        },
+        "call": {
+          "args": [
+            {
+              "value": {
+                "literal": "PATCH"
+              }
+            },
+            {
+              "value": {
+                "literal": "/x"
+              }
+            }
+          ]
+        }
+      },
+      "expect": {
+        "method": "PATCH"
+      }
+    },
+    {
+      "id": "method/non-literal-argument",
+      "ruleId": "wrapper.method",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "declaration": {
+          "methodArg": {
+            "index": 0
+          },
+          "defaultMethod": "GET"
+        },
+        "call": {
+          "args": [
+            {
+              "value": {
+                "value": "verb"
+              }
+            }
+          ]
+        }
+      },
+      "expectDynamic": true,
+      "note": "A present but non-literal argument is methodDynamic; the default applies only when the argument is omitted."
+    },
+    {
+      "id": "method/no-argument-no-default",
+      "ruleId": "wrapper.method",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "declaration": {
+          "methodArg": {
+            "label": "method"
+          }
+        },
+        "call": {
+          "args": [
+            {
+              "label": "path",
+              "value": {
+                "literal": "/x"
+              }
+            }
+          ]
+        }
+      },
+      "expectDynamic": true
+    },
+    {
+      "id": "method/lowercase-literal-not-a-verb",
+      "ruleId": "wrapper.method",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "declaration": {
+          "methodArg": {
+            "index": 0
+          }
+        },
+        "call": {
+          "args": [
+            {
+              "value": {
+                "literal": "get"
+              }
+            }
+          ]
+        }
+      },
+      "expectDynamic": true,
+      "note": "Only the exact upper-case verb literal is a verb; map other spellings through methodEnum."
+    },
+    {
+      "id": "location/multi-line-call",
+      "ruleId": "wrapper.location",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#공통-해석-규칙",
+      "appliesTo": [
+        "producer"
+      ],
+      "input": {
+        "callStartLine": 89,
+        "methodArgLine": 90,
+        "pathArgLine": 91
+      },
+      "expect": {
+        "line": 89
+      }
+    },
+    {
+      "id": "base-join/go-resolve-reference-base-directory",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1116-L1153",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": "https://api.example.com/api/",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root",
+        "authority": "api.example.com"
+      },
+      "note": "(*url.URL).ResolveReference merges a relative reference after the last / of the base path (RFC 3986 5.2.3). Reproduced with go1.27.1; go1.23.0 source is identical."
+    },
+    {
+      "id": "base-join/go-resolve-reference-base-file",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1116-L1153",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": "https://api.example.com/api",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root"
+      },
+      "note": "Without a trailing slash the last base segment is replaced, not extended."
+    },
+    {
+      "id": "base-join/go-resolve-reference-rooted",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1116-L1153",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": "https://api.example.com/api/",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root",
+        "authority": "api.example.com"
+      },
+      "note": "An absolute-path reference replaces the whole base path."
+    },
+    {
+      "id": "base-join/go-resolve-reference-dot-segments",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1116-L1153",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": "https://api.example.com/api/v1/",
+        "path": "../users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root"
+      },
+      "note": "remove_dot_segments (RFC 3986 5.2.4) runs after the merge."
+    },
+    {
+      "id": "base-join/go-resolve-reference-network-path",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1116-L1153",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": "https://api.example.com/api/",
+        "path": "//other.example.com/x"
+      },
+      "expect": {
+        "template": "/x",
+        "pathAnchor": "root",
+        "authority": "other.example.com"
+      },
+      "note": "A network-path reference (//host/...) replaces the authority as well as the path."
+    },
+    {
+      "id": "base-join/go-join-path-relative",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1237-L1256",
+      "versionRange": ">=1.19",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "go-join-path",
+        "base": "https://api.example.com/api",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root",
+        "authority": "api.example.com"
+      },
+      "note": "(*url.URL).JoinPath (Go 1.19+) joins with path.Join, so the base path is always extended."
+    },
+    {
+      "id": "base-join/go-join-path-rooted-element",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1237-L1256",
+      "versionRange": ">=1.19",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "go-join-path",
+        "base": "https://api.example.com/api/",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root"
+      },
+      "note": "A leading / on an element does not reset the path (unlike ResolveReference)."
+    },
+    {
+      "id": "base-join/go-join-path-collapses",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1237-L1256",
+      "versionRange": ">=1.19",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "go-join-path",
+        "base": "https://api.example.com/api",
+        "path": "a//b"
+      },
+      "expect": {
+        "template": "/api/a/b",
+        "pathAnchor": "root"
+      },
+      "note": "path.Join collapses repeated slashes."
+    },
+    {
+      "id": "base-join/go-join-path-dot-dot-escapes",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1237-L1256",
+      "versionRange": ">=1.19",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "go-join-path",
+        "base": "https://api.example.com/api",
+        "path": "../x"
+      },
+      "expect": {
+        "template": "/x",
+        "pathAnchor": "root"
+      },
+      "note": "path.Join cleans .. against the base path, so it can leave the base path."
+    },
+    {
+      "id": "base-join/go-join-path-trailing-slash",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1237-L1256",
+      "versionRange": ">=1.19",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "go-join-path",
+        "base": "https://api.example.com/api",
+        "path": "users/"
+      },
+      "expect": {
+        "template": "/api/users/",
+        "pathAnchor": "root"
+      },
+      "note": "JoinPath keeps one trailing slash when the last element ends with /."
+    },
+    {
+      "id": "base-join/go-join-path-host-only",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/golang/go/blob/go1.23.0/src/net/url/url.go#L1237-L1256",
+      "versionRange": ">=1.19",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "go-join-path",
+        "base": "https://api.example.com",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root",
+        "authority": "api.example.com"
+      }
+    },
+    {
+      "id": "base-join/go-join-path-unknown-base",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "go-join-path",
+        "base": null,
+        "path": "/users/"
+      },
+      "expect": {
+        "template": "/users/",
+        "pathAnchor": "base"
+      },
+      "note": "Unknown base: the cleaned element path is a tail behind the unknown base path."
+    },
+    {
+      "id": "base-join/go-join-path-unknown-base-dot-dot",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "go-join-path",
+        "base": null,
+        "path": "../users"
+      },
+      "expectDynamic": true,
+      "expectLimitation": "ambiguous-base-join:",
+      "note": "Unknown base: which segment .. removes cannot be known."
+    },
+    {
+      "id": "base-join/resty-base-trailing-slash-trimmed",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/go-resty/resty/blob/v2.17.2/client.go#L193-L197",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "resty-base-url",
+        "base": "https://api.example.com/api/",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root",
+        "authority": "api.example.com"
+      },
+      "note": "SetBaseURL trims trailing slashes and parseRequestURL prefixes a missing / before concatenating (resty v2.17.2; v3.0.0-rc.4 composes the same path). Recorded as the RequestURI seen by a local server."
+    },
+    {
+      "id": "base-join/resty-rooted-path",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/go-resty/resty/blob/v2.17.2/middleware.go#L103-L126",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "resty-base-url",
+        "base": "https://api.example.com/api",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root"
+      },
+      "note": "A leading / does not reset the base path (plain concatenation, not RFC 3986)."
+    },
+    {
+      "id": "base-join/resty-double-slash-kept",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/go-resty/resty/blob/v2.17.2/middleware.go#L103-L126",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "resty-base-url",
+        "base": "https://api.example.com/api",
+        "path": "//users"
+      },
+      "expect": {
+        "template": "/api//users",
+        "pathAnchor": "root"
+      },
+      "note": "The concatenation is sent as is; // is not collapsed."
+    },
+    {
+      "id": "base-join/resty-dot-segments-kept",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/go-resty/resty/blob/v2.17.2/middleware.go#L103-L126",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "resty-base-url",
+        "base": "https://api.example.com/api/",
+        "path": "./users"
+      },
+      "expect": {
+        "template": "/api/./users",
+        "pathAnchor": "root"
+      },
+      "note": "Dot segments are not removed; the server receives /api/./users."
+    },
+    {
+      "id": "base-join/resty-unknown-base",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "resty-base-url",
+        "base": null,
+        "path": "users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "base"
+      }
+    },
+    {
+      "id": "base-join/resty-unknown-base-rooted",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:gartograph"
+      ],
+      "input": {
+        "join": "resty-base-url",
+        "base": null,
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "base"
+      },
+      "note": "Unlike rfc3986 a rooted path stays behind the unknown base."
+    },
+    {
+      "id": "base-join/rust-url-join-base-directory",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/servo/rust-url/blob/v2.5.8/url/src/lib.rs#L413-L473",
+      "appliesTo": [
+        "producer:rustograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": "https://api.example.com/api/",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root",
+        "authority": "api.example.com"
+      },
+      "note": "url::Url::join parses the input with the base (WHATWG URL Standard); for these http(s) inputs the result equals RFC 3986 resolution. reqwest has no base URL, so this applies only when the code calls Url::join. Reproduced with url 2.5.8."
+    },
+    {
+      "id": "base-join/rust-url-join-base-file",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/servo/rust-url/blob/v2.5.8/url/src/lib.rs#L413-L473",
+      "appliesTo": [
+        "producer:rustograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": "https://api.example.com/api",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root"
+      },
+      "note": "Url::join docs: without a trailing slash the last path component is a file name and is replaced."
+    },
+    {
+      "id": "base-join/rust-url-join-rooted",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/servo/rust-url/blob/v2.5.8/url/src/lib.rs#L413-L473",
+      "appliesTo": [
+        "producer:rustograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": "https://api.example.com/api/",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root"
+      }
+    },
+    {
+      "id": "base-join/rust-url-join-dot-segments",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/servo/rust-url/blob/v2.5.8/url/src/lib.rs#L413-L473",
+      "appliesTo": [
+        "producer:rustograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": "https://api.example.com/api/",
+        "path": "./users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root"
+      }
+    },
+    {
+      "id": "base-join/rfc3986-unknown-base-dot-segment",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:gartograph",
+        "producer:rustograph",
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": null,
+        "path": "./users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "base"
+      },
+      "note": "./ is removed; the rest is a tail behind the unknown base directory."
+    },
+    {
+      "id": "base-join/rfc3986-unknown-base-dot-dot",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:gartograph",
+        "producer:rustograph",
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": null,
+        "path": "../users"
+      },
+      "expectDynamic": true,
+      "expectLimitation": "ambiguous-base-join:",
+      "note": "Unknown base: which segment .. removes cannot be known."
+    },
+    {
+      "id": "base-join/rfc3986-unknown-base-rooted-dot-segments",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:gartograph",
+        "producer:rustograph",
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "rfc3986",
+        "base": null,
+        "path": "/a/../users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root"
+      }
+    },
+    {
+      "id": "base-join/httpx-base-without-trailing-slash",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/encode/httpx/blob/0.28.1/httpx/_client.py#L391-L411",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "httpx-base-url",
+        "base": "https://api.example.com/api",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root",
+        "authority": "api.example.com"
+      },
+      "note": "The base_url setter enforces a trailing / and _merge_url appends the relative path (httpx 0.28.1)."
+    },
+    {
+      "id": "base-join/httpx-rooted-path",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/encode/httpx/blob/0.28.1/httpx/_client.py#L391-L411",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "httpx-base-url",
+        "base": "https://api.example.com/api/",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root"
+      },
+      "note": "_merge_url strips every leading / of the relative path, so a rooted path does not reset the base path (unlike RFC 3986)."
+    },
+    {
+      "id": "base-join/httpx-dot-dot-escapes",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/encode/httpx/blob/0.28.1/httpx/_urlparse.py#L447-L475",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "httpx-base-url",
+        "base": "https://api.example.com/api",
+        "path": "../users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root"
+      },
+      "note": "normalize_path (RFC 3986 5.2.4) runs on the merged URL, so .. can leave the base path."
+    },
+    {
+      "id": "base-join/httpx-inner-double-slash-kept",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/encode/httpx/blob/0.28.1/httpx/_client.py#L391-L411",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "httpx-base-url",
+        "base": "https://api.example.com/api/",
+        "path": "a//b"
+      },
+      "expect": {
+        "template": "/api/a//b",
+        "pathAnchor": "root"
+      }
+    },
+    {
+      "id": "base-join/httpx-network-path",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/encode/httpx/blob/0.28.1/httpx/_client.py#L391-L411",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "httpx-base-url",
+        "base": "https://api.example.com/api",
+        "path": "//users"
+      },
+      "expectDynamic": true,
+      "expectLimitation": "ambiguous-base-join:",
+      "note": "URL('//users') parses users as a host with an empty path; the request goes to the base path. Producers do not claim a route for it."
+    },
+    {
+      "id": "base-join/httpx-unknown-base",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "httpx-base-url",
+        "base": null,
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "base"
+      }
+    },
+    {
+      "id": "base-join/httpx-unknown-base-dot-dot",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "httpx-base-url",
+        "base": null,
+        "path": "../users"
+      },
+      "expectDynamic": true,
+      "expectLimitation": "ambiguous-base-join:"
+    },
+    {
+      "id": "base-join/aiohttp-base-directory-relative",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/aio-libs/aiohttp/blob/v3.14.3/aiohttp/client.py#L531-L535",
+      "versionRange": ">=3.11",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "aiohttp-base-url",
+        "base": "https://api.example.com/api/",
+        "path": "users"
+      },
+      "expect": {
+        "template": "/api/users",
+        "pathAnchor": "root",
+        "authority": "api.example.com"
+      },
+      "note": "ClientSession._build_url joins with yarl URL.join (RFC 3986). Base URLs with a path and relative paths without a leading / are accepted since aiohttp 3.11. Reproduced with aiohttp 3.14.3 / yarl 1.25.1."
+    },
+    {
+      "id": "base-join/aiohttp-rooted-replaces-base-path",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/aio-libs/aiohttp/blob/v3.14.3/aiohttp/client.py#L531-L535",
+      "versionRange": ">=3.11",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "aiohttp-base-url",
+        "base": "https://api.example.com/api/",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root"
+      },
+      "note": "As in RFC 3986 a rooted path replaces the base path (aiohttp docs: request URLs should have no leading slash)."
+    },
+    {
+      "id": "base-join/aiohttp-host-only-base",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/aio-libs/aiohttp/blob/v3.14.3/aiohttp/client.py#L531-L535",
+      "versionRange": ">=3.8",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "aiohttp-base-url",
+        "base": "https://api.example.com",
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root",
+        "authority": "api.example.com"
+      },
+      "note": "The origin-only form accepted since aiohttp 3.8."
+    },
+    {
+      "id": "base-join/aiohttp-base-path-without-trailing-slash",
+      "ruleId": "compose.base-join",
+      "provenance": "verified-run",
+      "source": "https://github.com/aio-libs/aiohttp/blob/v3.14.3/aiohttp/client.py#L355-L363",
+      "versionRange": ">=3.11",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "aiohttp-base-url",
+        "base": "https://api.example.com/api",
+        "path": "users"
+      },
+      "expectDynamic": true,
+      "expectLimitation": "ambiguous-base-join:",
+      "note": "ClientSession raises ValueError('base_url must have a trailing /'); no request is made."
+    },
+    {
+      "id": "base-join/aiohttp-unknown-base-rooted",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "aiohttp-base-url",
+        "base": null,
+        "path": "/users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "root"
+      }
+    },
+    {
+      "id": "base-join/aiohttp-unknown-base-relative",
+      "ruleId": "compose.base-join",
+      "provenance": "contract",
+      "source": "docs/HTTP-WRAPPERS.md#go-rust-python-클라이언트",
+      "appliesTo": [
+        "producer:pythograph"
+      ],
+      "input": {
+        "join": "aiohttp-base-url",
+        "base": null,
+        "path": "users"
+      },
+      "expect": {
+        "template": "/users",
+        "pathAnchor": "base"
+      }
+    }
+  ]
+}
