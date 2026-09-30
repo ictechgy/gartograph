@@ -98,12 +98,64 @@ func TestRoutesOutAndUsage(t *testing.T) {
 		t.Fatalf("--out file = %q, %v", data, err)
 	}
 	for _, args := range [][]string{
-		{"routes", "--role", "client", "--dir", dir},
+		{"routes", "--role", "both", "--dir", dir},
+		{"routes", "--role", "server", "--wrappers", "w.json", "--dir", dir},
 		{"routes", "--generated-at", "yesterday", "--dir", dir},
 		{"routes", "--bogus"},
 	} {
 		if code, _, _ := run(t, args...); code != 2 {
 			t.Errorf("%v: exit %d, want 2", args, code)
 		}
+	}
+}
+
+// TestRoutesClient는 routes --role client가 route-call 문서를 내고, 래퍼 선언 파일의 오류는 사용법 오류(2)인지 본다.
+func TestRoutesClient(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"app/app.go": `package app
+
+import "net/http"
+
+func Send(method, path string) {}
+
+func List() {
+	http.Get("https://api.example.com/v1/items")
+	Send("DELETE", "/v1/items/7")
+}
+`})
+	wrappers := filepath.Join(t.TempDir(), "w.json")
+	if err := os.WriteFile(wrappers, []byte(`{"format":"http-wrappers","version":1,"wrappers":[{"language":"go",
+		"kind":"function","owner":"example.com/fixture/app","name":"Send","methodArg":{"label":"method"},
+		"pathArg":{"index":1},"pathAnchor":"root"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb := run(t, "routes", "--role", "client", "--dir", dir, "--wrappers", wrappers,
+		"--generated-at", "2026-01-01T00:00:00Z", "--service", "shop-web")
+	if code != 0 {
+		t.Fatalf("routes --role client failed: %d %s", code, errb)
+	}
+	var doc struct {
+		Roles   []string
+		Service string
+		Facts   []struct {
+			Method, Channel, PathAnchor, Authority string
+			Symbol                                 *struct{ Usr string }
+		}
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(doc.Roles) != 1 || doc.Roles[0] != "client" || doc.Service != "shop-web" || len(doc.Facts) != 2 {
+		t.Fatalf("bad document: %s", out)
+	}
+	if !strings.Contains(out, `"channel": "/v1/items/7"`) || !strings.Contains(out, `"authority": "api.example.com"`) ||
+		doc.Facts[0].Symbol == nil || doc.Facts[0].Symbol.Usr != "example.com/fixture/app.List" {
+		t.Errorf("facts = %s", out)
+	}
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte(`{"format":"http-wrappers","version":1,"wrappers":[{"language":"go"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := run(t, "routes", "--role", "client", "--dir", dir, "--wrappers", bad); code != 2 {
+		t.Errorf("invalid wrappers: exit %d, want 2", code)
 	}
 }

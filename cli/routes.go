@@ -1,8 +1,8 @@
-// routes --role server — isthmus http 도메인의 go 문서(route-decl)를 낸다.
+// routes --role server|client — isthmus http 도메인의 go 문서(route-decl·route-call)를 낸다.
 //
-// 계약은 ../isthmus의 docs/GRAPH-EXCHANGE.md "HTTP 경계" 절이 정본이다. 수확·변환 규칙은
-// source.RouteFacts에 있고, 여기서는 플래그 검증·문서 쓰기·종료 코드만 다룬다(0 정상,
-// 2 사용법·수확 오류 — schema·bridges와 같다).
+// 계약은 ../isthmus의 docs/GRAPH-EXCHANGE.md "HTTP 경계" 절과 docs/HTTP-WRAPPERS.md가 정본이다.
+// 수확·변환 규칙은 source.RouteFacts(서버)·source.ClientRouteFacts(클라이언트)에 있고, 여기서는 플래그
+// 검증·문서 쓰기·종료 코드만 다룬다(0 정상, 2 사용법·수확 오류 — schema·bridges와 같다).
 package cli
 
 import (
@@ -15,50 +15,81 @@ import (
 	"github.com/ictechgy/gartograph/source"
 )
 
-// cmdRoutes는 서버 라우트 선언 문서를 낸다. 클라이언트 호출(route-call)은 아직 수확하지 않는다.
+// routesFlags는 routes 명령의 플래그 값이다.
+type routesFlags struct {
+	role, generatedAt, out, wrappers, service string
+	harvest                                   source.Options
+}
+
+// cmdRoutes는 서버 라우트 선언(--role server) 또는 클라이언트 호출(--role client) 문서를 낸다.
 func cmdRoutes(args []string, stdout, stderr io.Writer) int {
+	var f routesFlags
 	fs := flag.NewFlagSet("routes", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	var opts source.RouteOptions
-	role := fs.String("role", "server", "document role: server (route declarations)")
-	fs.StringVar(&opts.Harvest.Dir, "dir", ".", "module root to scan")
-	fs.Var((*patterns)(&opts.Harvest.Patterns), "pattern", "package pattern (repeatable)")
-	fs.StringVar(&opts.Harvest.Tags, "tags", "", "build tags to pass to the loader (comma-separated)")
-	fs.StringVar(&opts.Service, "service", "", "service identity to record on the document")
-	generatedAt := fs.String("generated-at", "", "fixed generatedAt timestamp (RFC 3339, UTC)")
-	out := fs.String("out", "", "write the document to FILE instead of stdout")
+	fs.StringVar(&f.role, "role", "server", "document role: server (route declarations) or client (route calls)")
+	fs.StringVar(&f.harvest.Dir, "dir", ".", "module root to scan")
+	fs.Var((*patterns)(&f.harvest.Patterns), "pattern", "package pattern (repeatable)")
+	fs.StringVar(&f.harvest.Tags, "tags", "", "build tags to pass to the loader (comma-separated)")
+	fs.StringVar(&f.service, "service", "", "service identity to record on the document")
+	fs.StringVar(&f.wrappers, "wrappers", "", "isthmus http-wrappers v1 file (client role only)")
+	fs.StringVar(&f.generatedAt, "generated-at", "", "fixed generatedAt timestamp (RFC 3339, UTC)")
+	fs.StringVar(&f.out, "out", "", "write the document to FILE instead of stdout")
 	if fs.Parse(args) != nil {
 		return 2
 	}
-	if err := validateRoutesFlags(*role, *generatedAt, &opts); err != nil {
+	generated, err := validateRoutesFlags(f)
+	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 2
 	}
 	// usr 확인용 그래프는 impact와 같은 exclude로 만든다(schema와 같은 이유).
-	if err := applyConfigExclude(&opts.Harvest); err != nil {
+	if err := applyConfigExclude(&f.harvest); err != nil {
 		return fail(stderr, err)
 	}
-	doc, err := source.RouteFacts(opts, Version)
+	if f.role == "client" {
+		return clientRoutes(f, generated, stdout, stderr)
+	}
+	doc, err := source.RouteFacts(source.RouteOptions{Harvest: f.harvest, Service: f.service, GeneratedAt: generated}, Version)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	return writeDocument(doc, *out, stdout, stderr)
+	return writeDocument(doc, f.out, stdout, stderr)
 }
 
-// validateRoutesFlags는 역할과 시각을 검증하고 시각을 옵션에 싣는다.
-func validateRoutesFlags(role, generatedAt string, opts *source.RouteOptions) error {
-	if role != "server" {
-		return fmt.Errorf("--role %q is not supported; gartograph emits server route declarations only (--role server)", role)
+// clientRoutes는 route-call 문서를 낸다. 래퍼 선언 파일의 오류는 사용법 오류(2)다.
+func clientRoutes(f routesFlags, generated time.Time, stdout, stderr io.Writer) int {
+	opts := source.ClientRouteOptions{Harvest: f.harvest, Service: f.service, GeneratedAt: generated}
+	if f.wrappers != "" {
+		file, err := source.LoadWrapperFile(f.wrappers)
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 2
+		}
+		opts.Wrappers = file
 	}
-	if generatedAt == "" {
-		return nil
-	}
-	t, err := time.Parse(time.RFC3339Nano, generatedAt)
+	doc, err := source.ClientRouteFacts(opts, Version)
 	if err != nil {
-		return fmt.Errorf("--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z")
+		return fail(stderr, err)
 	}
-	opts.GeneratedAt = t
-	return nil
+	return writeDocument(doc, f.out, stdout, stderr)
+}
+
+// validateRoutesFlags는 역할·플래그 조합과 시각을 검증한다.
+func validateRoutesFlags(f routesFlags) (time.Time, error) {
+	if f.role != "server" && f.role != "client" {
+		return time.Time{}, fmt.Errorf("--role %q is not supported; use --role server (route declarations) or --role client (route calls)", f.role)
+	}
+	if f.wrappers != "" && f.role != "client" {
+		return time.Time{}, fmt.Errorf("--wrappers declares client HTTP wrappers; it needs --role client")
+	}
+	if f.generatedAt == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, f.generatedAt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z")
+	}
+	return t, nil
 }
 
 // writeDocument는 문서를 JSON으로 파일이나 표준 출력에 쓴다.
