@@ -46,6 +46,9 @@ type TraversalRequest struct {
 	Direction  string
 	MaxDepth   int
 	MaxReached int
+	// TypeEdges는 타입 간선 순회 모드다(TypeEdgesMembers·TypeEdgesAll, typeedges.go). 빈 값은 all(이전
+	// 동작)이다 — 라이브러리 호출의 기본을 바꾸지 않고, CLI가 기본값(members)을 정한다.
+	TypeEdges string
 	// evidenceMemory는 등급 비교 메모리 상한이다(0이면 기본값) — 근사 경로 테스트용.
 	evidenceMemory int
 }
@@ -70,6 +73,9 @@ type TraversalResult struct {
 	EvidenceClassified bool
 	// EvidenceApproximated는 메모리 상한 때문에 등급을 보수적으로(약하게) 근사했는지다.
 	EvidenceApproximated bool
+	// TypeEdgesNarrowed는 members 모드 때문에 닿지 않은 정점 수다(같은 root·깊이로 all이 더 닿는 정점,
+	// countNarrowed).
+	TypeEdgesNarrowed int
 }
 
 // Traverse는 모든 root를 한 번에 출발시키는 단계 동기 너비 우선 순회다(isthmus
@@ -81,12 +87,16 @@ type TraversalResult struct {
 //   - 정점이 자기 아닌 더 작은 인덱스 root를 65개 이상 가졌으면 더 큰 root는 그 정점에서
 //     전파를 멈춘다 — 출력(작은 인덱스 64개·depth·via)을 바꿀 수 없다.
 //
-// 간선은 impact와 같은 의존 간선 전부(contains 제외)다.
+// 간선은 impact와 같은 의존 간선 전부(contains 제외)다. TypeEdges가 members면 필드 선언에서 나온
+// 타입 구조 간선을 필드 정점의 간선으로 옮긴다(typeedges.go).
 func Traverse(d *graph.Document, req TraversalRequest) *TraversalResult {
-	adj := buildTraversalAdjacency(d, req.Direction, false)
+	adj, moved := buildTraversalAdjacency(d, req.Direction, false, req.TypeEdges)
 	prop := propagate(adj, req.Roots, req.MaxDepth)
 	rows := reachedRows(adj, prop.levels, req.Roots)
 	res := &TraversalResult{EvidenceClassified: d.DispatchEvidence}
+	if len(moved) > 0 {
+		res.TypeEdgesNarrowed = countNarrowed(d, req.Direction, req.Roots, req.MaxDepth, rows)
+	}
 	if prop.depthCut {
 		res.TruncationReasons = append(res.TruncationReasons, "depth")
 	}
@@ -125,26 +135,26 @@ type traversalAdjacency struct {
 }
 
 // buildTraversalAdjacency는 의존 간선(contains 제외)을 순회 방향 쌍으로 모은다.
-// directOnly면 확정 관계가 하나라도 있는 쌍만 남긴다(direct 등급 그래프).
-func buildTraversalAdjacency(d *graph.Document, direction string, directOnly bool) *traversalAdjacency {
+// directOnly면 확정 관계가 하나라도 있는 쌍만 남긴다(direct 등급 그래프). typeEdges가 members면
+// 필드 구조 간선을 옮긴 재료 간선을 쓰고, 옮긴 (타입, 필드 타입) 쌍을 함께 돌려준다.
+func buildTraversalAdjacency(d *graph.Document, direction string, directOnly bool,
+	typeEdges string) (*traversalAdjacency, []pairKey) {
 	adj := &traversalAdjacency{
 		next: map[string][]string{}, prev: map[string][]string{}, kinds: map[pairKey][]graph.EdgeKind{},
 	}
+	edges, moved := traversalEdges(d, typeEdges)
 	direct := map[pairKey]bool{}
 	var order []pairKey
-	for _, e := range d.Edges {
-		if e.Kind == graph.EdgeContains {
-			continue
-		}
-		key := pairKey{e.From, e.To}
+	for _, e := range edges {
+		key := pairKey{e.from, e.to}
 		if direction == DirectionDependents {
-			key = pairKey{e.To, e.From}
+			key = pairKey{e.to, e.from}
 		}
 		if _, seen := adj.kinds[key]; !seen {
 			order = append(order, key)
 		}
-		adj.kinds[key] = mergeKinds(adj.kinds[key], []graph.EdgeKind{e.Kind})
-		direct[key] = direct[key] || !e.Candidate
+		adj.kinds[key] = mergeKinds(adj.kinds[key], []graph.EdgeKind{e.kind})
+		direct[key] = direct[key] || !e.candidate
 	}
 	for _, key := range order {
 		if !direct[key] {
@@ -159,7 +169,7 @@ func buildTraversalAdjacency(d *graph.Document, direction string, directOnly boo
 	for _, preds := range adj.prev {
 		sort.Slice(preds, func(i, j int) bool { return utf16Less(preds[i], preds[j]) })
 	}
-	return adj
+	return adj, moved
 }
 
 // propagation은 전파 결과다.
@@ -343,7 +353,8 @@ func evidenceTiers(d *graph.Document, req TraversalRequest, full *traversalAdjac
 		return approximateEvidence(full, levels), true
 	}
 	fullBits := reachBits(full, compared, req.MaxDepth)
-	directBits := reachBits(buildTraversalAdjacency(d, req.Direction, true), compared, req.MaxDepth)
+	directAdj, _ := buildTraversalAdjacency(d, req.Direction, true, req.TypeEdges)
+	directBits := reachBits(directAdj, compared, req.MaxDepth)
 	return func(node string) string {
 		if slices.Equal(fullBits[node], directBits[node]) {
 			return EvidenceDirect

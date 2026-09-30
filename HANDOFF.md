@@ -2,7 +2,43 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
-## 진행 중 — schema usr와 language-traversal (2026-09-30, feature/schema-usr)
+## 진행 중 — Go 서버 route-decl과 --type-edges members (2026-09-30, feature/server-routes)
+
+API 영향 추적 Phase 7 후속. isthmus 76b6141(#131)이 go http route-decl을 받게 되어 route 선택 trace가
+Go 핸들러에서 시작할 수 있다.
+- `routes --role server`(source/routes*.go): ServeMux(1.22+·옛 패턴)·chi v5·gin v1·echo v4. 라우터 값
+  흐름(생성·하위 라우터 노드, 변수·필드·파라미터·결과 칸 고정점)으로 Route·Mount·Group·With·StripPrefix
+  접두사를 합성. 규칙·근거는 README "server routes" 절(소스 확인 버전 Go 1.27.1·chi 5.2.5·gin 1.10.1·
+  echo 4.16.0). dispatch는 넷 모두 specificity(ServeMux는 등록 충돌 거부로 트리 순서 = 최구체).
+  추적 못 한 라우터 → base + `unresolved-route-prefix:`(templateSuffixes 스코프). 템플릿으로 못 쓰는 경로
+  (echo 자식 없는 끝 파라미터, 세그먼트 안 catch-all)는 스코프 있는 `route-coverage:`. 내기 전에 계약
+  자기 검증(`routeDocumentProblem`).
+- 적합성 벡터: conformance/(http-template·http-dispatch, isthmus 76b6141) + conformance.lock, 생산자
+  사례 51건 통과. 벤더링 갱신 시 lock 커밋·sha를 같이 바꾼다(TestConformanceLock).
+- 오라클(experiments/routes-oracle, 별도 모듈, `run.sh`): 실제 chi·gin·echo(proxy.golang.org)와
+  ServeMux 등록 색인(reflect)으로 표본 요청 대조 — 네 라우터 모두 정밀도·재현율 100%. 첫 실행이 echo
+  leaf 파라미터의 trailingSlash(strict→optional)와 불투명 chi Mount 펼침 누락을 잡았다.
+- `--type-edges members|all`(기본 members, analysis/typeedges.go): 필드 선언의 타입 구조 간선을 필드
+  정점으로 옮긴다. 어느 필드인지는 타입 정점의 필드 목록(Vertex.Fields 정규 타입)으로 정한다 — 위치 기반
+  귀속은 `db *sql.DB` 다음 줄 필드까지 db에 묶어 e2e에서 과대 근사가 되살아났다. 처음 설계("리시버로만 닿은 타입" 그림자 상태)는 한 정점이 두 상태를 가져 문서의
+  via depth·roots 포함 규칙(isthmus 검증)을 깼다 — 평범한 그래프 변환으로 바꿨다. 손실: 필드 이름 없는
+  struct 값 전체 리플렉션 경로(문서 한계 `type-edges-members: N`, all로 복구).
+- e2e(scratch, isthmus 76b6141 + schemagraph 703a21f 오프라인 빌드, chi 백엔드 + sqlite users·orders·
+  user_totals): route 선택 trace members — `/api/health` 관계 0, `/api/users/{}` → users(+컬럼) → DB
+  의존자 orders·user_totals, `/api/users/{}/orders` → orders. all은 `/api/health` → orders 컬럼(공유
+  Handler 경유 과대 근사). relation 선택: members orders → `/api/users/{}/orders`만, all은 세 route 전부.
+  `check`: 호출 2건 match, 없는 경로·동사 불일치 error, 끝 슬래시 warning.
+
+- GLM 리뷰 3회(routes diff, type-edges diff 2회) — 재현한 것은 고치고(dynamic 앵커, 주소를 꺼낸 gin 설정,
+  공백 계수, 필드 귀속, 좁힌 수 계산) 계약 밖 동사 공백·모듈 단위 미들웨어 판정·impact 텍스트 형식은 반박.
+  자기 검토로 --pattern이 import 패키지를 보지 않던 것, gin·echo 동사 대소문자, 순환 사슬 누락,
+  verify-cli-contract가 인자 바이너리 디렉터리를 지우던 위험을 고쳤다.
+
+남은 것: go route-call(클라이언트) — isthmus가 url-compose 벡터 전까지 받지 않음. gorilla/mux 등은
+registration-order 생산자 필요(지금은 route-coverage 공백). 경로 중간 파라미터의 빈 값 변형(`//`)은 의도적
+생략(README). 서버가 여럿인 모듈은 `--pattern`·`--service`로 문서를 나눠야 한다.
+
+## 이전 완료 — schema usr와 language-traversal (2026-09-30, PR #34 머지)
 
 API 영향 추적 Phase 7c. isthmus trace가 Go 백엔드의 핸들러 도달과 relation-use를 잇도록:
 - `schema` 사실에 `symbol.usr`(감싸는 심볼 정점 ID, 수확의 간선 출발점과 같은 귀속). struct
@@ -17,10 +53,7 @@ API 영향 추적 Phase 7c. isthmus trace가 Go 백엔드의 핸들러 도달과
   `non-http-entry`. isthmus가 go 문서의 http target을 거부하므로 route 선택은 isthmus를
   scratch에서 고쳐 손으로 만든 route-decl로만 확인했다(핸들러 → 테이블 도달 확인).
 
-남은 것: (1) Go route-decl 생산자와 isthmus의 go/rust http 허용. (2) reach가 impact와 같은
-간선을 따라 메서드 → 리시버 타입 → 필드 타입 구조 간선까지 펼친다 — 같은 Handler struct의
-모든 핸들러가 다른 저장소의 행 타입(태그 컬럼)에 닿는 과대 근사(/api/health → users 컬럼).
-타입 정점에서 구조 간선을 펼치지 않는 순회 모드가 후보다.
+남은 것이었던 (1) Go route-decl 생산자 (2) 구조 간선 과대 근사는 위 feature/server-routes에서 다뤘다.
 
 ## 이어받기 요약 (2026-09-25 세션 끝)
 

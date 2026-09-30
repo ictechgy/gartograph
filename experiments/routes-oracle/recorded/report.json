@@ -1,0 +1,650 @@
+[
+  {
+    "framework": "net/http",
+    "staticRootFacts": 19,
+    "verifiedFacts": 19,
+    "dynamicFacts": 0,
+    "baseAnchorFacts": 0,
+    "tableEntries": 16,
+    "coveredEntries": 16,
+    "precision": 1,
+    "recall": 1,
+    "table": [
+      {
+        "method": "ANY",
+        "pattern": "/",
+        "sample": "/a/b",
+        "identity": "example.com/routesoracle/fixtures/muxapp.fallback"
+      },
+      {
+        "method": "GET",
+        "pattern": "/admin GET /users",
+        "sample": "/admin/users",
+        "identity": "example.com/routesoracle/fixtures/muxapp.adminUsers"
+      },
+      {
+        "method": "GET",
+        "pattern": "/admin GET /{$}",
+        "sample": "/admin/",
+        "identity": "example.com/routesoracle/fixtures/muxapp.adminHome"
+      },
+      {
+        "method": "ANY",
+        "pattern": "/files/{path...}",
+        "sample": "/files/a/b",
+        "identity": "example.com/routesoracle/fixtures/muxapp.(Server).files"
+      },
+      {
+        "method": "ANY",
+        "pattern": "/legacy/ping",
+        "sample": "/legacy/ping",
+        "identity": "example.com/routesoracle/fixtures/muxapp.ping"
+      },
+      {
+        "method": "ANY",
+        "pattern": "/metrics",
+        "sample": "/metrics",
+        "identity": "example.com/routesoracle/fixtures/muxapp.makeMetrics"
+      },
+      {
+        "method": "ANY",
+        "pattern": "/wrapped",
+        "sample": "/wrapped",
+        "identity": "example.com/routesoracle/fixtures/muxapp.(Server).wrapped"
+      },
+      {
+        "method": "DELETE",
+        "pattern": "DELETE /items/{id}",
+        "sample": "/items/v1x",
+        "identity": "example.com/routesoracle/fixtures/muxapp.NewHandler"
+      },
+      {
+        "method": "GET",
+        "pattern": "GET /items/{id}",
+        "sample": "/items/v1x",
+        "identity": "example.com/routesoracle/fixtures/muxapp.(Server).getItem"
+      },
+      {
+        "method": "GET",
+        "pattern": "GET /items",
+        "sample": "/items",
+        "identity": "example.com/routesoracle/fixtures/muxapp.(Server).listItems"
+      },
+      {
+        "method": "GET",
+        "pattern": "GET /reports/{year}/{month}",
+        "sample": "/reports/v1x/v1x",
+        "identity": "example.com/routesoracle/fixtures/muxapp.(Server).report"
+      },
+      {
+        "method": "GET",
+        "pattern": "GET /static/",
+        "sample": "/static/a/b",
+        "identity": "example.com/routesoracle/fixtures/muxapp.(Server).static"
+      },
+      {
+        "method": "GET",
+        "pattern": "GET /{$}",
+        "sample": "/",
+        "identity": "example.com/routesoracle/fixtures/muxapp.home"
+      },
+      {
+        "method": "POST",
+        "pattern": "POST /items",
+        "sample": "/items",
+        "identity": "example.com/routesoracle/fixtures/muxapp.(Server).createItem"
+      },
+      {
+        "method": "PUT",
+        "pattern": "PUT /obj/{id}",
+        "sample": "/obj/v1x",
+        "identity": "example.com/routesoracle/fixtures/muxapp.(objHandler).ServeHTTP"
+      },
+      {
+        "method": "ANY",
+        "pattern": "api.example.com/v2/status",
+        "sample": "/v2/status",
+        "host": "api.example.com",
+        "identity": "example.com/routesoracle/fixtures/muxapp.(Server).status"
+      }
+    ]
+  },
+  {
+    "framework": "chi",
+    "staticRootFacts": 28,
+    "verifiedFacts": 28,
+    "dynamicFacts": 0,
+    "baseAnchorFacts": 0,
+    "tableEntries": 34,
+    "coveredEntries": 34,
+    "precision": 1,
+    "recall": 1,
+    "table": [
+      {
+        "method": "GET",
+        "pattern": "/",
+        "sample": "/",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).home"
+      },
+      {
+        "method": "GET",
+        "pattern": "/admin/",
+        "sample": "/admin/",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).adminHome"
+      },
+      {
+        "method": "GET",
+        "pattern": "/admin/stats",
+        "sample": "/admin/stats",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).adminStats"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/files/{name}.json",
+        "sample": "/api/files/v1x.json",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).fileJSON"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/orders/{orderID}/",
+        "sample": "/api/orders/v1x/",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).getOrder"
+      },
+      {
+        "method": "PUT",
+        "pattern": "/api/orders/{orderID}/items/{itemID}",
+        "sample": "/api/orders/v1x/items/v1x",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).putOrderItem"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/search",
+        "sample": "/api/search",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).search"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/users/{id:[0-9]+}",
+        "sample": "/api/users/123",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).getUser"
+      },
+      {
+        "method": "DELETE",
+        "pattern": "/api/users/{id}",
+        "sample": "/api/users/v1x",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).deleteUser"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/users/{slug}",
+        "sample": "/api/users/v1x",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).getUserBySlug"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/users",
+        "sample": "/api/users",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).listUsers"
+      },
+      {
+        "method": "POST",
+        "pattern": "/api/users",
+        "sample": "/api/users",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).createUser"
+      },
+      {
+        "method": "DELETE",
+        "pattern": "/assets/*",
+        "sample": "/assets/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).assets"
+      },
+      {
+        "method": "GET",
+        "pattern": "/assets/*",
+        "sample": "/assets/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).assets"
+      },
+      {
+        "method": "HEAD",
+        "pattern": "/assets/*",
+        "sample": "/assets/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).assets"
+      },
+      {
+        "method": "OPTIONS",
+        "pattern": "/assets/*",
+        "sample": "/assets/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).assets"
+      },
+      {
+        "method": "PATCH",
+        "pattern": "/assets/*",
+        "sample": "/assets/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).assets"
+      },
+      {
+        "method": "POST",
+        "pattern": "/assets/*",
+        "sample": "/assets/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).assets"
+      },
+      {
+        "method": "PUT",
+        "pattern": "/assets/*",
+        "sample": "/assets/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).assets"
+      },
+      {
+        "method": "TRACE",
+        "pattern": "/assets/*",
+        "sample": "/assets/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).assets"
+      },
+      {
+        "method": "DELETE",
+        "pattern": "/debug/*",
+        "sample": "/debug/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).debug"
+      },
+      {
+        "method": "GET",
+        "pattern": "/debug/*",
+        "sample": "/debug/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).debug"
+      },
+      {
+        "method": "HEAD",
+        "pattern": "/debug/*",
+        "sample": "/debug/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).debug"
+      },
+      {
+        "method": "OPTIONS",
+        "pattern": "/debug/*",
+        "sample": "/debug/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).debug"
+      },
+      {
+        "method": "PATCH",
+        "pattern": "/debug/*",
+        "sample": "/debug/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).debug"
+      },
+      {
+        "method": "POST",
+        "pattern": "/debug/*",
+        "sample": "/debug/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).debug"
+      },
+      {
+        "method": "PUT",
+        "pattern": "/debug/*",
+        "sample": "/debug/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).debug"
+      },
+      {
+        "method": "TRACE",
+        "pattern": "/debug/*",
+        "sample": "/debug/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).debug"
+      },
+      {
+        "method": "GET",
+        "pattern": "/docs*",
+        "sample": "/docs/a/b",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).docs"
+      },
+      {
+        "method": "GET",
+        "pattern": "/export/{id:[0-9]+}.csv",
+        "sample": "/export/123.csv",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).export"
+      },
+      {
+        "method": "GET",
+        "pattern": "/health",
+        "sample": "/health",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).health"
+      },
+      {
+        "method": "POST",
+        "pattern": "/hooks",
+        "sample": "/hooks",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).hook"
+      },
+      {
+        "method": "GET",
+        "pattern": "/reports/{year}",
+        "sample": "/reports/v1x",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).report"
+      },
+      {
+        "method": "PATCH",
+        "pattern": "/settings",
+        "sample": "/settings",
+        "identity": "example.com/routesoracle/fixtures/chiapp.(Handler).patchSettings"
+      }
+    ],
+    "excludedEntries": [
+      "CONNECT /assets/*",
+      "CONNECT /debug/*"
+    ]
+  },
+  {
+    "framework": "gin",
+    "staticRootFacts": 20,
+    "verifiedFacts": 20,
+    "dynamicFacts": 0,
+    "baseAnchorFacts": 0,
+    "tableEntries": 24,
+    "coveredEntries": 24,
+    "precision": 1,
+    "recall": 1,
+    "table": [
+      {
+        "method": "GET",
+        "pattern": "/assets/*filepath",
+        "sample": "/assets/a/b",
+        "identity": ""
+      },
+      {
+        "method": "HEAD",
+        "pattern": "/assets/*filepath",
+        "sample": "/assets/a/b",
+        "identity": ""
+      },
+      {
+        "method": "GET",
+        "pattern": "/closure",
+        "sample": "/closure",
+        "identity": "example.com/routesoracle/fixtures/ginapp.NewRouter"
+      },
+      {
+        "method": "GET",
+        "pattern": "/favicon.ico",
+        "sample": "/favicon.ico",
+        "identity": ""
+      },
+      {
+        "method": "HEAD",
+        "pattern": "/favicon.ico",
+        "sample": "/favicon.ico",
+        "identity": ""
+      },
+      {
+        "method": "PATCH",
+        "pattern": "/items/:id",
+        "sample": "/items/v1x",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).patchItem"
+      },
+      {
+        "method": "GET",
+        "pattern": "/match",
+        "sample": "/match",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).match"
+      },
+      {
+        "method": "POST",
+        "pattern": "/match",
+        "sample": "/match",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).match"
+      },
+      {
+        "method": "GET",
+        "pattern": "/ping",
+        "sample": "/ping",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).ping"
+      },
+      {
+        "method": "DELETE",
+        "pattern": "/v1/admin/proxy",
+        "sample": "/v1/admin/proxy",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).proxy"
+      },
+      {
+        "method": "GET",
+        "pattern": "/v1/admin/proxy",
+        "sample": "/v1/admin/proxy",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).proxy"
+      },
+      {
+        "method": "HEAD",
+        "pattern": "/v1/admin/proxy",
+        "sample": "/v1/admin/proxy",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).proxy"
+      },
+      {
+        "method": "OPTIONS",
+        "pattern": "/v1/admin/proxy",
+        "sample": "/v1/admin/proxy",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).proxy"
+      },
+      {
+        "method": "PATCH",
+        "pattern": "/v1/admin/proxy",
+        "sample": "/v1/admin/proxy",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).proxy"
+      },
+      {
+        "method": "POST",
+        "pattern": "/v1/admin/proxy",
+        "sample": "/v1/admin/proxy",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).proxy"
+      },
+      {
+        "method": "PUT",
+        "pattern": "/v1/admin/proxy",
+        "sample": "/v1/admin/proxy",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).proxy"
+      },
+      {
+        "method": "TRACE",
+        "pattern": "/v1/admin/proxy",
+        "sample": "/v1/admin/proxy",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).proxy"
+      },
+      {
+        "method": "PUT",
+        "pattern": "/v1/admin/settings/",
+        "sample": "/v1/admin/settings/",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).putSettings"
+      },
+      {
+        "method": "GET",
+        "pattern": "/v1/avatar_:name",
+        "sample": "/v1/avatar_v1x",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).avatar"
+      },
+      {
+        "method": "GET",
+        "pattern": "/v1/files/*filepath",
+        "sample": "/v1/files/a/b",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).files"
+      },
+      {
+        "method": "GET",
+        "pattern": "/v1/reports/:year",
+        "sample": "/v1/reports/v1x",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).report"
+      },
+      {
+        "method": "GET",
+        "pattern": "/v1/users/:id/posts",
+        "sample": "/v1/users/v1x/posts",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).userPosts"
+      },
+      {
+        "method": "GET",
+        "pattern": "/v1/users/:id",
+        "sample": "/v1/users/v1x",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).getUser"
+      },
+      {
+        "method": "POST",
+        "pattern": "/v1/users",
+        "sample": "/v1/users",
+        "identity": "example.com/routesoracle/fixtures/ginapp.(Handler).createUser"
+      }
+    ],
+    "excludedEntries": [
+      "CONNECT /v1/admin/proxy"
+    ]
+  },
+  {
+    "framework": "echo",
+    "staticRootFacts": 19,
+    "verifiedFacts": 19,
+    "dynamicFacts": 0,
+    "baseAnchorFacts": 0,
+    "tableEntries": 23,
+    "coveredEntries": 23,
+    "precision": 1,
+    "recall": 1,
+    "table": [
+      {
+        "method": "GET",
+        "pattern": "/",
+        "sample": "/",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).home"
+      },
+      {
+        "method": "DELETE",
+        "pattern": "/api/any",
+        "sample": "/api/any",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).anyRoute"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/any",
+        "sample": "/api/any",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).anyRoute"
+      },
+      {
+        "method": "HEAD",
+        "pattern": "/api/any",
+        "sample": "/api/any",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).anyRoute"
+      },
+      {
+        "method": "OPTIONS",
+        "pattern": "/api/any",
+        "sample": "/api/any",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).anyRoute"
+      },
+      {
+        "method": "PATCH",
+        "pattern": "/api/any",
+        "sample": "/api/any",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).anyRoute"
+      },
+      {
+        "method": "POST",
+        "pattern": "/api/any",
+        "sample": "/api/any",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).anyRoute"
+      },
+      {
+        "method": "PUT",
+        "pattern": "/api/any",
+        "sample": "/api/any",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).anyRoute"
+      },
+      {
+        "method": "TRACE",
+        "pattern": "/api/any",
+        "sample": "/api/any",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).anyRoute"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/files/*",
+        "sample": "/api/files/a/b",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).files"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/items/:id",
+        "sample": "/api/items/v1x",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).getItem"
+      },
+      {
+        "method": "POST",
+        "pattern": "/api/items",
+        "sample": "/api/items",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).createItem"
+      },
+      {
+        "method": "GET",
+        "pattern": "/api/reports/:year",
+        "sample": "/api/reports/v1x",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).report"
+      },
+      {
+        "method": "GET",
+        "pattern": "/dash",
+        "sample": "/dash",
+        "host": "admin.example.com",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).dash"
+      },
+      {
+        "method": "GET",
+        "pattern": "/file-:name",
+        "sample": "/file-v1x",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).filePrefix"
+      },
+      {
+        "method": "DELETE",
+        "pattern": "/match",
+        "sample": "/match",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).match"
+      },
+      {
+        "method": "GET",
+        "pattern": "/match",
+        "sample": "/match",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).match"
+      },
+      {
+        "method": "GET",
+        "pattern": "/orders/:id",
+        "sample": "/orders/v1x",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).getOrder"
+      },
+      {
+        "method": "PUT",
+        "pattern": "/put",
+        "sample": "/put",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).put"
+      },
+      {
+        "method": "GET",
+        "pattern": "/robots.txt",
+        "sample": "/robots.txt",
+        "identity": ""
+      },
+      {
+        "method": "GET",
+        "pattern": "/static*",
+        "sample": "/static/a/b",
+        "identity": ""
+      },
+      {
+        "method": "GET",
+        "pattern": "/users/:id/posts",
+        "sample": "/users/v1x/posts",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).userPosts"
+      },
+      {
+        "method": "GET",
+        "pattern": "/users/:id",
+        "sample": "/users/v1x",
+        "identity": "example.com/routesoracle/fixtures/echoapp.(Handler).getUser"
+      }
+    ],
+    "excludedEntries": [
+      "CONNECT /api/any",
+      "PROPFIND /api/any",
+      "REPORT /api/any"
+    ]
+  }
+]

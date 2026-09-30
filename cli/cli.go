@@ -62,6 +62,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdBridges(args[1:], stdout, stderr)
 	case "schema":
 		return cmdSchema(args[1:], stdout, stderr)
+	case "routes":
+		return cmdRoutes(args[1:], stdout, stderr)
 	case "unused-deps":
 		return cmdUnusedDeps(args[1:], stdout, stderr)
 	case "mcp":
@@ -97,8 +99,9 @@ Usage:
   gartograph impact <id> [--depth N] [--max N] [--level L] [flags]
   gartograph impact --since <git-rev>|--files F... [--depth N] [flags]
   gartograph impact --format language-traversal <id>... [--roots-from FILE|-] [--depth N] [--max N]
-                    [--revision REV] [--generated-at TS] [flags]   isthmus dependents traversal
-  gartograph reach  <id>... [--roots-from FILE|-] [--depth N] [--max N]
+                    [--type-edges members|all] [--revision REV] [--generated-at TS] [flags]
+                    isthmus dependents traversal
+  gartograph reach  <id>... [--roots-from FILE|-] [--depth N] [--max N] [--type-edges members|all]
                     [--revision REV] [--generated-at TS] [flags]   isthmus dependencies traversal
   gartograph path   <from-id> <to-id> [--level L] [flags]
   gartograph shared <id> <id> [more ids...] [--level L] [flags]
@@ -108,6 +111,8 @@ Usage:
   gartograph init   [--dir PATH]  scaffold .gartograph.yml from observed imports
   gartograph bridges [--dir PATH] [--out FILE]  isthmus bridge-facts (platform "go")
   gartograph schema  [--dir PATH] [--out FILE]  isthmus persistence relation-uses (platform "go")
+  gartograph routes  [--role server] [--dir PATH] [--pattern P]... [--service NAME]
+                     [--generated-at TS] [--out FILE]  isthmus http route declarations (platform "go")
   gartograph unused-deps [--strict] [--format text|json] [flags]
   gartograph mcp    serve the graph over MCP stdio [flags]
   gartograph version
@@ -940,6 +945,10 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	}
 	switch *format {
 	case "json":
+		if tf.typeEdgesSet {
+			fmt.Fprintln(stderr, "error: --type-edges applies only to --format language-traversal")
+			return 2
+		}
 	case formatTraversal:
 		return impactTraversal(fs, positional, opts, *graphPath, *depth, *maxN, tf, stdout, stderr)
 	default:

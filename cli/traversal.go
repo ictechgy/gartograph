@@ -64,6 +64,9 @@ type traversalFlags struct {
 	revision    string
 	generatedAt string
 	revisionSet bool
+	// typeEdges는 타입 간선 순회 모드다(members 기본, all은 이전 동작).
+	typeEdges    string
+	typeEdgesSet bool
 }
 
 // registerTraversalFlags는 순회 문서 전용 플래그를 등록한다.
@@ -77,6 +80,13 @@ func registerTraversalFlags(fs *flag.FlagSet) *traversalFlags {
 			return nil
 		})
 	fs.StringVar(&tf.generatedAt, "generated-at", "", "fixed generatedAt timestamp (RFC 3339, UTC)")
+	tf.typeEdges = analysis.TypeEdgesMembers
+	fs.Func("type-edges", "members (default): follow struct field types only from the fields that name them; "+
+		"all: also follow them from the struct type itself (the behavior before this flag)",
+		func(v string) error {
+			tf.typeEdges, tf.typeEdgesSet = v, true
+			return nil
+		})
 	return tf
 }
 
@@ -175,8 +185,11 @@ func traversalRequest(in traversalRun) (analysis.TraversalRequest, error) {
 		return analysis.TraversalRequest{}, &usageError{fmt.Sprintf(
 			"--revision must be 1-%d bytes of UTF-8 without control characters", maxRevisionLength)}
 	}
+	if in.flags.typeEdges != analysis.TypeEdgesMembers && in.flags.typeEdges != analysis.TypeEdgesAll {
+		return analysis.TraversalRequest{}, &usageError{"--type-edges takes members or all"}
+	}
 	return analysis.TraversalRequest{Roots: roots, Direction: in.direction,
-		MaxDepth: depth, MaxReached: maxReached}, nil
+		MaxDepth: depth, MaxReached: maxReached, TypeEdges: in.flags.typeEdges}, nil
 }
 
 // boundedFlag는 0(기본=상한) 또는 1~limit 정수를 받는다.
@@ -534,6 +547,12 @@ func traversalLimitations(doc *graph.Document, res *analysis.TraversalResult, mi
 	if res.EvidenceApproximated {
 		out = append(out, "evidence-approximated: too many roots for exact per-root evidence; "+
 			"symbols downstream of any reached candidate edge are reported as candidate")
+	}
+	if res.TypeEdgesNarrowed > 0 {
+		out = append(out, fmt.Sprintf("type-edges-members: %d symbol(s) were not reached because struct field types "+
+			"are followed only from the fields that name them (--type-edges members); code that passes a whole struct "+
+			"value to reflection (encoding/json, ORM) may depend on them — rerun with --type-edges all to include them",
+			res.TypeEdgesNarrowed))
 	}
 	return out
 }
