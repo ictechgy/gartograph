@@ -90,6 +90,24 @@ check 64 "impact traversal miss" impact --format language-traversal example.com/
 check 64 "impact traversal file" impact --format language-traversal --files main.go
 check 2  "impact bad format"     impact --format xml example.com/contract/lib
 
+check 64 "impact traversal flag" impact --format language-traversal --depth=abc example.com/contract/lib.Run
+
+# 사용법 오류는 표준 출력을 비운다 — root-not-found 문서와 구별되는 신호다.
+out="$("$BIN" reach $'bad\tid' --dir "$FIX" 2>/dev/null || true)"
+if [ -n "$out" ]; then
+	echo "FAIL reach usage error must leave stdout empty" >&2
+	fails=$((fails+1))
+fi
+# --roots-from(JSON 배열)은 위치 인자 다음 순서로 root가 된다.
+ROOTS="$(mktemp)"
+printf '["example.com/contract.main","example.com/contract/lib.Run"]' > "$ROOTS"
+out="$("$BIN" reach example.com/contract/lib.Run --roots-from "$ROOTS" --dir "$FIX" 2>/dev/null || true)"
+rm -f "$ROOTS"
+case "$out" in
+*'"id": "example.com/contract/lib.Run"'*'"id": "example.com/contract.main"'*) ;;
+*) echo "FAIL reach --roots-from order" >&2; fails=$((fails+1)) ;;
+esac
+
 # root-not-found는 문서를 표준 출력에 쓴 채 64다 — 빈 출력이면 계약 위반이다.
 out="$("$BIN" reach example.com/missing --dir "$FIX" 2>/dev/null || true)"
 case "$out" in

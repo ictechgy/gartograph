@@ -931,6 +931,11 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	tf := registerTraversalFlags(fs)
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
+		// 순회 형식을 요청한 호출의 플래그 오류는 reach와 같은 64다 — 같은 잘못된
+		// 호출이 명령에 따라 2와 64로 갈리면 소비자가 원인을 다르게 읽는다.
+		if requestsTraversalFormat(args) {
+			return exitUsage
+		}
 		return 2
 	}
 	switch *format {

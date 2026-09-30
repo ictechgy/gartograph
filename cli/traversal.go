@@ -2,8 +2,9 @@
 //
 // 계약은 ../isthmus의 docs/LANGUAGE-TRAVERSAL.md가 정본이다. 순회의 의미론은
 // analysis.Traverse에 있고, 여기서는 입력 검증·문서 조립·종료 코드만 다룬다.
-// 종료 코드: 0 정상, 2 수확·입력 파일 오류, 64 사용법 오류(표준 출력 비움) 또는
+// 종료 코드: 0 정상, 2 수확·그래프 문서(--graph) 오류, 64 사용법 오류(표준 출력 비움) 또는
 // root-not-found(문서를 쓰고 64) — 계열(tsograph·pythograph·cartograph)과 같은 규칙이다.
+// --roots-from을 읽지 못하거나 형식이 틀린 경우도 root 인자의 오류라 64다(pythograph와 같다).
 package cli
 
 import (
@@ -243,11 +244,15 @@ func readRootsFrom(path string) ([]string, error) {
 	return parseRootsJSON(data)
 }
 
-// parseRootsJSON은 roots-from 내용을 해석한다.
+// parseRootsJSON은 roots-from 내용을 해석한다. JSON null은 배열이 아니다 — 받으면 빈
+// 입력 파일이 "root 없음"으로 가려진다.
 func parseRootsJSON(data []byte) ([]string, error) {
 	bad := &usageError{"--roots-from must be a JSON array of strings or a bridge-facts document"}
 	var list []string
 	if err := json.Unmarshal(data, &list); err == nil {
+		if list == nil {
+			return nil, bad
+		}
 		return list, nil
 	}
 	var doc struct {
@@ -280,6 +285,23 @@ func parseGeneratedAt(value string) (string, error) {
 		return "", &usageError{"--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z"}
 	}
 	return t.UTC().Format("2006-01-02T15:04:05.000Z"), nil
+}
+
+// requestsTraversalFormat은 인자에 --format language-traversal(또는 = 형식)이 있는지 본다 —
+// 플래그 파싱이 실패해 값을 읽지 못했을 때도 종료 코드를 정하기 위해서다.
+func requestsTraversalFormat(args []string) bool {
+	for i, a := range args {
+		if a == "--" {
+			return false
+		}
+		if a == "--format="+formatTraversal || a == "-format="+formatTraversal {
+			return true
+		}
+		if (a == "--format" || a == "-format") && i+1 < len(args) && args[i+1] == formatTraversal {
+			return true
+		}
+	}
+	return false
 }
 
 // traversalDocument는 isthmus language-traversal v1 문서다. 키 순서는 계약 문서의

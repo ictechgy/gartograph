@@ -246,6 +246,9 @@ func TestTraversalUsageErrors(t *testing.T) {
 		"impact package 레벨":   {"impact", "--format", "language-traversal", "--dir", dir, "--level", "package", fx},
 		"impact root 없음":      {"impact", "--format", "language-traversal", "--dir", dir, "--roots-from", bad},
 		"roots-from 빈 bridge": {"reach", "--dir", dir, "--roots-from", writeTemp(t, `{"format":"bridge-facts","facts":[]}`)},
+		"roots-from null":     {"reach", "--dir", dir, "--roots-from", writeTemp(t, "null"), fx + ".main"},
+		"impact 순회 형식 플래그 오류": {"impact", "--format", "language-traversal", "--dir", dir, "--depth=abc", fx + ".main"},
+		"impact 순회 형식 = 표기":   {"impact", "--format=language-traversal", "--dir", dir, "--bogus", fx + ".main"},
 	}
 	for name, args := range cases {
 		code, out, _ := run(t, args...)
