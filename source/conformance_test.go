@@ -1,8 +1,10 @@
 // isthmus 공유 적합성 벡터(벤더링 사본)로 생산자 규칙을 검증한다.
 //
 //   - 벡터 파일은 conformance/SHA256SUMS·conformance.lock(isthmus 커밋·파일별 sha256)과 같아야 한다.
-//   - 생산자 대상 사례(template.grammar·template.normalize·dispatch.validate)는 전부 통과해야 한다.
-//   - 해당 없는 사례는 이유별로 분류하고, 모르는 ruleId가 생기면 실패해 벤더링 갱신 때 판단하게 한다.
+//   - 생산자 대상 사례(template.grammar·template.normalize·dispatch.validate, url-compose의 compose.*·
+//     wrapper.*)는 appliesTo가 "producer"나 "producer:gartograph"면 전부 통과해야 한다.
+//   - 해당 없는 사례는 이유별로 분류하고(다른 생산자 전용 사례 포함), 모르는 ruleId가 생기면 실패해
+//     벤더링 갱신 때 판단하게 한다.
 package source
 
 import (
@@ -19,16 +21,44 @@ import (
 
 // conformanceCase는 벡터 사례 하나다.
 type conformanceCase struct {
-	ID        string          `json:"id"`
-	RuleID    string          `json:"ruleId"`
-	AppliesTo []string        `json:"appliesTo"`
-	Input     json.RawMessage `json:"input"`
-	Expect    json.RawMessage `json:"expect"`
+	ID               string          `json:"id"`
+	RuleID           string          `json:"ruleId"`
+	AppliesTo        []string        `json:"appliesTo"`
+	Input            json.RawMessage `json:"input"`
+	Expect           json.RawMessage `json:"expect"`
+	ExpectDynamic    bool            `json:"expectDynamic"`
+	ExpectLimitation string          `json:"expectLimitation"`
 }
 
 // producerRules는 이 생산자가 실행하는 ruleId다.
 var producerRules = map[string]bool{
 	"template.grammar": true, "template.normalize": true, "dispatch.validate": true,
+	"compose.interpolation": true, "compose.query-tail": true, "compose.suffix": true, "compose.normalize": true,
+	"compose.base-join": true, "compose.strip": true, "compose.mask": true,
+	"wrapper.method": true, "wrapper.location": true,
+}
+
+// appliesToUs는 사례가 이 생산자 대상인지 본다("producer"나 "producer:gartograph").
+func appliesToUs(c conformanceCase) bool {
+	for _, target := range c.AppliesTo {
+		if target == "producer" || target == "producer:gartograph" {
+			return true
+		}
+	}
+	return false
+}
+
+// otherProducerOnly는 사례가 다른 생산자 전용("producer:<다른 이름>"만)인지 본다.
+func otherProducerOnly(c conformanceCase) bool {
+	if len(c.AppliesTo) == 0 {
+		return false
+	}
+	for _, target := range c.AppliesTo {
+		if !strings.HasPrefix(target, "producer:") || target == "producer:gartograph" {
+			return false
+		}
+	}
+	return true
 }
 
 // skippedRules는 건너뛰는 ruleId 접두사와 이유다.
@@ -71,14 +101,8 @@ func loadConformance(t *testing.T) []conformanceCase {
 func producerCases(t *testing.T, rule string) []conformanceCase {
 	var out []conformanceCase
 	for _, c := range loadConformance(t) {
-		if c.RuleID != rule {
-			continue
-		}
-		for _, target := range c.AppliesTo {
-			if target == "producer" {
-				out = append(out, c)
-				break
-			}
+		if c.RuleID == rule && appliesToUs(c) {
+			out = append(out, c)
 		}
 	}
 	return out
@@ -133,7 +157,7 @@ func TestConformanceLock(t *testing.T) {
 func TestConformanceEveryCaseClassified(t *testing.T) {
 	var unknown []string
 	for _, c := range loadConformance(t) {
-		if producerRules[c.RuleID] {
+		if (producerRules[c.RuleID] && appliesToUs(c)) || otherProducerOnly(c) {
 			continue
 		}
 		known := false
@@ -156,8 +180,8 @@ func TestConformanceProducerCaseCount(t *testing.T) {
 	for rule := range producerRules {
 		total += len(producerCases(t, rule))
 	}
-	if total != 51 {
-		t.Fatalf("producer cases = %d, want 51 (26 grammar + 7 normalize + 18 dispatch.validate)", total)
+	if total != 92 {
+		t.Fatalf("producer cases = %d, want 92 (26 grammar + 7 normalize + 18 dispatch.validate + 41 url-compose)", total)
 	}
 }
 
