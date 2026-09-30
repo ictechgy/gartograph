@@ -2,6 +2,33 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
+## 진행 중 — Go 클라이언트 route-call (2026-09-30, feature/client-routes)
+
+API 영향 추적 개선 #3(Go 쪽). `routes --role client`가 isthmus http route-call(platform go)을 낸다.
+- 인식(source/clientapi.go, 타입 확인): net/http `Get·Head·Post·PostForm`(패키지 함수·`*Client`),
+  `NewRequest(WithContext)`(요청을 만든 자리가 사실), resty v2 `R()/NewRequest()` 체인의 `Get…Patch`·`Execute`,
+  http-wrappers v1 `"language": "go"` 선언(source/httpwrappers.go — owner: 패키지 함수는 import 경로, 메서드는
+  `import경로.타입`, constructor는 struct 리터럴 `import경로.T`·name `T`; label = 파라미터·필드 이름).
+- URL 식 평가(source/urlexpr.go): 재귀 없이 노드 목록으로(cycles --level symbol). 상수·`+`·Sprintf·한 번
+  대입된 지역/비공개 패키지 변수·query 꼬리 지역·url.URL 리터럴·Parse·JoinPath·ResolveReference·path.Join·
+  TrimSuffix. 공개 패키지 변수는 다른 모듈이 바꿀 수 있어 값(baseRef).
+- 조립(source/urlcompose.go)·결합(source/urljoin.go): url-compose 벡터 41건 통과(conformance/url-compose.json,
+  isthmus 76b6141). 결합 방식 이름(보고용, isthmus에 아직 없음): `go-concat`·`rfc3986`·`go-url-joinpath`·
+  `go-path-join`·`resty-slash-join`. 원문 입력은 테스트가 실제 url.JoinPath·ResolveReference·path.Join과 대조.
+- resty 흐름은 routeflow에 얹었다(restyValueTypes를 추적 타입에 더하고, 체인 메서드는 passThrough로
+  수신 클라이언트를 넘김 — eval↔evalCall 재귀를 만들지 않기 위해). base·path param 설정은 restyCalls.
+- 오라클(experiments/client-oracle, `run.sh`): 합성 호출 32개를 HTTP_PROXY로 127.0.0.1 httptest에 보내 기록 —
+  일치 30·dynamic 2·불일치 0. resty 소스 확인 사항(BaseURL 직접 대입은 끝 `/`를 안 뗌 → `//items`, path param이
+  없으면 `{id}` 그대로 → `%7Bid%7D`)이 실제 요청으로 확인됐다. 오프라인 재대조는 source/clientoracle_test.go.
+- e2e(scratch, isthmus c395c59에 route-call go를 더한 빌드): Go ServeMux 서버 `GET /users/{id}` →
+  `usersvc.(server).getUser` ← Go 클라이언트 `users.FetchUser`(users/users.go:9, authority users.example.test)
+  → 역방향 `profile.Show`(depth 1) → `webapp.main`(depth 2). gap은 reach-completeness-unknown·
+  persistence-unscanned뿐. `check`는 오라클 사실 32건을 모두 파싱.
+
+남은 것: isthmus가 go route-call을 받게 되면(동시 진행 중인 isthmus 브랜치) 결합 이름을 그쪽 HTTP-WRAPPERS
+표기에 맞추고 Go url-compose 벡터를 벤더링해 러너에 더한다. 모델링하지 않은 클라이언트(fasthttp·req·
+resty v1/v3 등)는 route-call-coverage 공백. 함수 결과로 만든 URL(`c.url("/x")`)은 값이라 dynamic이다.
+
 ## 진행 중 — Go 서버 route-decl과 --type-edges members (2026-09-30, feature/server-routes)
 
 API 영향 추적 Phase 7 후속. isthmus 76b6141(#131)이 go http route-decl을 받게 되어 route 선택 trace가

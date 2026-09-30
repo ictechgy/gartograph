@@ -79,12 +79,18 @@ gartograph schema --out go-schema-facts.json
 # (platform "go", target "http", roles ["server"]).
 gartograph routes --role server --out go-routes.json
 
+# Emit isthmus http route calls: net/http and resty v2 requests plus
+# wrappers declared in an isthmus http-wrappers v1 file, as (method, canonical
+# path template) owned by the enclosing declaration (roles ["client"]).
+gartograph routes --role client --wrappers http-wrappers.json --out go-calls.json
+
 # isthmus language-traversal documents for `isthmus trace`: what the roots
 # depend on (reach) and what depends on them (impact), many roots in one pass.
 # Struct field types are followed from the fields that name them
 # (--type-edges members, the default); --type-edges all restores the old spread.
 gartograph reach --roots-from go-routes.json
 gartograph impact --format language-traversal --roots-from go-schema-facts.json
+gartograph impact --format language-traversal --roots-from go-calls.json
 
 # Check layer rules from .gartograph.yml
 gartograph rules --strict
@@ -613,8 +619,8 @@ echo v3/v5, grpc-gateway, …) add an unscoped `route-coverage:` limitation, so
 a zero-fact document never reads as "scanned, none". The document is
 self-checked against the contract (templates, methods, catch-all prefix
 originals) before it is written; `conformance/` vendors the isthmus
-`http-template` and `http-dispatch` vectors (`conformance.lock`), and all 51
-producer cases pass.
+`http-template`, `http-dispatch` and `url-compose` vectors (`conformance.lock`),
+and all 92 producer cases pass (51 for route declarations, 41 for route calls).
 
 `experiments/routes-oracle` (a separate module; `run.sh` fetches chi, gin and
 echo from proxy.golang.org) builds synthetic ServeMux/chi/gin/echo servers and
@@ -626,6 +632,95 @@ for all four (19/16, 28/34, 20/24, 19/23 facts/entries).
 A module with several servers (separate `main` packages) should emit one
 document per server with `--pattern ./cmd/api/...` and `--service NAME`;
 otherwise their routes share one scope and collide as `route-decl-conflict`.
+
+## isthmus exchange — client route calls (`routes --role client`)
+
+`gartograph routes --role client [--wrappers http-wrappers.json]` writes an isthmus
+bridge-facts http document (`platform: "go"`, `target: "http"`,
+`roles: ["client"]`, `sourceSets.tests: "excluded"`) with one `route-call` per
+request a call site builds. Calls are recognized by type, not by name:
+
+| Library | Calls | Base URL |
+|---|---|---|
+| net/http | `http.Get`/`Head`/`Post`/`PostForm`, the same `(*http.Client)` methods, `http.NewRequest(WithContext)` — the fact sits where the request is built, since `client.Do` sends that URL | none: the URL string as written |
+| resty v2 | `R()`/`NewRequest()` chains ending in `Get`…`Patch` or `Execute`, clients followed through variables, fields, parameters and results | `SetBaseURL`/`SetHostURL` (trailing `/` trimmed) or a direct `BaseURL`/`HostURL` assignment (not trimmed) |
+| declared wrappers | `http-wrappers` v1 entries with `"language": "go"` | the declaration's `pathAnchor` |
+
+URL expressions resolve string constants (folded across packages), `+`,
+`fmt.Sprintf` (`%s`/`%v` inline their argument, constant `%d` renders),
+locals and unexported package variables assigned once, a local whose every
+assignment is empty or starts with `?` (a query tail), `url.URL{Scheme, Host,
+Path}` (`Path` is the decoded path, escaped as `EscapedPath` does; a
+non-constant `Host` cannot carry a path because `String()` escapes `/`, so the
+path stays root without an `authority`), `url.Parse`/`ParseRequestURI`,
+`(*url.URL).String`/`JoinPath`/`ResolveReference`/`Parse`, `url.JoinPath`,
+`path.Join` and `strings.TrimSuffix`/`TrimRight(x, "/")`. Anything else — fields,
+parameters, call results, exported package variables another module could
+reassign, variables whose address is taken — is a value: a value that fills a
+whole segment is `{}`, a value inside a segment makes the call dynamic with a
+`channelPrefix`.
+
+Base joins were read from Go 1.27.1 `net/url` (`resolvePath`, `joinPath`) and
+`path`, and resty v2.17.2 `client.go`/`middleware.go` (`parseRequestURL`);
+tests also compare every literal case with the real `url.JoinPath`,
+`ResolveReference` and `path.Join`:
+
+| Style | API | `/x` after an unknown base | `x` after an unknown base | Literal base |
+|---|---|---|---|---|
+| `go-concat` | `+`, `fmt.Sprintf` | `base` | dynamic + `ambiguous-base-join:` | the concatenated URL; `//` and dot segments are sent as written |
+| `rfc3986` | `ResolveReference`, `(*URL).Parse` | `root` (no authority) | `base` | RFC 3986 merge and dot-segment removal |
+| `go-url-joinpath` | `url.JoinPath`, `(*URL).JoinPath` | `base` | `base` | `path.Join` cleaning, the last element's trailing `/` kept; `..` above an unknown base is dynamic |
+| `go-path-join` | `path.Join` | `base` (value first) | `base` | `path.Clean` |
+| `resty-slash-join` | resty base URL | `base` | `base` | base (trimmed by `SetBaseURL`) + the path with a leading `/`; an absolute URL ignores the base |
+
+A string URL with a dynamic host (`"https://" + host + "/v1"`) is `base`
+(the value could carry a path); a net/http path-only URL is `base`. resty path
+params: `{name}` becomes `{}` when a `SetPathParam(s)` on that client or its
+requests sets it (resty path-escapes the value, one segment), a raw param
+(`SetRawPathParam(s)`) may contain `/` and makes the call dynamic, and a client
+with no path params sends `{name}` literally (`%7Bname%7D`). Methods are fixed
+per API; `NewRequest`/`Execute` need a constant equal to a contract verb (`""`
+is GET, as in `http.NewRequest`), otherwise the fact carries `methodDynamic`.
+
+Go wrapper declarations: a package function has `owner` = import path, a
+method `owner` = `importpath.Type` (the declaring type, interfaces included);
+`kind: "constructor"` matches struct literals `T{…}`/`&T{…}` with `owner` =
+`importpath.T` and `name` = `T`. `index` is the call argument position (the
+receiver excluded) and `label` the declared parameter (constructor: field)
+name; `methodEnum` keys are constant names (`api.Get` → `Get`). A declared
+wrapper's own dynamic requests are not reported. Unknown fields or invalid
+entries exit 2, as does a `--service` different from an entry's `service`.
+
+`symbol.usr` is the enclosing declaration's vertex id, the same attribution as
+`schema` relation uses, so `impact --format language-traversal --roots-from
+go-calls.json` walks from each call site to its callers. `location` is where the
+call expression starts. Dynamic facts carry `channel: null` (the source
+expression could hold credentials); userinfo, query and fragment are stripped,
+and high-entropy or webhook segments are masked (`maskedSegments`). `baseRef`
+is the vertex id of the field or package variable holding an unresolved base,
+for workspace `match.baseRefs`. Client-side limitations are counted, not
+guessed: `route-call-coverage:` (load errors, imports of unmodelled clients —
+resty v1/v3, fasthttp, req, retryablehttp, … — and requests built without a URL
+argument: `http.Request` literals, resty `Send`), `unresolved-base-url:`,
+`ambiguous-base-join:`, `url-rewrite-interceptors:` (assignments to a built
+request's `URL`/`Method`), `http-wrapper-unresolved:`,
+`http-wrapper-undeclared:` (functions that pass a parameter as the URL head or
+method) and `missing-route-usrs:`. No `limitationScopes` are emitted.
+
+The shared `url-compose` vectors pass 41/41 producer cases (`dio-concat` runs
+as plain concatenation — its cases do not use dio's `//` or dot handling;
+Spring cases belong to kartograph). `experiments/client-oracle` (a separate
+module; `run.sh` fetches resty v2.17.2 from proxy.golang.org) runs 32 synthetic
+calls through an `httptest` server on 127.0.0.1 set as `HTTP_PROXY`, records
+each request's method, host and path, and compares them with the facts:
+30 match, 2 are dynamic, 0 mismatch. `source/clientoracle_test.go` replays the
+recording offline against a resty stub.
+
+isthmus c395c59 does not accept go `route-call` facts yet (its
+`routeKindPlatforms` lists go for `route-decl` only), so the document was
+validated against an isthmus build with go added there: `check` parses all 32
+oracle facts, and a workspace `trace` follows `GET /users/{}` from the Go
+server handler to the Go client call site and its callers.
 
 ## MCP server
 
@@ -662,6 +757,8 @@ tool call answers over the same snapshot. Example client config:
   classification~~ — done
 - ~~`schema` usr, `reach` / `impact --format language-traversal`~~ — done
 - ~~`routes --role server` (ServeMux·chi·gin·echo), `--type-edges members`~~ — done
+- `routes --role client` (net/http·resty v2·declared wrappers) — done; waiting
+  for isthmus to accept go `route-call`
 
 ## License
 
