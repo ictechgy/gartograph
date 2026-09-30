@@ -276,6 +276,25 @@ type urlEval struct {
 	expanded map[types.Object]int
 }
 
+// literalValue는 식이 문자열 하나로 풀리면 그 값이다(상수, 한 번 대입된 변수 등 evalURLParts 규칙).
+// 동사 인자처럼 URL이 아닌 문자열에도 같은 추적을 쓴다.
+func (idx *valueIndex) literalValue(p *packages.Package, expr ast.Expr) (string, bool) {
+	if s, ok := constantString(p.TypesInfo, expr); ok {
+		return s, true
+	}
+	if !isStringType(p.TypesInfo.TypeOf(expr)) {
+		return "", false
+	}
+	parts := appendParts(nil, idx.evalURLParts(p, expr)...)
+	switch {
+	case len(parts) == 0:
+		return "", true
+	case len(parts) == 1 && parts[0].kind == partLiteral:
+		return parts[0].text, true
+	}
+	return "", false
+}
+
 // evalURLParts는 식을 URL 조각으로 푼다.
 func (idx *valueIndex) evalURLParts(p *packages.Package, expr ast.Expr) []urlPart {
 	e := &urlEval{idx: idx, expanded: map[types.Object]int{}}

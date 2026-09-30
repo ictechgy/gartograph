@@ -385,25 +385,30 @@ func (s *clientScan) scanCall(p *packages.Package, owner string, call *ast.CallE
 		return
 	}
 	key := funcKey(fn)
+	// 메서드 식 호출(`(*http.Client).Get(c, u)`)은 리시버가 첫 인자다 — 인자 위치를 한 칸 민다.
+	args, recv := call.Args, receiverExpr(call)
+	if isMethodExpression(info, call) {
+		if len(args) == 0 {
+			return
+		}
+		recv, args = args[0], args[1:]
+	}
 	if spec, ok := clientAPI[key]; ok {
-		s.libraryCall(p, owner, call, spec)
+		s.libraryCall(p, owner, call, spec, args, recv)
 		return
 	}
 	if what, ok := unmodelledRequests[key]; ok {
 		s.unmodelled[what]++
 		return
 	}
-	if isMethodExpression(info, call) {
-		return
-	}
 	for _, w := range s.wrappers {
 		if w.decl.Kind == "function" && w.keys[key] {
-			s.wrapperCall(p, owner, call.Pos(), w, callArgs(info, fn.Signature(), call.Args))
+			s.wrapperCall(p, owner, call.Pos(), w, callArgs(info, fn.Signature(), args))
 		}
 	}
 }
 
-// isMethodExpression은 `T.M(recv, …)`처럼 리시버가 첫 인자인 호출인지 본다(인자 위치가 어긋난다).
+// isMethodExpression은 `T.M(recv, …)`처럼 리시버가 첫 인자인 호출인지 본다.
 func isMethodExpression(info *types.Info, call *ast.CallExpr) bool {
 	sel, ok := unparen(call.Fun).(*ast.SelectorExpr)
 	if !ok {
@@ -458,33 +463,34 @@ func rewritesRequest(info *types.Info, lhs ast.Expr) bool {
 	return false
 }
 
-// libraryCall은 net/http·resty 요청 하나의 사실을 만든다.
-func (s *clientScan) libraryCall(p *packages.Package, owner string, call *ast.CallExpr, spec callSpec) {
-	if spec.urlArg >= len(call.Args) || (spec.methodArg >= len(call.Args)) {
+// libraryCall은 net/http·resty 요청 하나의 사실을 만든다. args·recv는 메서드 식을 보정한 인자와 리시버다.
+func (s *clientScan) libraryCall(p *packages.Package, owner string, call *ast.CallExpr, spec callSpec,
+	args []ast.Expr, recv ast.Expr) {
+	if spec.urlArg >= len(args) || spec.methodArg >= len(args) {
 		return
 	}
-	method, methodParam := s.callMethod(p, call, spec)
-	path := s.idx.evalURLParts(p, call.Args[spec.urlArg])
+	method, methodParam := s.callMethod(p, args, spec)
+	path := s.idx.evalURLParts(p, args[spec.urlArg])
 	loc := locateIn(s.root, p.Fset, call.Pos())
 	if spec.lib == libNetHTTP {
 		res := composeURL(path, anchorRule{pathOnly: "base"})
 		s.add(pendingCall{fact: callFact(method, res, loc), owner: owner, res: res, methodParam: methodParam})
 		return
 	}
-	for _, res := range s.restyResults(p, call, path) {
+	for _, res := range s.restyResults(p, recv, path) {
 		s.add(pendingCall{fact: callFact(method, res, loc), owner: owner, res: res, methodParam: methodParam})
 	}
 }
 
-// callMethod는 요청의 동사다. 인자로 받으면 상수 문자열이어야 하고, 빈 문자열은 GET(http.NewRequest
-// 규칙 — resty Execute도 같은 함수로 간다), 계약 동사와 정확히 같아야 동사다. 아니면 빈 문자열
-// (methodDynamic)과 그 인자가 파라미터인지를 돌려준다.
-func (s *clientScan) callMethod(p *packages.Package, call *ast.CallExpr, spec callSpec) (string, bool) {
+// callMethod는 요청의 동사다. 인자로 받으면 값이 문자열 하나로 풀려야 하고(상수나 한 번 대입된 변수),
+// 빈 문자열은 GET(http.NewRequest 규칙 — resty Execute도 같은 함수로 간다), 계약 동사와 정확히 같아야
+// 동사다. 아니면 빈 문자열(methodDynamic)과 그 인자가 파라미터인지를 돌려준다.
+func (s *clientScan) callMethod(p *packages.Package, args []ast.Expr, spec callSpec) (string, bool) {
 	if spec.method != "" {
 		return spec.method, false
 	}
-	arg := call.Args[spec.methodArg]
-	m, ok := constantString(p.TypesInfo, arg)
+	arg := args[spec.methodArg]
+	m, ok := s.idx.literalValue(p, arg)
 	switch {
 	case ok && m == "":
 		return "GET", false
@@ -495,57 +501,43 @@ func (s *clientScan) callMethod(p *packages.Package, call *ast.CallExpr, spec ca
 	return "", isIdent && s.idx.params[p.TypesInfo.Uses[id]]
 }
 
-// restyResults는 resty 요청의 base 결합 결과다. 수신 클라이언트 노드마다 base 후보 하나씩 결합하고,
-// 노드를 추적하지 못했거나 저장소 안에 base 설정이 없으면 base를 모르는 값으로 본다.
-func (s *clientScan) restyResults(p *packages.Package, call *ast.CallExpr, path []urlPart) []composedURL {
-	nodes := s.flow.eval(p.TypesInfo, p, receiverExpr(call)).sorted()
-	cfg := s.mergedRestyConfig(nodes)
-	path = restyPlaceholders(path, cfg, len(nodes) > 0)
-	bases := cfg.bases
-	if len(bases) == 0 {
-		bases = []restyBase{{parts: []urlPart{valuePart()}}}
+// restyResults는 resty 요청의 base 결합 결과다. 수신 클라이언트 노드마다 그 노드의 설정(base 후보·path
+// param)으로 따로 결합한다 — 노드 사이에 path param을 섞으면 raw 키를 가진 클라이언트의 요청이 escape
+// 키를 가진 다른 클라이언트 규칙으로 풀린다. 노드를 추적하지 못했거나 base 설정이 없으면 base를 모르는
+// 값이다. 추적하지 못한 클라이언트의 path param은 모르므로 `{name}`을 값으로 본다(원문으로 두면 치환된
+// 요청이 거짓 route-call-without-decl error가 된다 — 값이면 최악이 거짓 match다).
+func (s *clientScan) restyResults(p *packages.Package, recv ast.Expr, path []urlPart) []composedURL {
+	configs := []*restyConfig{{unknownKeys: true}}
+	if nodes := s.flow.eval(p.TypesInfo, p, recv).sorted(); len(nodes) > 0 {
+		configs = configs[:0]
+		for _, n := range nodes {
+			cfg := s.resty[n]
+			if cfg == nil {
+				cfg = &restyConfig{}
+			}
+			configs = append(configs, cfg)
+		}
 	}
 	var out []composedURL
-	for _, b := range bases {
-		joined := slashJoinParts(b.parts, b.trimmed, path)
-		out = append(out, composeURL(joined, anchorRule{pathOnly: "base", relativeBase: true}))
-	}
-	return out
-}
-
-// mergedRestyConfig는 노드들의 설정을 합친다. 설정이 없는 노드가 하나라도 있으면 base를 모르는 후보를 더한다.
-func (s *clientScan) mergedRestyConfig(nodes []*routerNode) *restyConfig {
-	out := &restyConfig{keys: map[string]bool{}, rawKeys: map[string]bool{}}
-	for _, n := range nodes {
-		cfg := s.resty[n]
-		if cfg == nil || len(cfg.bases) == 0 {
-			out.bases = append(out.bases, restyBase{parts: []urlPart{valuePart()}})
+	for _, cfg := range configs {
+		resolved := restyPlaceholders(path, cfg)
+		bases := cfg.bases
+		if len(bases) == 0 {
+			bases = []restyBase{{parts: []urlPart{valuePart()}}}
 		}
-		if cfg == nil {
-			continue
+		for _, b := range bases {
+			joined := slashJoinParts(b.parts, b.trimmed, resolved)
+			out = append(out, composeURL(joined, anchorRule{pathOnly: "base", relativeBase: true}))
 		}
-		out.bases = append(out.bases, cfg.bases...)
-		for k := range cfg.keys {
-			out.keys[k] = true
-		}
-		for k := range cfg.rawKeys {
-			out.rawKeys[k] = true
-		}
-		out.unknownKeys = out.unknownKeys || cfg.unknownKeys
-		out.unknownRawKeys = out.unknownRawKeys || cfg.unknownRawKeys
-	}
-	if len(nodes) == 0 {
-		out.unknownKeys = true
 	}
 	return out
 }
 
 // restyPlaceholders는 resty path param 자리표시(`{name}`)를 값으로 바꾼다(parseRequestURL). 설정이
-// 하나도 없으면(모든 클라이언트를 추적했고 설정 호출이 없다) resty가 치환하지 않아 원문 그대로 나간다.
-// raw 값은 `/`를 담을 수 있어 여러 세그먼트 값이다. 이름 없는 `{}`는 resty도 그대로 둔다.
-func restyPlaceholders(path []urlPart, cfg *restyConfig, traced bool) []urlPart {
-	none := traced && len(cfg.keys) == 0 && len(cfg.rawKeys) == 0 && !cfg.unknownKeys && !cfg.unknownRawKeys
-	if none {
+// 하나도 없으면 resty가 치환하지 않아 원문 그대로 나간다. raw 값은 `/`를 담을 수 있어 여러 세그먼트
+// 값이다. 이름 없는 `{}`는 resty도 그대로 둔다.
+func restyPlaceholders(path []urlPart, cfg *restyConfig) []urlPart {
+	if len(cfg.keys) == 0 && len(cfg.rawKeys) == 0 && !cfg.unknownKeys && !cfg.unknownRawKeys {
 		return path
 	}
 	var out []urlPart
@@ -559,7 +551,8 @@ func restyPlaceholders(path []urlPart, cfg *restyConfig, traced bool) []urlPart 
 	return out
 }
 
-// splitPlaceholders는 원문 하나의 `{name}`을 값 조각으로 나눈다.
+// splitPlaceholders는 원문 하나의 `{name}`을 값 조각으로 나눈다. resty는 escape 키(요청 → 클라이언트)를
+// 먼저 채우고 raw 키는 비어 있는 이름에만 넣으므로, 알려진 escape 키는 모르는 raw 키가 있어도 한 세그먼트다.
 func splitPlaceholders(text string, cfg *restyConfig) []urlPart {
 	var out []urlPart
 	for {
@@ -577,9 +570,11 @@ func splitPlaceholders(text string, cfg *restyConfig) []urlPart {
 		switch {
 		case key == "":
 			out = appendParts(out, literalPart("{}"))
+		case cfg.keys[key]:
+			out = appendParts(out, valuePart())
 		case cfg.rawKeys[key] || cfg.unknownRawKeys:
 			out = appendParts(out, urlPart{kind: partValue, multi: true})
-		case cfg.keys[key] || cfg.unknownKeys:
+		case cfg.unknownKeys:
 			out = appendParts(out, valuePart())
 		default:
 			out = appendParts(out, literalPart(text[open:closeAt+1]))
@@ -593,13 +588,18 @@ func (s *clientScan) wrapperCall(p *packages.Package, owner string, pos token.Po
 	w.calls++
 	pathArg, ok := bindWrapperArg(w.decl.PathArg, args)
 	if !ok {
+		// 조용히 버리면 낡은 선언이 호출 0건을 낸다 — http-wrapper-unresolved로 센다.
+		w.unbound++
 		return
 	}
 	method := wrapperMethod(w.decl, args)
 	methodParam := false
 	if arg, bound := bindWrapperArg(w.decl.MethodArg, args); bound && method == "" {
+		if m, isString := s.idx.literalValue(p, arg.expr); isString && routeMethods[m] {
+			method = m
+		}
 		id, isIdent := unparen(arg.expr).(*ast.Ident)
-		methodParam = isIdent && s.idx.params[p.TypesInfo.Uses[id]]
+		methodParam = method == "" && isIdent && s.idx.params[p.TypesInfo.Uses[id]]
 	}
 	rule := anchorRule{pathOnly: w.decl.PathAnchor, relativeBase: w.decl.PathAnchor == "base"}
 	parts := appendParts(nil, s.idx.evalURLParts(p, pathArg.expr)...)
@@ -762,6 +762,9 @@ func (s *clientScan) limitations() []string {
 			add("http-wrapper-unresolved: wrappers[%d] (%s %s) matches no Go declaration; check owner and name", w.index, w.decl.Owner, w.decl.Name)
 		case w.calls == 0:
 			add("http-wrapper-unresolved: wrappers[%d] (%s %s) has no call site in the scanned packages", w.index, w.decl.Owner, w.decl.Name)
+		case w.unbound > 0:
+			add("http-wrapper-unresolved: wrappers[%d] (%s %s) has %d call site(s) where pathArg could not be bound; check its index or label (Go labels are parameter names)",
+				w.index, w.decl.Owner, w.decl.Name, w.unbound)
 		}
 	}
 	if len(s.undeclared) > 0 {

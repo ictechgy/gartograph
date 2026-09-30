@@ -183,10 +183,14 @@ func wrapperMethod(decl WrapperDecl, args []wrapperArg) string {
 type goWrapper struct {
 	index int
 	decl  WrapperDecl
-	// keys는 함수 선언이면 funcKey 후보("pkg..Name"·"pkg.Type.Name"), 생성자면 typeKey("pkg.Type")다.
+	// keys는 실제 선언으로 확인한 조회 키다: 함수면 funcKey("pkg..Name"·"pkg.Type.Name"), 생성자면
+	// typeKey("pkg.Type"). owner 문자열만으로는 "import 경로"와 "경로.타입"을 가를 수 없어(점이 든 마지막
+	// 경로 원소) 선언을 찾은 해석만 쓴다.
 	keys  map[string]bool
 	found bool
 	calls int
+	// unbound는 pathArg를 바인딩하지 못한 호출 수다.
+	unbound int
 	// bodies는 선언된 함수의 정점 ID다 — 래퍼 본문의 dynamic 요청은 내지 않는다.
 	bodies map[string]bool
 }
@@ -201,32 +205,9 @@ func goWrappers(file *WrapperFile) []*goWrapper {
 		if d.Language != "go" {
 			continue
 		}
-		w := &goWrapper{index: i, decl: d, keys: map[string]bool{}, bodies: map[string]bool{}}
-		if d.Kind == "constructor" {
-			w.keys[d.Owner] = true
-		} else {
-			w.keys[d.Owner+".."+d.Name] = true
-			if i := strings.LastIndex(d.Owner, "."); i > 0 && isGoIdent(d.Owner[i+1:]) {
-				w.keys[d.Owner[:i]+"."+d.Owner[i+1:]+"."+d.Name] = true
-			}
-		}
-		out = append(out, w)
+		out = append(out, &goWrapper{index: i, decl: d, keys: map[string]bool{}, bodies: map[string]bool{}})
 	}
 	return out
-}
-
-// isGoIdent는 Go 식별자 모양인지 본다(ASCII만 — 선언 owner의 타입 이름 판정용).
-func isGoIdent(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, c := range s {
-		letter := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-		if !letter && (i == 0 || c < '0' || c > '9') {
-			return false
-		}
-	}
-	return true
 }
 
 // resolveDeclarations는 선언이 실제 심볼과 맞는지 로드한 패키지(의존 포함)에서 확인하고, 함수 선언의
@@ -241,10 +222,12 @@ func resolveDeclarations(wrappers []*goWrapper, pkgs []*packages.Package, ids sy
 	for _, w := range wrappers {
 		if w.decl.Kind == "constructor" {
 			w.found = structTypeNamed(byPath, w.decl.Owner, w.decl.Name)
+			w.keys[w.decl.Owner] = w.found
 			continue
 		}
 		for _, fn := range declaredFuncs(byPath, w.decl.Owner, w.decl.Name) {
 			w.found = true
+			w.keys[funcKey(fn)] = true
 			w.bodies[ids.objectVertexID(fn)] = true
 		}
 	}
@@ -269,11 +252,13 @@ func structTypeNamed(byPath map[string]*types.Package, owner, name string) bool 
 }
 
 // declaredFuncs는 owner·name이 가리키는 함수(패키지 함수, 타입에 선언된 메서드, 인터페이스 메서드)다.
+// owner가 import 경로이면서 `경로.타입`으로도 읽히면(마지막 경로 원소에 점이 있는 경우) 패키지 함수가
+// 이긴다 — 두 해석을 다 쓰면 선언하지 않은 메서드 호출까지 래퍼 호출이 된다.
 func declaredFuncs(byPath map[string]*types.Package, owner, name string) []*types.Func {
 	var out []*types.Func
 	if pkg := byPath[owner]; pkg != nil {
 		if fn, ok := pkg.Scope().Lookup(name).(*types.Func); ok {
-			out = append(out, fn)
+			return []*types.Func{fn}
 		}
 	}
 	i := strings.LastIndex(owner, ".")

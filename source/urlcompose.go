@@ -209,12 +209,11 @@ func composeURL(parts []urlPart, rule anchorRule) composedURL {
 	case strings.HasPrefix(text, "//"):
 		return dynamicURL(out)
 	case strings.HasPrefix(text, "/"):
+		// 경로만 있는 URL은 base 식을 잇지 않았으므로 unresolved-base-url로 세지 않는다.
 		out.anchor = rule.pathOnly
-		out.unresolvedBase = rule.pathOnly == "base"
 		return finishURL(out, parts)
 	case rule.relativeBase && !strings.Contains(text[:strings.IndexAny(text+"/", "/?#")], ":"):
 		out.anchor = "base"
-		out.unresolvedBase = true
 		return finishURL(out, appendParts([]urlPart{literalPart("/")}, parts...))
 	}
 	return dynamicURL(out)

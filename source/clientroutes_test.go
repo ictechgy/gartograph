@@ -247,8 +247,8 @@ func Literal2() {
 		"POST /v2/orders/{}/cancel root host=api.example.com usr=app.Sprintf",
 	})
 	assertClientLimitation(t, doc, "route-call-coverage: 1 ", "net/http Request literals")
-	// Field·JoinPathUnknown(필드 base)과 PathOnly(경로만 — base를 모름)다.
-	assertClientLimitation(t, doc, "unresolved-base-url: 3 ", "")
+	// Field·JoinPathUnknown(필드 base)이다. PathOnly는 base 식을 잇지 않아 세지 않는다.
+	assertClientLimitation(t, doc, "unresolved-base-url: 2 ", "")
 	assertClientLimitation(t, doc, "ambiguous-base-join: 1 ", "")
 	assertClientLimitation(t, doc, "url-rewrite-interceptors: 1 ", "")
 	// Passthrough(URL 전체가 파라미터)와 Method(동사가 파라미터)다. Partial은 파라미터가 경로 중간이라 아니다.
@@ -660,4 +660,113 @@ func TestRouteCallProblem(t *testing.T) {
 			t.Errorf("%s: want a self-check problem", name)
 		}
 	}
+}
+
+// TestClientRoutesReviewFindings는 리뷰에서 재현한 결함을 고정한다: 메서드 식 호출의 인자 위치, 알려진
+// escape 키를 덮던 모르는 raw 키, 클라이언트 노드 사이에 섞이던 path param, 경로만 있는 net/http URL의
+// unresolved-base-url 계수, 지역 변수 동사.
+func TestClientRoutesReviewFindings(t *testing.T) {
+	dir := clientModule(t, "", map[string]string{"app/app.go": `package app
+
+import (
+	"net/http"
+
+	"github.com/go-resty/resty/v2"
+)
+
+type holder struct{ c *resty.Client }
+
+func MethodExpr() {
+	c := &http.Client{}
+	(*http.Client).Get(c, "http://api.example.test/v1/ping")
+}
+
+func RestyMethodExpr() {
+	c := resty.New().SetBaseURL("http://orders.example.test")
+	(*resty.Request).Get(c.R(), "/v1/orders")
+}
+
+func KnownKeyWins(k string) {
+	c := resty.New().SetBaseURL("http://a.example.test")
+	c.SetPathParam("id", "7")
+	c.R().SetRawPathParam(k, "x").Get("/a/{id}")
+}
+
+func PerNode(flag bool) {
+	raw := resty.New().SetBaseURL("http://raw.example.test")
+	raw.SetRawPathParam("id", "a/b")
+	esc := resty.New().SetBaseURL("http://esc.example.test")
+	esc.SetPathParam("id", "7")
+	h := holder{c: raw}
+	if flag {
+		h = holder{c: esc}
+	}
+	h.c.R().Get("/files/{id}")
+}
+
+func PathOnly() {
+	http.NewRequest("GET", "/relative/only", nil)
+}
+
+func LocalMethod() {
+	m := "PUT"
+	http.NewRequest(m, "http://api.example.test/v1/local", nil)
+}
+`}, "resty")
+	doc := clientDoc(t, dir, nil)
+	assertCalls(t, doc, []string{
+		"GET /v1/ping root host=api.example.test usr=app.MethodExpr",
+		"GET /v1/orders root host=orders.example.test usr=app.RestyMethodExpr",
+		"GET /a/{} root host=a.example.test usr=app.KnownKeyWins",
+		"GET <dynamic> root prefix=/files/ host=raw.example.test usr=app.PerNode",
+		"GET /files/{} root host=esc.example.test usr=app.PerNode",
+		"GET /relative/only base usr=app.PathOnly",
+		"PUT /v1/local root host=api.example.test usr=app.LocalMethod",
+	})
+	for _, l := range doc.Limitations {
+		if strings.HasPrefix(l, "unresolved-base-url:") {
+			t.Errorf("a net/http path-only URL joins no base URL: %q", l)
+		}
+	}
+}
+
+// TestClientRoutesWrapperReviewFindings는 바인딩하지 못한 래퍼 호출이 한계로 드러나고, 패키지 함수 선언이
+// 같은 이름의 타입 메서드를 끌어오지 않는지 본다.
+func TestClientRoutesWrapperReviewFindings(t *testing.T) {
+	// owner "example.com/fixture/api.v2"는 패키지 경로다. 마지막 점을 타입 경계로 읽으면 패키지
+	// example.com/fixture/api의 타입 v2 메서드 Get이 되는데, 그 메서드가 실제로 있다.
+	dir := clientModule(t, "", map[string]string{
+		"api.v2/api.go": `package apiv2
+
+func Get(path string) {}
+`,
+		"api/api.go": `package api
+
+type v2 struct{}
+
+func (v2) Get(path string) {}
+
+func Use() { v2{}.Get("/v1/method") }
+`,
+		"app.go": `package fixture
+
+import apiv2 "example.com/fixture/api.v2"
+
+func Send(method, p string) {}
+
+func Use() {
+	apiv2.Get("/v1/pkg")
+	Send("GET", "/v1/unbound")
+}
+`})
+	zero := 0
+	file := &WrapperFile{Format: "http-wrappers", Version: 1, Wrappers: []WrapperDecl{
+		{Language: "go", Kind: "function", Owner: "example.com/fixture/api.v2", Name: "Get", DefaultMethod: "GET",
+			PathArg: &WrapperArgRef{Index: &zero}, PathAnchor: "root"},
+		{Language: "go", Kind: "function", Owner: "example.com/fixture", Name: "Send", DefaultMethod: "GET",
+			PathArg: &WrapperArgRef{Label: "path"}, PathAnchor: "root"},
+	}}
+	doc := clientDoc(t, dir, file)
+	assertCalls(t, doc, []string{"GET /v1/pkg root usr=fixture.Use"})
+	assertClientLimitation(t, doc, "http-wrapper-unresolved: wrappers[1] ", "could not be bound")
 }
