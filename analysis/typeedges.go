@@ -1,7 +1,7 @@
 package analysis
 
 import (
-	"sort"
+	"strings"
 
 	"github.com/ictechgy/gartograph/graph"
 )
@@ -13,14 +13,14 @@ import (
 //     같은 struct의 모든 메서드가 다른 필드 뒤의 타입(행 타입과 그 태그 컬럼)에 닿는다. 역방향도
 //     필드 타입 → 컨테이너 타입 → 그 타입의 모든 메서드로 퍼진다.
 //   - members: 필드 선언에서 나온 타입 구조 간선(T → X, references·signature)을 그 필드 정점의
-//     간선(f → X)으로 옮긴다. 타입 정점 T에 닿아도 필드 타입까지 펼치지 않고, 필드를 실제로 쓰는
+//     간선(f → X)으로 옮긴다. 어느 필드인지는 타입 정점의 필드 목록(정규 타입 문자열)으로 정한다. 타입 정점 T에 닿아도 필드 타입까지 펼치지 않고, 필드를 실제로 쓰는
 //     선언(f를 참조)만 X로 이어진다. 두 방향 모두 같은 평범한 그래프라 순회 문서의 via·roots
 //     일관성(isthmus 검증)이 그대로 성립한다.
 //
 // members가 잃는 도달은 "필드 이름을 쓰지 않고 struct 값 전체를 넘기는" 경로뿐이다(encoding/json·ORM
 // 리플렉션처럼 값 전체를 읽는 코드): 그 struct의 임베드가 아닌 필드 타입(과 그 태그)에는 닿지 않는다.
 // 임베드는 embeds 간선이라 옮기지 않으므로 승격 필드·메서드는 그대로다. 타입 자신(과 그 태그)에는
-// 여전히 닿는다. 필드 위치를 모르는 옛 문서(간선 위치 없음)는 옮길 간선이 없어 all과 같다.
+// 여전히 닿는다. 필드 목록이 없는 옛 문서는 옮길 간선이 없어 all과 같다.
 const (
 	TypeEdgesMembers = "members"
 	TypeEdgesAll     = "all"
@@ -33,26 +33,25 @@ type virtualEdge struct {
 	candidate bool
 }
 
-// fieldSpot은 필드 정점 하나와 그 위치다.
-type fieldSpot struct {
-	id  string
-	pos graph.Position
-}
-
-// fieldIndex는 정점 종류와 타입 정점 ID → 필드(위치순)·구조 간선 위치(위치순)이다.
+// fieldIndex는 정점 종류, struct 타입 정점의 필드 목록(Vertex.Fields, "이름:정규 타입"), 타입 정점
+// 위치다.
 type fieldIndex struct {
 	kinds  map[string]graph.VertexKind
-	fields map[string][]fieldSpot
-	refs   map[string][]graph.Position
+	fields map[string][]string
+	pos    map[string]*graph.Position
+	first  map[string]graph.Position // 타입의 첫 필드 정점 위치(타입 머리 판정용)
 }
 
-// newFieldIndex는 타입별 필드 목록을 모은다. 필드 소유 타입 ID가 패키지와 겹치면 문서의 타입 정점에는
-// 충돌 접미사가 붙어 있어 두 형태를 다 본다.
+// newFieldIndex는 정점 색인을 만든다.
 func newFieldIndex(d *graph.Document) fieldIndex {
-	idx := fieldIndex{kinds: map[string]graph.VertexKind{}, fields: map[string][]fieldSpot{},
-		refs: map[string][]graph.Position{}}
+	idx := fieldIndex{kinds: map[string]graph.VertexKind{}, fields: map[string][]string{},
+		pos: map[string]*graph.Position{}, first: map[string]graph.Position{}}
 	for _, v := range d.Vertices {
 		idx.kinds[v.ID] = v.Kind
+		idx.pos[v.ID] = v.Position
+		if v.Kind == graph.KindType && len(v.Fields) > 0 {
+			idx.fields[v.ID] = v.Fields
+		}
 	}
 	for _, v := range d.Vertices {
 		if v.Kind != graph.KindField || v.Position == nil {
@@ -62,23 +61,20 @@ func newFieldIndex(d *graph.Document) fieldIndex {
 		if !ok {
 			continue
 		}
-		if idx.kinds[owner] != graph.KindType && idx.kinds[owner+graph.CollisionSuffix] == graph.KindType {
-			owner += graph.CollisionSuffix
+		owner = idx.typeID(owner)
+		if cur, seen := idx.first[owner]; !seen || positionLess(*v.Position, cur) {
+			idx.first[owner] = *v.Position
 		}
-		idx.fields[owner] = append(idx.fields[owner], fieldSpot{id: v.ID, pos: *v.Position})
-	}
-	for _, spots := range idx.fields {
-		sort.Slice(spots, func(i, j int) bool { return positionLess(spots[i].pos, spots[j].pos) })
-	}
-	for _, e := range d.Edges {
-		if idx.kinds[e.From] == graph.KindType && (e.Kind == graph.EdgeReferences || e.Kind == graph.EdgeSignature) {
-			idx.refs[e.From] = append(idx.refs[e.From], e.Positions...)
-		}
-	}
-	for _, ps := range idx.refs {
-		sort.Slice(ps, func(i, j int) bool { return positionLess(ps[i], ps[j]) })
 	}
 	return idx
+}
+
+// typeID는 멤버 ID에서 얻은 소유 타입 ID를 문서의 정점 ID로 맞춘다(패키지와 겹치면 충돌 접미사).
+func (idx fieldIndex) typeID(owner string) string {
+	if idx.kinds[owner] != graph.KindType && idx.kinds[owner+graph.CollisionSuffix] == graph.KindType {
+		return owner + graph.CollisionSuffix
+	}
+	return owner
 }
 
 // positionLess는 (파일, 줄, 열) 순서다.
@@ -92,62 +88,65 @@ func positionLess(a, b graph.Position) bool {
 	return a.Column < b.Column
 }
 
-// fieldOwners는 타입 선언의 구조 간선(references·signature)이 모두 필드 선언 안에서 나왔으면 그
-// 필드들을 돌려준다(fieldsAt의 귀속 규칙). 필드에 귀속되지 않는 위치(타입 파라미터 제약, 필드 없는
-// 타입 정의 등)가 하나라도 있거나 위치가 없으면 nil이다 — 그 간선은 옮기지 않는다(all과 같은 도달).
+// fieldOwners는 struct 타입 T의 구조 간선 T → X(references·signature)를 필드로 옮길 수 있으면 그
+// 필드 정점들을 돌려준다: 필드 목록에서 정규 타입이 X를 담는 필드(`a, b *X`는 둘 다, `m map[K]X`,
+// `Box[X]`, `struct{ x X }`도)다. 간선 위치가 첫 필드보다 앞(타입 파라미터 제약 등 타입 머리)이거나,
+// X를 담는 필드가 없거나, 필드 목록·정점이 없는 옛 문서면 nil이다 — 그 간선은 옮기지 않는다(all과 같은
+// 도달).
 func (idx fieldIndex) fieldOwners(e graph.Edge) []string {
-	if idx.kinds[e.From] != graph.KindType || len(e.Positions) == 0 ||
+	fields := idx.fields[e.From]
+	if idx.kinds[e.From] != graph.KindType || len(fields) == 0 ||
 		(e.Kind != graph.EdgeReferences && e.Kind != graph.EdgeSignature) {
 		return nil
 	}
-	spots := idx.fields[e.From]
-	seen := map[string]bool{}
-	var out []string
-	for _, p := range e.Positions {
-		owners := fieldsAt(spots, idx.refs[e.From], p)
-		if len(owners) == 0 {
-			return nil
-		}
-		for _, id := range owners {
-			if !seen[id] {
-				seen[id] = true
-				out = append(out, id)
+	if first, ok := idx.first[e.From]; ok {
+		for _, p := range e.Positions {
+			if positionLess(p, first) {
+				return nil
 			}
+		}
+	}
+	target := graph.CanonicalID(e.To)
+	member := graph.CanonicalID(e.From)
+	pkgEnd := strings.LastIndex(member, ".")
+	var out []string
+	for _, f := range fields {
+		name, typ, ok := strings.Cut(f, ":")
+		if !ok || !mentionsType(typ, target) {
+			continue
+		}
+		id := member[:pkgEnd] + ".(" + member[pkgEnd+1:] + ")." + name
+		if idx.kinds[id] == graph.KindField {
+			out = append(out, id)
 		}
 	}
 	return out
 }
 
-// fieldsAt은 위치 p(타입 표현식 안의 참조)가 속할 수 있는 필드들이다. p 이전의 가장 가까운 필드 줄을
-// L이라 하면, L보다 앞 줄에 있는 이 타입의 마지막 구조 참조 q 뒤부터 p까지 선언된 필드 전부다 —
-// `a,\n b *X`처럼 이름이 앞 줄로 넘어간 필드(a)도 X에 귀속한다. 사이에 참조가 없는 필드(`id int`처럼
-// 모듈 밖·기본 타입 필드)까지 귀속될 수 있지만 그것은 도달을 넓힐 뿐이다 — 필드 이름을 쓰는 참 도달을
-// 잃지 않는 쪽을 고른다. 필드 줄이 없으면(필드 밖 위치) 빈 목록이다.
-func fieldsAt(spots []fieldSpot, refs []graph.Position, p graph.Position) []string {
-	line := -1
-	for _, s := range spots {
-		if s.pos.File == p.File && !positionLess(p, s.pos) {
-			line = s.pos.Line
+// mentionsType은 정규 타입 문자열이 타입 ID("경로.이름")를 한 토큰으로 담는지 본다 — 앞뒤가 경로·
+// 식별자 문자면 다른 타입(`api.OrderStore`의 `api.Order`)이다.
+func mentionsType(typ, id string) bool {
+	for from := 0; ; {
+		i := strings.Index(typ[from:], id)
+		if i < 0 {
+			return false
 		}
-	}
-	if line < 0 {
-		return nil
-	}
-	var after *graph.Position
-	for i := range refs {
-		q := refs[i]
-		if q.File == p.File && q.Line < line {
-			after = &refs[i]
+		start, end := from+i, from+i+len(id)
+		if (start == 0 || !isPathByte(typ[start-1])) && (end == len(typ) || !isIdentByte(typ[end])) {
+			return true
 		}
+		from = start + 1
 	}
-	var out []string
-	for _, s := range spots {
-		if s.pos.File != p.File || positionLess(p, s.pos) || (after != nil && !positionLess(*after, s.pos)) {
-			continue
-		}
-		out = append(out, s.id)
-	}
-	return out
+}
+
+// isIdentByte는 Go 식별자 바이트인지 본다.
+func isIdentByte(c byte) bool {
+	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80
+}
+
+// isPathByte는 import 경로·식별자 바이트인지 본다.
+func isPathByte(c byte) bool {
+	return isIdentByte(c) || c == '.' || c == '/' || c == '-' || c == '~'
 }
 
 // traversalEdges는 모드에 맞는 재료 간선이다(contains 제외). members는 필드 구조 간선을 필드 정점의

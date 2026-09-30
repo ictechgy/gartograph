@@ -500,12 +500,11 @@ are followed. The symbol harvest draws a struct's field-type references from the
 type vertex, so with `all` every method of a shared `Handler` struct reached the
 row types behind every field through its receiver (`/api/health` → the `users`
 columns), and in reverse a field type spread to every method of its container.
-`members` moves each field-declaration edge `T → X` (references/signature whose
-every position lies on a field line) to the field vertex (`T.f → X`): reaching
-`T` no longer reaches `X`; code that reads `f` still does. A position belongs to
-every field declared after the type's previous reference on an earlier line, so
-`a,\n b *X` attributes `X` to both names (a preceding `id int` may be included
-too — that only widens reach). Code that reads a field of an unreached struct
+`members` moves each field-declaration edge `T → X` (references/signature, not
+from the type-parameter header) to the vertices of the fields whose type names
+`X` in the type's field list (`fields`, canonical types: `a, b *X`, `m map[K]X`,
+`Box[X]`, `struct{ x X }`), so `T.f → X`: reaching `T` no longer reaches `X`;
+code that reads `f` still does. Code that reads a field of an unreached struct
 now reaches the field's type, which `all` missed. Both directions stay
 one plain graph, so `depth = via depth + 1` and the roots-inclusion rule of the
 contract hold. What `members` gives up: a whole struct value handed to
@@ -515,7 +514,7 @@ kept; the type itself and its own tags are still reached). When it cut anything
 the document says so with a `type-edges-members:` limitation counting the
 symbols `all` would add at the same roots and depth; rerun with
 `--type-edges all` for the previous over-approximation. Old graph documents
-without edge positions have nothing to move and traverse as `all`. The plain
+without field lists have nothing to move and traverse as `all`. The plain
 `impact` JSON format is unchanged (`--type-edges` there is a usage error).
 
 `isthmus trace` then joins route declarations (`routes`) to handler reach and

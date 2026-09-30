@@ -38,12 +38,19 @@ func randomMembersDoc(rng *rand.Rand) *graph.Document {
 		line := 100 * (t + 1)
 		d.Vertices = append(d.Vertices, graph.Vertex{ID: id, Kind: graph.KindType,
 			Position: &graph.Position{File: "a.go", Line: line, Column: 6}})
+		typeAt := len(d.Vertices) - 1
 		types = append(types, id)
 		for f := 0; f < 1+rng.Intn(3); f++ {
 			fid := fmt.Sprintf("p.(T%d).f%d", t, f)
 			d.Vertices = append(d.Vertices, graph.Vertex{ID: fid, Kind: graph.KindField,
 				Position: &graph.Position{File: "a.go", Line: line + 1 + f, Column: 2}})
 			members = append(members, fid)
+			// 필드 타입은 무작위 타입(또는 모듈 밖 타입)이다 — 구조 간선은 아래에서 필드 줄 위치로 긋는다.
+			typ := "int"
+			if rng.Intn(3) != 0 {
+				typ = fmt.Sprintf("*p.T%d", rng.Intn(4))
+			}
+			d.Vertices[typeAt].Fields = append(d.Vertices[typeAt].Fields, fmt.Sprintf("f%d:%s", f, typ))
 		}
 		mid := fmt.Sprintf("p.(T%d).m", t)
 		d.Vertices = append(d.Vertices, graph.Vertex{ID: mid, Kind: graph.KindMethod})
@@ -103,7 +110,8 @@ func demoDoc() *graph.Document {
 			{ID: "app.User", Kind: graph.KindType, Position: pos(3, 6)},
 			{ID: "app.UserStore", Kind: graph.KindType, Position: pos(8, 6)},
 			{ID: "app.(UserStore).List", Kind: graph.KindMethod, Position: pos(10, 21)},
-			{ID: "app.Handler", Kind: graph.KindType, Position: pos(15, 6)},
+			{ID: "app.Handler", Kind: graph.KindType, Position: pos(15, 6),
+				Fields: []string{"users:*app.UserStore", "name:string"}},
 			{ID: "app.(Handler).users", Kind: graph.KindField, Position: pos(16, 2)},
 			{ID: "app.(Handler).name", Kind: graph.KindField, Position: pos(17, 2)},
 			{ID: "app.(Handler).handleHealth", Kind: graph.KindMethod, Position: pos(20, 19)},
@@ -173,8 +181,11 @@ func TestTypeEdgesDemo(t *testing.T) {
 func TestTypeEdgesMultiNameField(t *testing.T) {
 	d := demoDoc()
 	for i := range d.Vertices {
-		if d.Vertices[i].ID == "app.(Handler).name" {
+		switch d.Vertices[i].ID {
+		case "app.(Handler).name":
 			d.Vertices[i].Position = &graph.Position{File: "app.go", Line: 16, Column: 9}
+		case "app.Handler":
+			d.Vertices[i].Fields = []string{"users:*app.UserStore", "name:*app.UserStore"}
 		}
 	}
 	for i, e := range d.Edges {
@@ -199,9 +210,9 @@ func TestTypeEdgesNestedField(t *testing.T) {
 	d := &graph.Document{Version: graph.Version, Level: graph.LevelSymbol,
 		Vertices: []graph.Vertex{
 			{ID: "p.User", Kind: graph.KindType, Position: pos(1, 6)},
-			{ID: "p.Resp", Kind: graph.KindType, Position: pos(5, 6)},
+			{ID: "p.Resp", Kind: graph.KindType, Position: pos(5, 6), Fields: []string{"U:p.User"}},
 			{ID: "p.(Resp).U", Kind: graph.KindField, Position: pos(6, 2)},
-			{ID: "p.Env", Kind: graph.KindType, Position: pos(10, 6)},
+			{ID: "p.Env", Kind: graph.KindType, Position: pos(10, 6), Fields: []string{"R:p.Resp"}},
 			{ID: "p.(Env).R", Kind: graph.KindField, Position: pos(11, 2)},
 			{ID: "p.name", Kind: graph.KindFunc, Position: pos(20, 6)},
 			{ID: "p.encode", Kind: graph.KindFunc, Position: pos(30, 6)},
@@ -227,11 +238,12 @@ func TestTypeEdgesNestedField(t *testing.T) {
 	}
 }
 
-// TestTypeEdgesWithoutPositions는 위치 없는 옛 문서에서 members가 all과 같은 도달인지 본다.
-func TestTypeEdgesWithoutPositions(t *testing.T) {
+// TestTypeEdgesWithoutFieldLists는 필드 목록(Vertex.Fields)이 없는 옛 문서에서 members가 all과 같은
+// 도달인지 본다.
+func TestTypeEdgesWithoutFieldLists(t *testing.T) {
 	d := demoDoc()
-	for i := range d.Edges {
-		d.Edges[i].Positions = nil
+	for i := range d.Vertices {
+		d.Vertices[i].Fields = nil
 	}
 	for _, direction := range []string{DirectionDependencies, DirectionDependents} {
 		for _, root := range []string{"app.(Handler).handleHealth", "app.UserStore", "app.User"} {
@@ -255,12 +267,12 @@ func TestTypeEdgesReviewCases(t *testing.T) {
 	at := func(line, col int) []graph.Position { return []graph.Position{*pos(line, col)} }
 	d := &graph.Document{Version: graph.Version, Level: graph.LevelSymbol,
 		Vertices: []graph.Vertex{
-			{ID: "p.S", Kind: graph.KindType, Position: pos(1, 6)},
+			{ID: "p.S", Kind: graph.KindType, Position: pos(1, 6), Fields: []string{"y:p.Y", "a:*p.X", "b:*p.X"}},
 			{ID: "p.(S).y", Kind: graph.KindField, Position: pos(2, 2)},
 			{ID: "p.(S).a", Kind: graph.KindField, Position: pos(3, 2)},
 			{ID: "p.(S).b", Kind: graph.KindField, Position: pos(4, 2)},
 			{ID: "p.Y", Kind: graph.KindType, Position: pos(10, 6)},
-			{ID: "p.X", Kind: graph.KindType, Position: pos(12, 6)},
+			{ID: "p.X", Kind: graph.KindType, Position: pos(12, 6), Fields: []string{"u:[]p.U"}},
 			{ID: "p.(X).u", Kind: graph.KindField, Position: pos(13, 2)},
 			{ID: "p.U", Kind: graph.KindType, Position: pos(15, 6)},
 			{ID: "p.h", Kind: graph.KindFunc, Position: pos(20, 6)},
@@ -290,5 +302,31 @@ func TestTypeEdgesReviewCases(t *testing.T) {
 	d.Edges = append(d.Edges, graph.Edge{From: "p.g", To: "p.X", Kind: graph.EdgeSignature, Positions: at(30, 12)})
 	if res, _ = run("p.g", 1); res.TypeEdgesNarrowed != 0 {
 		t.Errorf("depth 1 all-mode does not reach U either; narrowed %d", res.TypeEdgesNarrowed)
+	}
+}
+
+// TestTypeEdgesExternalFieldNotAttributed는 모듈 밖 타입 필드(`db *sql.DB`)를 읽어도 다음 줄 필드의
+// 타입(`last []Order`)에 닿지 않는지 본다 — 필드 목록의 정규 타입으로 귀속한다(e2e에서 위치 기반
+// 귀속이 db까지 묶어 orders 컬럼을 다시 끌어온 회귀).
+func TestTypeEdgesExternalFieldNotAttributed(t *testing.T) {
+	pos := func(line, col int) *graph.Position { return &graph.Position{File: "a.go", Line: line, Column: col} }
+	d := &graph.Document{Version: graph.Version, Level: graph.LevelSymbol,
+		Vertices: []graph.Vertex{
+			{ID: "p.Order", Kind: graph.KindType, Position: pos(1, 6)},
+			{ID: "p.Store", Kind: graph.KindType, Position: pos(5, 6),
+				Fields: []string{"db:*database/sql.DB", "last:[]p.Order"}},
+			{ID: "p.(Store).db", Kind: graph.KindField, Position: pos(6, 2)},
+			{ID: "p.(Store).last", Kind: graph.KindField, Position: pos(7, 2)},
+			{ID: "p.list", Kind: graph.KindFunc, Position: pos(10, 6)},
+		},
+		Edges: []graph.Edge{
+			{From: "p.Store", To: "p.Order", Kind: graph.EdgeReferences, Positions: []graph.Position{*pos(7, 9)}},
+			{From: "p.list", To: "p.(Store).db", Kind: graph.EdgeReferences, Positions: []graph.Position{*pos(11, 4)}},
+		},
+	}
+	got := reachedIDs(Traverse(d, TraversalRequest{Roots: []string{"p.list"}, Direction: DirectionDependencies,
+		MaxDepth: MaxTraversalDepth, MaxReached: MaxTraversalReached, TypeEdges: TypeEdgesMembers}))
+	if got["p.Order"] {
+		t.Errorf("reading db must not reach Order: %v", got)
 	}
 }
