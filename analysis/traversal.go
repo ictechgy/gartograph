@@ -73,8 +73,8 @@ type TraversalResult struct {
 	EvidenceClassified bool
 	// EvidenceApproximated는 메모리 상한 때문에 등급을 보수적으로(약하게) 근사했는지다.
 	EvidenceApproximated bool
-	// TypeEdgesNarrowed는 members 모드 때문에 닿지 않은 정점 수다(all이었다면 옮긴 필드 구조 간선
-	// 하나로 이어졌을 정점, countNarrowed).
+	// TypeEdgesNarrowed는 members 모드 때문에 닿지 않은 정점 수다(같은 root·깊이로 all이 더 닿는 정점,
+	// countNarrowed).
 	TypeEdgesNarrowed int
 }
 
@@ -93,8 +93,10 @@ func Traverse(d *graph.Document, req TraversalRequest) *TraversalResult {
 	adj, moved := buildTraversalAdjacency(d, req.Direction, false, req.TypeEdges)
 	prop := propagate(adj, req.Roots, req.MaxDepth)
 	rows := reachedRows(adj, prop.levels, req.Roots)
-	res := &TraversalResult{EvidenceClassified: d.DispatchEvidence,
-		TypeEdgesNarrowed: countNarrowed(moved, req.Direction, req.Roots, rows)}
+	res := &TraversalResult{EvidenceClassified: d.DispatchEvidence}
+	if len(moved) > 0 {
+		res.TypeEdgesNarrowed = countNarrowed(d, req.Direction, req.Roots, req.MaxDepth, rows)
+	}
 	if prop.depthCut {
 		res.TruncationReasons = append(res.TruncationReasons, "depth")
 	}

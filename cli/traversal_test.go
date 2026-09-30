@@ -316,7 +316,7 @@ func TestReachTypeEdges(t *testing.T) {
 	if health[fx+".Store"] || health[fx+".User"] || !health[fx+".Handler"] {
 		t.Errorf("members: health reached %v", health)
 	}
-	if !strings.Contains(strings.Join(doc.Limitations, "\n"), "type-edges-members: 1 symbol(s)") {
+	if !strings.Contains(strings.Join(doc.Limitations, "\n"), "type-edges-members: 2 symbol(s)") {
 		t.Errorf("limitations = %v", doc.Limitations)
 	}
 	users, _ := reached(fx + ".(Handler).users")

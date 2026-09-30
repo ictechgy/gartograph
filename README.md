@@ -502,13 +502,18 @@ row types behind every field through its receiver (`/api/health` → the `users`
 columns), and in reverse a field type spread to every method of its container.
 `members` moves each field-declaration edge `T → X` (references/signature whose
 every position lies on a field line) to the field vertex (`T.f → X`): reaching
-`T` no longer reaches `X`; code that reads `f` still does. Both directions stay
+`T` no longer reaches `X`; code that reads `f` still does. A position belongs to
+every field declared after the type's previous reference on an earlier line, so
+`a,\n b *X` attributes `X` to both names (a preceding `id int` may be included
+too — that only widens reach). Code that reads a field of an unreached struct
+now reaches the field's type, which `all` missed. Both directions stay
 one plain graph, so `depth = via depth + 1` and the roots-inclusion rule of the
 contract hold. What `members` gives up: a whole struct value handed to
 reflection without naming the field (`json.Marshal(h)`, an ORM `Save(&u)`) does
 not reach the non-embedded field types (embedding is an `embeds` edge and is
 kept; the type itself and its own tags are still reached). When it cut anything
-the document says so with a counted `type-edges-members:` limitation; rerun with
+the document says so with a `type-edges-members:` limitation counting the
+symbols `all` would add at the same roots and depth; rerun with
 `--type-edges all` for the previous over-approximation. Old graph documents
 without edge positions have nothing to move and traverse as `all`. The plain
 `impact` JSON format is unchanged (`--type-edges` there is a usage error).

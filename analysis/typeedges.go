@@ -39,16 +39,18 @@ type fieldSpot struct {
 	pos graph.Position
 }
 
-// fieldIndex는 정점 종류와 타입 정점 ID → 필드(위치순)이다.
+// fieldIndex는 정점 종류와 타입 정점 ID → 필드(위치순)·구조 간선 위치(위치순)이다.
 type fieldIndex struct {
 	kinds  map[string]graph.VertexKind
 	fields map[string][]fieldSpot
+	refs   map[string][]graph.Position
 }
 
 // newFieldIndex는 타입별 필드 목록을 모은다. 필드 소유 타입 ID가 패키지와 겹치면 문서의 타입 정점에는
 // 충돌 접미사가 붙어 있어 두 형태를 다 본다.
 func newFieldIndex(d *graph.Document) fieldIndex {
-	idx := fieldIndex{kinds: map[string]graph.VertexKind{}, fields: map[string][]fieldSpot{}}
+	idx := fieldIndex{kinds: map[string]graph.VertexKind{}, fields: map[string][]fieldSpot{},
+		refs: map[string][]graph.Position{}}
 	for _, v := range d.Vertices {
 		idx.kinds[v.ID] = v.Kind
 	}
@@ -68,6 +70,14 @@ func newFieldIndex(d *graph.Document) fieldIndex {
 	for _, spots := range idx.fields {
 		sort.Slice(spots, func(i, j int) bool { return positionLess(spots[i].pos, spots[j].pos) })
 	}
+	for _, e := range d.Edges {
+		if idx.kinds[e.From] == graph.KindType && (e.Kind == graph.EdgeReferences || e.Kind == graph.EdgeSignature) {
+			idx.refs[e.From] = append(idx.refs[e.From], e.Positions...)
+		}
+	}
+	for _, ps := range idx.refs {
+		sort.Slice(ps, func(i, j int) bool { return positionLess(ps[i], ps[j]) })
+	}
 	return idx
 }
 
@@ -83,9 +93,8 @@ func positionLess(a, b graph.Position) bool {
 }
 
 // fieldOwners는 타입 선언의 구조 간선(references·signature)이 모두 필드 선언 안에서 나왔으면 그
-// 필드들을 돌려준다. 한 위치는 그 위치 이전에서 가장 가까운 필드 줄의 필드들(`a, b *X`는 둘 다)에
-// 귀속한다. 필드에 귀속되지 않는 위치(타입 파라미터 제약, 필드 없는 타입 정의 등)가 하나라도 있거나
-// 위치가 없으면 nil이다 — 그 간선은 옮기지 않는다(all과 같은 도달).
+// 필드들을 돌려준다(fieldsAt의 귀속 규칙). 필드에 귀속되지 않는 위치(타입 파라미터 제약, 필드 없는
+// 타입 정의 등)가 하나라도 있거나 위치가 없으면 nil이다 — 그 간선은 옮기지 않는다(all과 같은 도달).
 func (idx fieldIndex) fieldOwners(e graph.Edge) []string {
 	if idx.kinds[e.From] != graph.KindType || len(e.Positions) == 0 ||
 		(e.Kind != graph.EdgeReferences && e.Kind != graph.EdgeSignature) {
@@ -95,7 +104,7 @@ func (idx fieldIndex) fieldOwners(e graph.Edge) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, p := range e.Positions {
-		owners := fieldsAt(spots, p)
+		owners := fieldsAt(spots, idx.refs[e.From], p)
 		if len(owners) == 0 {
 			return nil
 		}
@@ -109,8 +118,12 @@ func (idx fieldIndex) fieldOwners(e graph.Edge) []string {
 	return out
 }
 
-// fieldsAt은 위치 p를 담는 필드 줄(p 이전에서 가장 가까운 필드 줄, 열이 p 이전인 필드)의 필드다.
-func fieldsAt(spots []fieldSpot, p graph.Position) []string {
+// fieldsAt은 위치 p(타입 표현식 안의 참조)가 속할 수 있는 필드들이다. p 이전의 가장 가까운 필드 줄을
+// L이라 하면, L보다 앞 줄에 있는 이 타입의 마지막 구조 참조 q 뒤부터 p까지 선언된 필드 전부다 —
+// `a,\n b *X`처럼 이름이 앞 줄로 넘어간 필드(a)도 X에 귀속한다. 사이에 참조가 없는 필드(`id int`처럼
+// 모듈 밖·기본 타입 필드)까지 귀속될 수 있지만 그것은 도달을 넓힐 뿐이다 — 필드 이름을 쓰는 참 도달을
+// 잃지 않는 쪽을 고른다. 필드 줄이 없으면(필드 밖 위치) 빈 목록이다.
+func fieldsAt(spots []fieldSpot, refs []graph.Position, p graph.Position) []string {
 	line := -1
 	for _, s := range spots {
 		if s.pos.File == p.File && !positionLess(p, s.pos) {
@@ -120,11 +133,19 @@ func fieldsAt(spots []fieldSpot, p graph.Position) []string {
 	if line < 0 {
 		return nil
 	}
+	var after *graph.Position
+	for i := range refs {
+		q := refs[i]
+		if q.File == p.File && q.Line < line {
+			after = &refs[i]
+		}
+	}
 	var out []string
 	for _, s := range spots {
-		if s.pos.File == p.File && s.pos.Line == line && !positionLess(p, s.pos) {
-			out = append(out, s.id)
+		if s.pos.File != p.File || positionLess(p, s.pos) || (after != nil && !positionLess(*after, s.pos)) {
+			continue
 		}
+		out = append(out, s.id)
 	}
 	return out
 }
@@ -159,26 +180,41 @@ func traversalEdges(d *graph.Document, typeEdges string) ([]virtualEdge, []pairK
 	return out, moved
 }
 
-// countNarrowed는 members가 실제로 좁힌 곳의 수다: 옮긴 구조 간선 (T, X) 중 순회 방향의 출발
-// 끝(dependencies는 T, dependents는 X)이 root이거나 닿았는데 도착 끝은 닿지 않은 도착 정점의 수 —
-// all이었다면 그 정점까지 이어졌을 것이다(깊이·출력 상한 안에서).
-func countNarrowed(moved []pairKey, direction string, roots []string, rows []TraversalReached) int {
+// countNarrowed는 members 때문에 닿지 않은 정점 수다: 같은 root·깊이 상한으로 all 그래프를 한 번에
+// 넓혀(다중 출발 BFS — 도달 집합은 root별 순회의 합집합과 같다) 닿는 정점 중 members 순회가 싣지 않은
+// 것. members가 오히려 더 닿는 경우(도달하지 않은 타입의 필드를 읽는 코드가 그 필드 타입에 닿음)는
+// 세지 않는다 — --type-edges all로 다시 돌렸을 때 더해지는 것만 센다.
+func countNarrowed(d *graph.Document, direction string, roots []string, maxDepth int, rows []TraversalReached) int {
+	adj, _ := buildTraversalAdjacency(d, direction, false, TypeEdgesAll)
+	isRoot := map[string]bool{}
+	for _, r := range roots {
+		isRoot[r] = true
+	}
+	reached := map[string]bool{}
+	for _, row := range rows {
+		reached[row.ID] = true
+	}
 	seen := map[string]bool{}
+	frontier := append([]string(nil), roots...)
 	for _, r := range roots {
 		seen[r] = true
 	}
-	for _, row := range rows {
-		seen[row.ID] = true
-	}
-	missed := map[string]bool{}
-	for _, m := range moved {
-		from, to := m.from, m.to
-		if direction == DirectionDependents {
-			from, to = m.to, m.from
+	missed := 0
+	for level := 1; level <= maxDepth && len(frontier) > 0; level++ {
+		var next []string
+		for _, node := range frontier {
+			for _, nb := range adj.next[node] {
+				if seen[nb] {
+					continue
+				}
+				seen[nb] = true
+				next = append(next, nb)
+				if !isRoot[nb] && !reached[nb] {
+					missed++
+				}
+			}
 		}
-		if seen[from] && !seen[to] {
-			missed[to] = true
-		}
+		frontier = next
 	}
-	return len(missed)
+	return missed
 }

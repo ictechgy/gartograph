@@ -246,3 +246,49 @@ func TestTypeEdgesWithoutPositions(t *testing.T) {
 		}
 	}
 }
+
+// TestTypeEdgesReviewCases는 리뷰가 찾은 경우를 고정한다: 이름이 앞 줄로 넘어간 필드(`a,\n b *X`)도
+// X에 귀속하고, members가 all보다 더 닿는 곳(도달하지 않은 타입의 필드를 읽는 코드)은 좁힌 수로
+// 세지 않으며, 깊이 상한 밖은 세지 않는다.
+func TestTypeEdgesReviewCases(t *testing.T) {
+	pos := func(line, col int) *graph.Position { return &graph.Position{File: "a.go", Line: line, Column: col} }
+	at := func(line, col int) []graph.Position { return []graph.Position{*pos(line, col)} }
+	d := &graph.Document{Version: graph.Version, Level: graph.LevelSymbol,
+		Vertices: []graph.Vertex{
+			{ID: "p.S", Kind: graph.KindType, Position: pos(1, 6)},
+			{ID: "p.(S).y", Kind: graph.KindField, Position: pos(2, 2)},
+			{ID: "p.(S).a", Kind: graph.KindField, Position: pos(3, 2)},
+			{ID: "p.(S).b", Kind: graph.KindField, Position: pos(4, 2)},
+			{ID: "p.Y", Kind: graph.KindType, Position: pos(10, 6)},
+			{ID: "p.X", Kind: graph.KindType, Position: pos(12, 6)},
+			{ID: "p.(X).u", Kind: graph.KindField, Position: pos(13, 2)},
+			{ID: "p.U", Kind: graph.KindType, Position: pos(15, 6)},
+			{ID: "p.h", Kind: graph.KindFunc, Position: pos(20, 6)},
+			{ID: "p.g", Kind: graph.KindFunc, Position: pos(30, 6)},
+		},
+		Edges: []graph.Edge{
+			{From: "p.S", To: "p.Y", Kind: graph.EdgeReferences, Positions: at(2, 4)},
+			{From: "p.S", To: "p.X", Kind: graph.EdgeReferences, Positions: at(4, 5)},
+			{From: "p.X", To: "p.U", Kind: graph.EdgeReferences, Positions: at(13, 4)},
+			{From: "p.h", To: "p.(S).a", Kind: graph.EdgeReferences, Positions: at(21, 4)},
+			{From: "p.g", To: "p.(X).u", Kind: graph.EdgeReferences, Positions: at(31, 4)},
+		},
+	}
+	run := func(root string, depth int) (*TraversalResult, map[string]bool) {
+		res := Traverse(d, TraversalRequest{Roots: []string{root}, Direction: DirectionDependencies,
+			MaxDepth: depth, MaxReached: MaxTraversalReached, TypeEdges: TypeEdgesMembers})
+		return res, reachedIDs(res)
+	}
+	res, got := run("p.h", MaxTraversalDepth)
+	if !got["p.X"] || got["p.Y"] || res.TypeEdgesNarrowed != 0 {
+		t.Errorf("a (named on the line before `b *X`) must reach X but not Y: %v narrowed %d", got, res.TypeEdgesNarrowed)
+	}
+	res, got = run("p.g", MaxTraversalDepth)
+	if !got["p.U"] || res.TypeEdgesNarrowed != 0 {
+		t.Errorf("members reaching more than all is not narrowing: %v narrowed %d", got, res.TypeEdgesNarrowed)
+	}
+	d.Edges = append(d.Edges, graph.Edge{From: "p.g", To: "p.X", Kind: graph.EdgeSignature, Positions: at(30, 12)})
+	if res, _ = run("p.g", 1); res.TypeEdgesNarrowed != 0 {
+		t.Errorf("depth 1 all-mode does not reach U either; narrowed %d", res.TypeEdgesNarrowed)
+	}
+}
