@@ -2,6 +2,26 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
+## 진행 중 — schema usr와 language-traversal (2026-09-30, feature/schema-usr)
+
+API 영향 추적 Phase 7c. isthmus trace가 Go 백엔드의 핸들러 도달과 relation-use를 잇도록:
+- `schema` 사실에 `symbol.usr`(감싸는 심볼 정점 ID, 수확의 간선 출발점과 같은 귀속). struct
+  태그는 타입, 빈 선언은 `pkg._`. 같은 로드로 만든 impact 그래프(.gartograph.yml exclude
+  포함)의 심볼 정점일 때만 싣고 나머지는 `missing-relation-usrs:`로 센다.
+- 간선 `candidate`(CHA 팬아웃 전용 관계) + 문서 표시 `dispatchEvidence`.
+- `reach`·`impact --format language-traversal`: 다중 root 한 번 순회(analysis.Traverse,
+  root별 BFS 오라클 대조), root별 하한 evidence(direct·candidate), dispatch·unresolvedCalls는
+  완전성을 셀 수 없어 싣지 않음. root-not-found는 문서를 쓰고 64, 사용법 오류는 빈 출력 64.
+- 합성 e2e(net/http + database/sql + gorm 스텁, scratch): `check --pairs` 7 matches,
+  relation 선택 trace는 relation-use → 역방향 순회까지 이어지고 route-decl이 없어
+  `non-http-entry`. isthmus가 go 문서의 http target을 거부하므로 route 선택은 isthmus를
+  scratch에서 고쳐 손으로 만든 route-decl로만 확인했다(핸들러 → 테이블 도달 확인).
+
+남은 것: (1) Go route-decl 생산자와 isthmus의 go/rust http 허용. (2) reach가 impact와 같은
+간선을 따라 메서드 → 리시버 타입 → 필드 타입 구조 간선까지 펼친다 — 같은 Handler struct의
+모든 핸들러가 다른 저장소의 행 타입(태그 컬럼)에 닿는 과대 근사(/api/health → users 컬럼).
+타입 정점에서 구조 간선을 펼치지 않는 순회 모드가 후보다.
+
 ## 이어받기 요약 (2026-09-25 세션 끝)
 
 ### 목표

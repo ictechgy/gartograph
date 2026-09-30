@@ -59,6 +59,11 @@ gartograph bridges --out go-facts.json
 # 호출, SQL 리터럴, TableName() 바인딩, db/sql/gorm 컬럼 태그에서
 # SQL 관계 참조를 수확한다(platform "go", target "persistence").
 gartograph schema --out go-schema-facts.json
+
+# isthmus trace용 language-traversal 문서 — root가 기대는 쪽(reach)과
+# root에 기대는 쪽(impact)을 여러 root 한 번에
+gartograph reach 'example.com/shop.(Handler).GetOrder' 'example.com/shop.(Handler).ListUsers'
+gartograph impact --format language-traversal --roots-from go-schema-facts.json
 gartograph rules --strict                     # .gartograph.yml 레이어 규칙 검사
 
 # query·impact·path·shared는 기본으로 symbol 레벨을 수확해 패키지·타입·
@@ -306,6 +311,53 @@ breaking으로 분류하는 재료입니다.
 `contains`·`implements`·모듈 간선처럼 단일 지점이 없는 관계는 생략합니다.
 `dead --algo rta`는 수확한 CHA 간선 대신 SSA 기반 RTA를 씁니다 —
 더 좁지만 소스가 필요하고 과소 근사이므로 그 사실이 `limitations`에 실립니다.
+
+## isthmus 교환 — `schema` usr와 순회 문서
+
+`schema`의 relation-use 사실은 `symbol: {qualifiedName, usr}`를 싣습니다. `usr`는 사실을
+감싸는 선언의 정점 ID로, `query`·`impact`·`reach`와 같은 ID입니다(`pkg.Func`,
+포인터·타입 파라미터를 뗀 `pkg.(Type).Method`, `pkg.init`, `pkg.var`, 초기화 때 실행되는
+빈 패키지 선언은 `pkg._`, 패키지 경로와 겹치면 `#symbol` 접미사). 귀속은 심볼 수확이 그
+자리의 간선을 긋는 정점과 같습니다 — 함수·메서드(클로저 포함), 타입 선언(struct 컬럼
+태그는 타입에 귀속 — 핸들러가 행 타입에 닿으면 그 컬럼들에 기댄다고 봅니다), 패키지
+변수(`var a, b = x, y`의 i번째 값은 i번째 이름). `qualifiedName`은 import 경로 마지막
+요소부터의 ID입니다. usr는 같은 `.gartograph.yml` exclude로 `impact`가 수확할 그래프의
+심볼 정점일 때만 싣고, 없으면(빈 함수, 모듈 심볼을 쓰지 않는 빈 선언, exclude 패키지, 타입
+정보 없는 패키지) `symbol`을 빼고 체인 전용 `missing-relation-usrs:`로 셉니다.
+
+`reach`(`dependencies`)와 `impact --format language-traversal`(`dependents`)은
+`impact`와 같은 의존 간선 위에서 isthmus
+[`language-traversal` v1](https://github.com/ictechgy/isthmus/blob/main/docs/LANGUAGE-TRAVERSAL.md)
+문서를 냅니다.
+
+- root는 위치 인자 + `--roots-from FILE|-`(JSON 문자열 배열 또는 bridge-facts 문서의
+  `facts[].symbol.usr`)이고 처음 나온 순서로 중복을 지웁니다 — 그 순서가
+  `reached[].roots`의 뜻입니다.
+- 다중 root 한 번 순회: 자기 아닌 root에서 닿은 모든 심볼, 닿는 root 인덱스(오름차순
+  최대 64개, 넘으면 `rootsTruncated`), 가장 가까운 root의 `depth`와 최단 경로 목격
+  `via`, via 간선 종류. 무작위 그래프에서 root별 BFS 오라클과 대조합니다.
+- 모든 도달 심볼의 `evidence`는 root별 하한입니다 — 닿는 root 모두가 컴파일러가 확정한
+  간선만으로 닿으면 `direct`, 어느 root가 인터페이스 디스패치 팬아웃 간선을 거쳐야 하면
+  `candidate`. 함수 값·리플렉션 호출은 세지 않아 `dispatch`·`unresolvedCalls`는 싣지
+  않습니다(완전성 주장 없음).
+- `--depth`(1–128, 기본 128)·`--max`(도달 1–100000, 기본 100000)로 자르면
+  `truncationReasons`에 `depth`·`max-reached`가 실립니다.
+- `project`는 `schema`와 같은 realpath, `revision`은 `--revision` 또는 작업 트리가
+  깨끗할 때의 git `HEAD`(`--graph`면 생략), `graphRevision`은 그래프 JSON의 SHA-256,
+  `--generated-at`은 시각을 고정합니다.
+- 정점이 아닌 id는 `symbol` 없이 `roots`에 싣고 `root-not-found:` 한계·잘림 이유와 함께
+  문서를 쓴 뒤 64로 끝납니다. 사용법 오류(root 없음, 제어 문자, 범위 밖 숫자, 잘못된
+  `--revision`·`--generated-at`, 순회 형식과 `--since`·`--files`·symbol 아닌 `--level`
+  조합)는 표준 출력을 비우고 64입니다.
+
+그래프 문서의 `dispatchEvidence: true`(symbol 레벨 수확)는 간선의 `candidate: true`
+(모든 지점이 CHA 팬아웃인 관계)를 수확했다는 표시입니다. 표시 없는 옛 저장 문서로 순회하면
+등급을 싣지 않고 `evidence-unassessed:` 한계를 답니다.
+
+`isthmus trace`는 핸들러 도달과 relation-use를 usr 정확 일치로 잇습니다. go 플랫폼에는
+아직 http route-decl 사실이 없어(isthmus가 go 문서의 target을 null·persistence로만
+받습니다) Go 백엔드는 지금 relation → relation-use → 역방향 순회 → 심볼까지 이어집니다.
+route 선택에는 Go 라우트 선언이 먼저 필요합니다.
 
 ## MCP 서버
 

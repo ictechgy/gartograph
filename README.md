@@ -74,6 +74,11 @@ gartograph bridges --out go-facts.json
 # and db/sql/gorm column tags (platform "go", target "persistence").
 gartograph schema --out go-schema-facts.json
 
+# isthmus language-traversal documents for `isthmus trace`: what the roots
+# depend on (reach) and what depends on them (impact), many roots in one pass
+gartograph reach 'example.com/shop.(Handler).GetOrder' 'example.com/shop.(Handler).ListUsers'
+gartograph impact --format language-traversal --roots-from go-schema-facts.json
+
 # Check layer rules from .gartograph.yml
 gartograph rules --strict
 
@@ -341,6 +346,12 @@ instantiations, widening can break generic code relying on the allowed
 operations); an empty set renders as `any`. Equivalent rewrites of a
 multi-element intersection may still be reported.
 
+`dispatchEvidence: true` (symbol-level harvests) marks documents whose edges
+carry `candidate: true` when every site of the relation is an interface-dispatch
+(CHA) fan-out to a possible implementation — a relation with at least one
+compiler-resolved site stays unmarked. Traversal documents grade evidence from
+it; older saved documents lack the marker and are not graded.
+
 Edges carry `positions` — every source site where the relation holds
 (import decls for `import`, call expressions for `call`, and so on).
 Relations without a single site (`contains`, `implements`, module edges)
@@ -427,6 +438,62 @@ go run ./cmd/gartograph cycles --level symbol --strict
 go run ./cmd/gartograph dead
 ```
 
+## isthmus exchange — `schema` usr and traversal documents
+
+`schema` relation-use facts carry `symbol: {qualifiedName, usr}` where `usr` is
+the enclosing declaration's vertex id — the same id `query`/`impact`/`reach`
+use (`pkg.Func`, `pkg.(Type).Method` with the pointer stripped and type
+parameters dropped, `pkg.init`, `pkg.var`, and `pkg._` for blank package-level
+declarations that run at initialization; `#symbol` suffixed ids when a symbol
+collides with a package path). The owner is whatever the symbol harvest draws
+that site's edges from: functions and methods (closures fold into them), type
+declarations (struct column tags attach to the type — a handler that reaches
+the row type is taken to depend on its mapped columns), and package variables
+(value `i` of `var a, b = x, y` belongs to name `i`). `qualifiedName` is the id
+from the last import-path element (`shop.(Handler).GetOrder`). A usr is only
+written when it is a symbol vertex of the graph `impact` would harvest with the
+same `.gartograph.yml` excludes; facts without one (blank functions, blank
+declarations that touch no module symbol, excluded packages, packages without
+type information) carry no `symbol` and are counted in the chain-only
+`missing-relation-usrs:` limitation.
+
+`reach` (direction `dependencies`) and `impact --format language-traversal`
+(direction `dependents`) write an isthmus
+[`language-traversal` v1](https://github.com/ictechgy/isthmus/blob/main/docs/LANGUAGE-TRAVERSAL.md)
+document over the same dependency edges as `impact`:
+
+- Roots are positional ids plus `--roots-from FILE|-` (a JSON string array or a
+  bridge-facts document, whose `facts[].symbol.usr` are used), deduplicated in
+  first-seen order; that order is the meaning of `reached[].roots`.
+- One multi-root pass: every symbol reached from a root other than itself, the
+  ascending indexes of all roots that reach it (64 at most, then
+  `rootsTruncated`), the nearest root's `depth` and a shortest-path `via`
+  witness, and the edge kinds of the via hop. Checked against a per-root BFS
+  oracle on random graphs.
+- `evidence` on every reached symbol is the per-root lower bound: `direct` when
+  every root that reaches it does so over compiler-resolved edges only,
+  `candidate` when some root needs an interface-dispatch fan-out edge. Calls
+  through function values and reflection are not counted, so the document
+  carries neither `dispatch` nor `unresolvedCalls` (no completeness claim).
+- `--depth` (1–128, default 128) and `--max` (1–100000 reached, default
+  100000) cut with `truncationReasons` `depth`/`max-reached`.
+- `project` is the same realpath `schema` writes; `revision` is `--revision` or
+  git `HEAD` when the work tree is clean (omitted with `--graph`);
+  `graphRevision` is the SHA-256 of the graph JSON; `--generated-at` fixes the
+  timestamp.
+- Ids that are not vertices are listed in `roots` without `symbol`, with a
+  `root-not-found:` limitation and truncation reason; the document is written
+  and the command exits 64. Usage errors (no roots, control characters,
+  out-of-range numbers, a bad `--revision`/`--generated-at`, `--since`/`--files`
+  or a non-symbol `--level` with the traversal format) exit 64 with empty
+  stdout.
+
+`isthmus trace` then joins handler reach to relation uses by exact usr. The Go
+platform has no http route-decl facts yet (isthmus accepts only null or
+persistence targets for `go`), so a Go backend currently chains relation →
+relation-use → reverse traversal → symbols; route selection needs Go route
+declarations first.
+
 ## MCP server
 
 `gartograph mcp` serves the harvested document over MCP stdio
@@ -460,6 +527,7 @@ tool call answers over the same snapshot. Example client config:
 - ~~Edge positions (schema v2)~~, ~~test-variant deduplication~~ — done
 - ~~`fileRules`, cycles/dead SARIF + baselines, deeper `diff` breaking
   classification~~ — done
+- ~~`schema` usr, `reach` / `impact --format language-traversal`~~ — done
 
 ## License
 
