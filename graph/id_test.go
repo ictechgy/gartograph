@@ -20,3 +20,17 @@ func TestMemberOwner(t *testing.T) {
 		}
 	}
 }
+
+// TestShortName은 짧은 이름이 import 경로의 마지막 요소부터인지 본다.
+func TestShortName(t *testing.T) {
+	cases := map[string]string{
+		"example.com/m/store.(Repo).List": "store.(Repo).List",
+		"example.com/m.F":                 "m.F",
+		"main.F":                          "main.F",
+	}
+	for id, want := range cases {
+		if got := ShortName(id); got != want {
+			t.Errorf("ShortName(%q) = %q, want %q", id, got, want)
+		}
+	}
+}

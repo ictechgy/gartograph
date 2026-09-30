@@ -19,6 +19,14 @@ func CanonicalID(id string) string {
 	return strings.TrimSuffix(id, CollisionSuffix)
 }
 
+// ShortName은 정점 ID의 사람이 읽는 짧은 이름이다 — import 경로의 마지막 요소부터다
+// ("example.com/m/store.(Repo).List" → "store.(Repo).List"). 식별자에는 '/'가 올 수
+// 없어 마지막 '/' 뒤는 항상 패키지 이름부터다. schema 사실과 순회 문서의
+// qualifiedName이 같은 규칙이어야 소비자가 같은 심볼을 같은 이름으로 본다.
+func ShortName(id string) string {
+	return id[strings.LastIndex(id, "/")+1:]
+}
+
 // MemberOwner는 메서드·필드 정점 ID("pkgpath.(Recv).Name")에서 소유 타입의 ID
 // ("pkgpath.Recv")를 돌려준다. import 경로에는 괄호를 쓸 수 없어 첫 ".("가 경로와
 // 리시버의 경계다. 소유 타입 ID가 패키지와 겹치면 문서에는 CollisionSuffix가 붙어

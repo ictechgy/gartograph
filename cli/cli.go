@@ -44,6 +44,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdQuery(args[1:], stdout, stderr)
 	case "impact":
 		return cmdImpact(args[1:], stdout, stderr)
+	case "reach":
+		return cmdReach(args[1:], stdout, stderr)
 	case "path":
 		return cmdPath(args[1:], stdout, stderr)
 	case "shared":
@@ -94,6 +96,10 @@ Usage:
   gartograph query  <id> [--depth N] [--max N] [--level L] [flags]
   gartograph impact <id> [--depth N] [--max N] [--level L] [flags]
   gartograph impact --since <git-rev>|--files F... [--depth N] [flags]
+  gartograph impact --format language-traversal <id>... [--roots-from FILE|-] [--depth N] [--max N]
+                    [--revision REV] [--generated-at TS] [flags]   isthmus dependents traversal
+  gartograph reach  <id>... [--roots-from FILE|-] [--depth N] [--max N]
+                    [--revision REV] [--generated-at TS] [flags]   isthmus dependencies traversal
   gartograph path   <from-id> <to-id> [--level L] [flags]
   gartograph shared <id> <id> [more ids...] [--level L] [flags]
   gartograph diff   <old.json> <new.json> [--strict] [--format text|json]
@@ -921,8 +927,23 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	var files stringsFlag
 	fs.Var(&files, "files", "changed file path relative to --dir (repeatable)")
 	level := idLevelFlag(fs)
+	format := fs.String("format", "json", "output format: json|language-traversal")
+	tf := registerTraversalFlags(fs)
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
+		// 순회 형식을 요청한 호출의 플래그 오류는 reach와 같은 64다 — 같은 잘못된
+		// 호출이 명령에 따라 2와 64로 갈리면 소비자가 원인을 다르게 읽는다.
+		if requestsTraversalFormat(args) {
+			return exitUsage
+		}
+		return 2
+	}
+	switch *format {
+	case "json":
+	case formatTraversal:
+		return impactTraversal(fs, positional, opts, *graphPath, *depth, *maxN, tf, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "error: unknown --format %q: want json|language-traversal\n", *format)
 		return 2
 	}
 	if len(positional) > 1 {
@@ -977,6 +998,28 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	return 0
+}
+
+// impactTraversal은 impact --format language-traversal이다 — root에 기대는 심볼
+// (dependents)을 여러 root 한 번에 낸다. 파일 모드(--since·--files)와 package 레벨은
+// 순회 문서의 root가 될 수 없어 사용법 오류(64)다.
+func impactTraversal(fs *flag.FlagSet, positional []string, opts *source.Options, graphPath string,
+	depth, maxN int, tf *traversalFlags, stdout, stderr io.Writer) int {
+	var conflict string
+	fs.Visit(func(f *flag.Flag) {
+		switch {
+		case f.Name == "since" || f.Name == "files":
+			conflict = "--" + f.Name + " cannot be combined with --format language-traversal"
+		case f.Name == "level" && f.Value.String() != string(graph.LevelSymbol):
+			conflict = "--format language-traversal needs symbol ids; drop --level or use --level symbol"
+		}
+	})
+	if conflict != "" {
+		fmt.Fprintln(stderr, "error:", conflict)
+		return exitUsage
+	}
+	return runTraversal(traversalRun{direction: analysis.DirectionDependents, positional: positional,
+		opts: opts, graphPath: graphPath, depth: depth, maxReached: maxN, flags: tf}, stdout, stderr)
 }
 
 // cmdPath는 두 정점 사이의 최단 의존 경로를 찾는다.
@@ -1441,7 +1484,13 @@ func cmdSchema(args []string, stdout, stderr io.Writer) int {
 	if fs.Parse(args) != nil {
 		return 2
 	}
-	doc, err := source.SchemaFacts(*dir, Version)
+	// usr 확인용 그래프는 impact와 같은 exclude로 만든다 — 기본 impact 그래프에
+	// 없는 정점 ID를 usr로 실으면 trace가 순회에서 찾지 못하는 유령 신원이 된다.
+	opts := source.Options{Dir: *dir}
+	if err := applyConfigExclude(&opts); err != nil {
+		return fail(stderr, err)
+	}
+	doc, err := source.SchemaFacts(opts, Version)
 	if err != nil {
 		return fail(stderr, err)
 	}

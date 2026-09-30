@@ -165,6 +165,11 @@ type Edge struct {
 	To        string     `json:"to"`
 	Kind      EdgeKind   `json:"kind"`
 	Positions []Position `json:"positions,omitempty"`
+	// Candidate는 이 관계가 인터페이스 디스패치의 CHA 팬아웃(가능한 구현 메서드)에서만
+	// 나왔다는 표시다 — 컴파일러가 대상을 확정한 호출·참조가 한 지점이라도 있으면
+	// 거짓이다. 순회 문서의 근거 등급(candidate)이 이 사실로 정해진다. 부재의 뜻은
+	// 문서의 DispatchEvidence가 가른다(표시 없는 옛 문서에서는 "몰랐다").
+	Candidate bool `json:"candidate,omitempty"`
 }
 
 // Document는 버전ed 그래프 산출물이다.
@@ -204,6 +209,10 @@ type Document struct {
 	// 수확했다는 표시다. 이 표시가 없는 옛 문서에서는 초기화식에서만 쓰는 심볼이 거짓으로
 	// dead일 수 있다 — dead가 재수확을 권하는 근거다.
 	InitializerRoots bool `json:"initializerRoots,omitempty"`
+	// DispatchEvidence는 간선의 Candidate(CHA 팬아웃 전용 관계)를 수확했다는 표시다.
+	// 있으면 Candidate가 없는 간선은 확정 관계이고, 없는 옛 문서에서는 팬아웃 간선과
+	// 확정 간선을 구분할 수 없다 — 순회가 근거 등급을 싣지 않는 근거다.
+	DispatchEvidence bool `json:"dispatchEvidence,omitempty"`
 }
 
 // Limitation은 분석이 보지 못한 것을 그 입력에서 실제로 세어 적는다.

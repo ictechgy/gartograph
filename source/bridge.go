@@ -183,6 +183,13 @@ func realPath(dir string) (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
+// ProjectPath는 isthmus 문서의 project 문자열이다(realPath와 같다). schema 사실과
+// language-traversal 문서의 project가 바이트 단위로 같아야 trace가 둘을 한 project로
+// 받으므로, 두 생산 경로가 이 함수 하나를 쓴다.
+func ProjectPath(dir string) (string, error) {
+	return realPath(dir)
+}
+
 // bridgeTimestamp는 계약의 UTC 밀리초 형식으로 정규화한다.
 func bridgeTimestamp(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z")
