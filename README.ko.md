@@ -450,7 +450,7 @@ gin은 `optional`(`RedirectTrailingSlash` 기본 true가 다른 형태에 301/30
 grpc-gateway 등)는 스코프 없는 `route-coverage:`를 더해, 사실 0건 문서가 "스캔했으나 없음"으로 읽히지
 않게 합니다. 문서는 쓰기 전에 계약 자기 검증(템플릿·동사·catch-all 접두사 원본)을 거칩니다.
 `conformance/`에 isthmus `http-template`·`http-dispatch`·`url-compose` 벡터를 벤더링했고(`conformance.lock`)
-생산자 사례 92건(route 선언 51, route 호출 41)을 모두 통과합니다.
+생산자 사례 114건(route 선언 51, route 호출 63)을 모두 통과합니다.
 
 `experiments/routes-oracle`(별도 모듈, `run.sh`가 proxy.golang.org에서 chi·gin·echo를 받음)은 합성
 ServeMux·chi·gin·echo 서버를 만들어 문서를 각 라우터 자신의 표(`chi.Walk`, `Engine.Routes()`, echo
@@ -481,30 +481,39 @@ root), `url.Parse`·`ParseRequestURI`, `(*url.URL).String`·`JoinPath`·`Resolve
 함수 결과, 다른 모듈이 바꿀 수 있는 공개 패키지 변수, 주소를 꺼낸 변수)은 값입니다. 세그먼트 전체를
 채우는 값은 `{}`, 세그먼트 안의 값은 호출을 dynamic과 `channelPrefix`로 만듭니다.
 
-base 결합은 Go 1.27.1 `net/url`(`resolvePath`·`joinPath`)·`path`와 resty v2.17.2 `client.go`·
-`middleware.go`(`parseRequestURL`)에서 읽었고, 테스트가 원문 입력마다 실제 `url.JoinPath`·
-`ResolveReference`·`path.Join` 결과와 대조합니다:
+base 결합은 isthmus `http-wrappers`의 결합 방식
+([HTTP-WRAPPERS "Go, Rust, Python 클라이언트"](https://github.com/ictechgy/isthmus/blob/main/docs/HTTP-WRAPPERS.md))을
+따르고, Go 1.27.1 `net/url`(`resolvePath`·`joinPath`)·`path`와 resty v2.17.2 `client.go`·`middleware.go`
+(`parseRequestURL`)에서 읽었습니다. 테스트가 원문 입력마다 실제 `url.JoinPath`·`ResolveReference`·
+`path.Join` 결과와 대조합니다:
 
-| 방식 | API | 미상 base 뒤 `/x` | 미상 base 뒤 `x` | 리터럴 base |
+| 결합 방식 | API | 미상 base 뒤 `/x` | 미상 base 뒤 `x` | 리터럴 base |
 |---|---|---|---|---|
-| `go-concat` | `+`, `fmt.Sprintf` | `base` | dynamic + `ambiguous-base-join:` | 이어 붙인 URL. `//`·점 세그먼트를 그대로 보냄 |
-| `rfc3986` | `ResolveReference`, `(*URL).Parse` | `root`(authority 없음) | `base` | RFC 3986 병합과 점 세그먼트 제거 |
-| `go-url-joinpath` | `url.JoinPath`, `(*URL).JoinPath` | `base` | `base` | `path.Join` 정리, 마지막 원소의 끝 `/` 보존. 미상 base 위로 오르는 `..`는 dynamic |
-| `go-path-join` | `path.Join` | `base`(값이 처음) | `base` | `path.Clean` |
-| `resty-slash-join` | resty base URL | `base` | `base` | base(`SetBaseURL`이 뗀 값) + `/`로 시작하게 한 경로. 절대 URL은 base를 쓰지 않음 |
+| `rfc3986` | `ResolveReference`, `(*URL).Parse` | `root`(authority 없음) | `base`. base로 오르는 `..`나 빈 참조는 dynamic + `ambiguous-base-join:` | RFC 3986 병합과 점 세그먼트 제거. `//host/p`는 그 host |
+| `go-join-path` | `url.JoinPath`, `(*URL).JoinPath` | `base` | `base`. base로 오르는 `..`는 dynamic + `ambiguous-base-join:` | `path.Join` 정리(`//` 축약, `..`는 base 경로 밖으로도 나감), 마지막 원소의 끝 `/` 보존 |
+| `resty-base-url` | resty base URL | `base` | `base` | base(`SetBaseURL`이 뗀 값) + `/`로 시작하게 한 경로. `//`·점 세그먼트를 그대로 보냄. 절대 URL은 base를 쓰지 않음 |
 
-host가 동적인 문자열 URL(`"https://" + host + "/v1"`)은 그 값이 경로를 담을 수 있어 `base`이고,
-net/http의 경로만 있는 URL도 `base`입니다. resty path param: 그 클라이언트나 그 요청의
-`SetPathParam(s)`가 설정한 `{name}`은 `{}`(resty가 값을 path escape해 한 세그먼트), raw param
-(`SetRawPathParam(s)`)은 `/`를 담을 수 있어 dynamic, path param이 하나도 없는 클라이언트는 `{name}`을
-그대로 보냅니다(`%7Bname%7D`). 동사는 API마다 고정이고, `NewRequest`·`Execute`는 계약 동사와 같은
-상수여야 합니다(`""`은 `http.NewRequest`처럼 GET). 아니면 `methodDynamic`입니다.
+문자열 연결(`+`, `fmt.Sprintf`)은 결합이 아니라 쓴 그대로의 URL 조립입니다(`//`·점 세그먼트를 그대로
+보냄). 값 뒤에 `/`로 시작하는 리터럴이 오면 `base` 꼬리, 그 밖이면 dynamic + `ambiguous-base-join:`입니다
+(벡터 없는 결합에 대한 계약 규칙). `path.Join`도 같은 방식으로 인자를 정리하고, 앞이 값이면 `base`
+꼬리입니다. host가 동적인 문자열 URL(`"https://" + host + "/v1"`)은 그 값이 경로를 담을 수 있어 `base`이고,
+net/http의 경로만 있는 URL도 `base`지만 base 식을 잇지 않았으므로 unresolved base로 세지 않습니다. resty
+path param은 수신 클라이언트마다 따로 풉니다: 그 클라이언트나 그 요청의 `SetPathParam(s)`가 설정한
+`{name}`은 `{}`(resty가 값을 path escape해 한 세그먼트. `parseRequestURL`처럼 escape 키가 raw 키를 이김),
+raw param(`SetRawPathParam(s)`)은 `/`를 담을 수 있어 dynamic, path param이 하나도 없는 클라이언트는
+`{name}`을 그대로 보내고(`%7Bname%7D`), 추적하지 못한 클라이언트는 `{}`로 둡니다(원문으로 두면 거짓
+`route-call-without-decl` error가 될 수 있음). 한 클라이언트의 base URL이 여럿이면 base마다 사실 하나입니다.
+동사는 API마다 고정이고, `NewRequest`·`Execute`는 계약 동사로 풀리는 문자열이어야 합니다(`""`은
+`http.NewRequest`처럼 GET). 아니면 `methodDynamic`입니다. 메서드 식(`(*http.Client).Get(c, u)`)은 리시버를
+인자 목록에서 뺍니다.
 
 Go 래퍼 선언: 패키지 함수는 `owner` = import 경로, 메서드는 `owner` = `import경로.타입`(선언한 타입,
 인터페이스 포함), `kind: "constructor"`는 struct 리터럴 `T{…}`·`&T{…}`이고 `owner` = `import경로.T`,
-`name` = `T`입니다. `index`는 호출 인자 위치(리시버 제외), `label`은 선언의 파라미터(생성자는 필드)
-이름이고, `methodEnum`의 키는 상수 이름입니다(`api.Get` → `Get`). 선언한 래퍼 본문의 dynamic 요청은
-내지 않습니다. 모르는 필드나 잘못된 항목, 항목의 `service`와 다른 `--service`는 종료 코드 2입니다.
+`name` = `T`입니다. 두 해석이 다 되는 `owner`(마지막 경로 원소에 점이 있는 `example.com/api.v2`)는 패키지
+함수가 있으면 패키지 함수입니다. `index`는 호출 인자 위치(리시버 제외), `label`은 선언의 파라미터(생성자는
+필드) 이름이고, `methodEnum`의 키는 상수 이름입니다(`api.Get` → `Get`). 선언한 래퍼 본문의 dynamic 요청은
+내지 않고, `pathArg`를 바인딩하지 못한 호출은 `http-wrapper-unresolved:`로 셉니다. 모르는 필드나 잘못된
+항목, 항목의 `service`와 다른 `--service`는 종료 코드 2입니다.
 
 `symbol.usr`는 감싸는 선언의 정점 ID(`schema` relation-use와 같은 귀속)라 `impact --format
 language-traversal --roots-from go-calls.json`이 호출 지점에서 호출자로 걸어갑니다. `location`은
@@ -517,15 +526,16 @@ resty v1/v3, fasthttp, req, retryablehttp 등 — 와 URL 인자 없이 만든 �
 `URL`·`Method` 대입), `http-wrapper-unresolved:`, `http-wrapper-undeclared:`(파라미터를 URL 머리나
 동사로 넘기는 함수), `missing-route-usrs:`. `limitationScopes`는 내지 않습니다.
 
-공유 `url-compose` 벡터의 생산자 사례 41건을 모두 통과합니다(`dio-concat`은 단순 연결로 실행 — 그
-사례들은 dio의 `//`·점 세그먼트 처리를 쓰지 않음. Spring 사례는 kartograph 전용). `experiments/client-oracle`
+공유 `url-compose` 벡터(isthmus 3a45450)에서 이 생산자 대상 63건(그중 `producer:gartograph` Go 결합 22건)을
+모두 통과합니다(`dio-concat`은 단순 연결로 실행 — 그 사례들은 dio의 `//`·점 세그먼트 처리를 쓰지 않음.
+Spring·Rust·Python 사례는 다른 생산자 전용). `experiments/client-oracle`
 (별도 모듈, `run.sh`가 proxy.golang.org에서 resty v2.17.2를 받음)은 합성 호출 32개를 127.0.0.1의
 `httptest` 서버(`HTTP_PROXY`)로 보내 요청마다 동사·host·경로를 기록하고 사실과 대조합니다: 일치 30,
 dynamic 2, 불일치 0. `source/clientoracle_test.go`가 그 기록을 resty 스텁으로 오프라인에서 다시 대조합니다.
 
-isthmus c395c59는 go `route-call`을 아직 받지 않습니다(`routeKindPlatforms`에 go는 `route-decl`만).
-그래서 거기에 go를 더한 isthmus 빌드로 확인했습니다: `check`가 오라클 사실 32건을 모두 받아들이고,
-workspace `trace`가 `GET /users/{}`를 Go 서버 핸들러에서 Go 클라이언트 호출 지점과 그 호출자까지 잇습니다.
+isthmus는 3a45450(#133)부터 go `route-call`을 받습니다. 그 빌드로 `check`가 오라클 사실 32건을 모두
+받아들이고, workspace `trace`가 `GET /users/{}`를 Go 서버 핸들러에서 Go 클라이언트 호출 지점과 그 호출자까지
+잇습니다.
 
 ## MCP 서버
 
