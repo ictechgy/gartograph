@@ -39,6 +39,9 @@ type urlPart struct {
 	ref string
 	// multi는 값이 세그먼트 여러 개일 수 있다는 표시다(resty raw path param 등). 경로에 오면 dynamic이다.
 	multi bool
+	// ambiguous는 미상 base와의 결합을 증명하지 못해 값이 된 결과라는 표시다(`..`가 base로 오르는 경로,
+	// 빈 참조) — 조립이 ambiguous-base-join으로 센다.
+	ambiguous bool
 }
 
 // literalPart는 원문 조각을 만든다.
@@ -224,6 +227,7 @@ func composeAfterBase(out composedURL, base urlPart, rest []urlPart) composedURL
 	out.anchor = "base"
 	out.baseRef = base.ref
 	out.param = base.param
+	out.ambiguousJoin = base.ambiguous
 	if len(rest) == 0 || rest[0].kind != partLiteral {
 		return dynamicURL(out)
 	}

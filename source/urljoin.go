@@ -204,9 +204,16 @@ func escapePathElement(parts []urlPart) []urlPart {
 	return out
 }
 
-// joinPathParts는 url.JoinPath(base, elem...)·(*URL).JoinPath(elem...)다: base 경로와 원소를
-// path.Join으로 합치고, 마지막 원소가 `/`로 끝나면 끝 `/` 하나를 보존한다. host가 있으면 String()이
-// 경로 앞에 `/`를 넣는다. 미상 base면 base 뒤에 정리한 원소를 붙인다(`..`가 base로 오르면 dynamic).
+// ambiguousOf는 미상 base 결합을 증명하지 못한 결과 값이다(ambiguous-base-join).
+func ambiguousOf(base urlPart) urlPart {
+	base.ambiguous = true
+	return base
+}
+
+// joinPathParts는 url.JoinPath(base, elem...)·(*URL).JoinPath(elem...)다(isthmus 결합 방식
+// `go-join-path`): base 경로와 원소를 path.Join으로 합치고, 마지막 원소가 `/`로 끝나면 끝 `/` 하나를
+// 보존한다. host가 있으면 String()이 경로 앞에 `/`를 넣는다. 미상 base면 base 뒤에 정리한 원소를
+// 붙인다 — `..`가 base 경로로 오르면 지울 세그먼트를 몰라 dynamic과 ambiguous-base-join이다.
 func joinPathParts(base []urlPart, elems [][]urlPart) []urlPart {
 	b := splitBase(base)
 	var joined []urlSegment
@@ -225,7 +232,7 @@ func joinPathParts(base []urlPart, elems [][]urlPart) []urlPart {
 		}
 		cleaned, ok := cleanSegments(joined, false)
 		if !ok {
-			return []urlPart{b.unknown}
+			return []urlPart{ambiguousOf(b.unknown)}
 		}
 		return withTrailing(appendParts([]urlPart{b.unknown}, renderSegments(true, cleaned)...), trailing)
 	}
@@ -301,11 +308,11 @@ func pathJoinParts(elems [][]urlPart) []urlPart {
 	return renderSegments(absolute, cleaned)
 }
 
-// resolveReferenceParts는 (*URL).ResolveReference(ref)·(*URL).Parse(ref)다(RFC 3986).
-//   - ref가 절대 URL이면 ref(점 세그먼트 제거), `//`로 시작하면 증명하지 못한다.
+// resolveReferenceParts는 (*URL).ResolveReference(ref)·(*URL).Parse(ref)다(isthmus 결합 방식 `rfc3986`).
+//   - ref가 절대 URL이면 ref(점 세그먼트 제거), `//host/p`(network-path)면 그 host와 `/p`다.
 //   - `/`로 시작하면 base origin + ref, 경로가 비면(query·fragment만) base 경로다.
 //   - 상대 경로면 base 경로의 마지막 `/`까지 + ref를 합치고 점 세그먼트를 지운다. base 경로를 모르면
-//     base 뒤에 `/` + ref다(`..`가 base로 오르면 dynamic).
+//     base 뒤에 `/` + ref다 — `..`가 base로 오르거나 참조가 비면 dynamic과 ambiguous-base-join이다.
 func resolveReferenceParts(base, ref []urlPart) []urlPart {
 	ref = appendParts(nil, ref...)
 	b := splitBase(base)
@@ -313,15 +320,12 @@ func resolveReferenceParts(base, ref []urlPart) []urlPart {
 	if len(ref) > 0 && ref[0].kind != partLiteral {
 		return []urlPart{mergeUnknown(ref[0], b.unknown)}
 	}
-	if len(ref) > 0 && schemePrefix.MatchString(ref[0].text) {
-		rb := splitBase(tail)
+	if abs := absoluteReference(ref, tail); abs != nil {
+		rb := splitBase(abs)
 		if !rb.known {
-			return withQuery(tail, cut)
+			return withQuery(abs, cut)
 		}
 		return withQuery(dotRemoved(rb.origin, rb.path, false), cut)
-	}
-	if len(tail) > 0 && strings.HasPrefix(tail[0].text, "//") {
-		return []urlPart{valuePart()}
 	}
 	origin := b.origin
 	if !b.known {
@@ -330,7 +334,7 @@ func resolveReferenceParts(base, ref []urlPart) []urlPart {
 	switch {
 	case len(tail) == 0:
 		if !b.known {
-			return withQuery([]urlPart{b.unknown}, cut)
+			return []urlPart{ambiguousOf(b.unknown)}
 		}
 		return withQuery(appendParts(append([]urlPart(nil), b.origin...), b.path...), cut)
 	case strings.HasPrefix(tail[0].text, "/"):
@@ -338,12 +342,27 @@ func resolveReferenceParts(base, ref []urlPart) []urlPart {
 	case !b.known:
 		out := dotRemoved(nil, appendParts([]urlPart{literalPart("/")}, tail...), true)
 		if len(out) == 1 && out[0].kind == partValue {
-			return []urlPart{b.unknown}
+			return []urlPart{ambiguousOf(b.unknown)}
 		}
 		return withQuery(appendParts([]urlPart{b.unknown}, out...), cut)
 	}
 	merged := appendParts(mergeBasePath(b.path), tail...)
 	return withQuery(dotRemoved(b.origin, merged, false), cut)
+}
+
+// absoluteReference는 ref가 절대 URL이면 그 조각을, `//host/p`(network-path 참조)면 scheme을 붙인
+// 절대 URL 조각을 돌려준다(아니면 nil). scheme은 템플릿에 남지 않으므로 network-path에는 http를 쓴다.
+func absoluteReference(ref, tail []urlPart) []urlPart {
+	if len(ref) == 0 {
+		return nil
+	}
+	if schemePrefix.MatchString(ref[0].text) {
+		return tail
+	}
+	if len(tail) > 0 && strings.HasPrefix(tail[0].text, "//") {
+		return appendParts([]urlPart{literalPart("http:" + tail[0].text)}, tail[1:]...)
+	}
+	return nil
 }
 
 // mergeUnknown은 값으로 시작하는 ref의 결과다 — ref가 절대 URL일 수도 있어 증명하지 못한다.

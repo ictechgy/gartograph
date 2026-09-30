@@ -58,7 +58,8 @@ func TestJoinPathMatchesNetURL(t *testing.T) {
 
 // TestResolveReferenceMatchesNetURL은 resolveReferenceParts가 (*URL).ResolveReference와 같은 경로를 내는지 본다.
 func TestResolveReferenceMatchesNetURL(t *testing.T) {
-	refs := []string{"x", "/x", "../x", "./", "..", "a/../b", "?q=1", "", "http://o/p/../q", "x/./y/../z/", "../../../x"}
+	refs := []string{"x", "/x", "../x", "./", "..", "a/../b", "?q=1", "", "http://o/p/../q", "x/./y/../z/", "../../../x",
+		"//other.example.com/p/../q", "//other.example.com"}
 	for _, base := range joinBases {
 		b, _ := url.Parse(base)
 		for _, ref := range refs {
@@ -124,6 +125,20 @@ func TestJoinsWithUnknownBase(t *testing.T) {
 	}
 	if res := composeURL(appendParts(base, literalPart("x")), anchorRule{}); !res.ambiguousJoin || res.baseRef != "example.com/app.base" {
 		t.Errorf("concat relative: %+v", res)
+	}
+	// `..`가 미상 base로 오르거나 참조가 비면 ambiguous-base-join으로 센다(isthmus go-join-path·rfc3986 규칙).
+	for name, parts := range map[string][]urlPart{
+		"JoinPath climbs":         joinPathParts(base, literals("..", "x")),
+		"ResolveReference climbs": resolveReferenceParts(base, []urlPart{literalPart("../x")}),
+		"ResolveReference empty":  resolveReferenceParts(base, nil),
+	} {
+		if res := composeURL(parts, anchorRule{}); !res.dynamic || !res.ambiguousJoin {
+			t.Errorf("%s: %+v, want dynamic with ambiguous-base-join", name, res)
+		}
+	}
+	// 오르지 않는 `..`는 path.Join이 원소 안에서 지우므로 증명할 수 있다.
+	if res := composeURL(joinPathParts(base, literals("a", "..", "b")), anchorRule{}); res.dynamic || res.template != "/b" {
+		t.Errorf("JoinPath inner dot-dot: %+v", res)
 	}
 }
 

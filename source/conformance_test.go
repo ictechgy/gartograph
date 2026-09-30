@@ -180,8 +180,8 @@ func TestConformanceProducerCaseCount(t *testing.T) {
 	for rule := range producerRules {
 		total += len(producerCases(t, rule))
 	}
-	if total != 92 {
-		t.Fatalf("producer cases = %d, want 92 (26 grammar + 7 normalize + 18 dispatch.validate + 41 url-compose)", total)
+	if total != 114 {
+		t.Fatalf("producer cases = %d, want 114 (26 grammar + 7 normalize + 18 dispatch.validate + 63 url-compose)", total)
 	}
 }
 

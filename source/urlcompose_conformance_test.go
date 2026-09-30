@@ -71,8 +71,9 @@ func TestConformanceComposePath(t *testing.T) {
 }
 
 // TestConformanceBaseJoin은 base 결합 벡터를 Go 결합으로 본다. rfc3986은 (*URL).ResolveReference,
-// slash-join은 resty v2 결합, dio-concat은 단순 문자열 연결이다 — Go 문자열 `+`와 같다. dio가 더 하는
-// `//` 축약·점 세그먼트 제거는 이 벡터 사례가 쓰지 않는다(Go 연결은 둘 다 하지 않는다).
+// go-join-path는 url.JoinPath, resty-base-url은 resty v2 결합이다. 모든 생산자 대상인 slash-join(미상
+// base 사례뿐)은 resty 결합, dio-concat은 단순 문자열 연결로 실행한다 — Go 문자열 `+`와 같고, dio가 더
+// 하는 `//` 축약·점 세그먼트 제거는 이 벡터 사례가 쓰지 않는다(Go 연결은 둘 다 하지 않는다).
 func TestConformanceBaseJoin(t *testing.T) {
 	for _, c := range producerCases(t, "compose.base-join") {
 		var in struct {
@@ -90,7 +91,9 @@ func TestConformanceBaseJoin(t *testing.T) {
 		switch in.Join {
 		case "rfc3986":
 			joined = resolveReferenceParts(base, path)
-		case "slash-join":
+		case "go-join-path":
+			joined = joinPathParts(base, [][]urlPart{path})
+		case "slash-join", "resty-base-url":
 			joined = slashJoinParts(base, true, path)
 		case "dio-concat":
 			joined = appendParts(append([]urlPart(nil), base...), path...)
@@ -102,7 +105,7 @@ func TestConformanceBaseJoin(t *testing.T) {
 		ok := got.dynamic == c.ExpectDynamic && got.template == want.Template &&
 			(want.PathAnchor == "" || got.anchor == want.PathAnchor) &&
 			(want.Authority == "" || got.authority == want.Authority) &&
-			(c.ExpectLimitation != "ambiguous-base-join:" || got.ambiguousJoin)
+			(c.ExpectLimitation == "ambiguous-base-join:") == got.ambiguousJoin
 		if !ok {
 			t.Errorf("%s: got %+v, want %+v dynamic=%v limitation=%q", c.ID, got, want, c.ExpectDynamic, c.ExpectLimitation)
 		}
