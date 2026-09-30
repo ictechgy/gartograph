@@ -386,7 +386,6 @@ func register(g *gin.RouterGroup, h H) { g.GET("/:year", h.rep) }
 		"PUT /v1/adm/settings/ root ts=optional usr=app.(H).set",
 		"ANY /v1/adm/ root ts=optional usr=app.(H).any",
 		"GET /match root ts=optional usr=app.(H).match",
-		"POST /match root ts=optional usr=app.(H).match",
 		"PATCH /items/{} root ts=optional usr=app.(H).patch",
 		"GET /favicon.ico root ts=optional",
 		"HEAD /favicon.ico root ts=optional",
@@ -542,4 +541,45 @@ func New() *http.ServeMux {
 	if string(first) != string(second) {
 		t.Errorf("non-deterministic output:\n%s\n%s", first, second)
 	}
+}
+
+// TestRouteFactsPatternFollowsImports는 --pattern이 서버 main 패키지만 가리켜도 그 패키지가 import하는
+// 모듈 안 라우터 패키지의 등록까지 수확하는지 본다.
+func TestRouteFactsPatternFollowsImports(t *testing.T) {
+	dir := routeModule(t, "1.27", map[string]string{
+		"cmd/api/main.go": `package main
+
+import (
+	"net/http"
+
+	"example.com/fixture/router"
+)
+
+func main() { _ = http.ListenAndServe(":8080", router.New()) }
+`,
+		"router/router.go": `package router
+
+import "net/http"
+
+func items(w http.ResponseWriter, r *http.Request) {}
+
+func New() *http.ServeMux {
+	m := http.NewServeMux()
+	m.HandleFunc("GET /items", items)
+	return m
+}
+`,
+		"other/other.go": `package other
+
+import "net/http"
+
+func Register() { http.HandleFunc("/other", nil) }
+`,
+	})
+	doc, err := RouteFacts(RouteOptions{Harvest: Options{Dir: dir, Patterns: []string{"./cmd/api"}},
+		GeneratedAt: fixedTime}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFacts(t, doc, []string{"GET /items root ts=strict usr=router.items"})
 }

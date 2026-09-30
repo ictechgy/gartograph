@@ -96,8 +96,9 @@ func RouteFacts(opts RouteOptions, toolVersion string) (*RouteFactsDocument, err
 	if err != nil {
 		return nil, err
 	}
-	loadOpts := Options{Dir: root, Level: graph.LevelSymbol, Exclude: opts.Harvest.Exclude,
-		Patterns: opts.Harvest.Patterns, Tags: opts.Harvest.Tags}
+	// usr 확인 그래프는 impact 기본 수확(./..., .gartograph.yml exclude)과 같아야 한다 — --pattern으로
+	// 좁힌 그래프에는 루트 패턴 밖 패키지의 심볼 정점이 없어 reach·impact가 쓰는 ID와 어긋난다.
+	loadOpts := Options{Dir: root, Level: graph.LevelSymbol, Exclude: opts.Harvest.Exclude, Tags: opts.Harvest.Tags}
 	pkgs, err := load(loadOpts)
 	if err != nil {
 		return nil, err
@@ -106,8 +107,12 @@ func RouteFacts(opts RouteOptions, toolVersion string) (*RouteFactsDocument, err
 	if err != nil {
 		return nil, err
 	}
+	roots, err := patternRoots(pkgs, root, opts.Harvest)
+	if err != nil {
+		return nil, err
+	}
 	scan := newRouteScan(root, newSymbolIDs(symbolDoc))
-	scan.harvest(mainPackages(scan, pkgs))
+	scan.harvest(mainPackages(scan, roots))
 	doc := scan.document(opts, toolVersion)
 	if err := selfCheck(doc); err != nil {
 		return nil, err
@@ -132,10 +137,39 @@ func selfCheck(doc *RouteFactsDocument) error {
 	return nil
 }
 
-// mainPackages는 주 모듈 패키지를 고르고 로드 오류·mtime·지원하지 않는 라우터 import를 센다.
+// patternRoots는 --pattern이 가리키는 패키지를 전체 로드 결과에서 고른다(패턴이 없으면 전체).
+// 패턴 해석은 go list(이름만)에 맡겨 packages.Load와 같은 규칙을 쓴다.
+func patternRoots(all []*packages.Package, root string, opts Options) ([]*packages.Package, error) {
+	if len(opts.Patterns) == 0 {
+		return all, nil
+	}
+	cfg := &packages.Config{Dir: root, Mode: packages.NeedName}
+	if opts.Tags != "" {
+		cfg.BuildFlags = []string{"-tags=" + opts.Tags}
+	}
+	named, err := packages.Load(cfg, opts.Patterns...)
+	if err != nil {
+		return nil, fmt.Errorf("resolving --pattern: %w — check the pattern and go.mod", err)
+	}
+	wanted := map[string]bool{}
+	for _, p := range named {
+		wanted[p.PkgPath] = true
+	}
+	var out []*packages.Package
+	for _, p := range walkImports(all) {
+		if wanted[p.PkgPath] {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// mainPackages는 패턴 루트에서 import로 닿는 주 모듈 패키지를 고르고(--pattern ./cmd/api/...가 그
+// 서버가 import하는 라우터 패키지까지 보도록) 로드 오류·mtime·지원하지 않는 라우터 import를 센다.
+// 경로 순으로 정렬해 흐름 분석의 노드 번호가 로드 순서에 흔들리지 않게 한다.
 func mainPackages(scan *routeScan, pkgs []*packages.Package) []*packages.Package {
 	var out []*packages.Package
-	for _, p := range pkgs {
+	for _, p := range walkImports(pkgs) {
 		if !keep(p, false) {
 			continue
 		}
@@ -143,6 +177,7 @@ func mainPackages(scan *routeScan, pkgs []*packages.Package) []*packages.Package
 		scan.observePackage(p)
 		out = append(out, p)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 
@@ -380,18 +415,28 @@ func (s *routeScan) registrationMethods(r registration, patternMethod string) ([
 	case len(r.spec.staticMethods) > 0:
 		return r.spec.staticMethods, true
 	case patternMethod != "":
-		return filterMethods([]string{strings.ToUpper(patternMethod)}), true
+		return filterMethods([]string{methodCase(r.spec.fw, patternMethod)}), true
 	case r.spec.method == "PATTERN":
 		return nil, true // ServeMux — 패턴 해석이 동사를 정한다
 	case r.spec.method != "":
 		return filterMethods([]string{r.spec.method}), true
 	case r.spec.methodArg >= 0 && r.spec.methodArg < len(r.call.Args):
 		m, ok := constantString(r.pkg.TypesInfo, r.call.Args[r.spec.methodArg])
-		return filterMethods([]string{strings.ToUpper(m)}), ok
+		return filterMethods([]string{methodCase(r.spec.fw, m)}), ok
 	case r.spec.methodsArg >= 0 && r.spec.methodsArg < len(r.call.Args):
 		return constantMethodList(r, r.call.Args[r.spec.methodsArg])
 	}
 	return nil, false
+}
+
+// methodCase는 동사 인자를 프레임워크가 비교하는 대로 둔다. chi Method는 대문자로 바꿔 찾고(methodMap),
+// gin·echo는 받은 문자열 그대로 트리에 넣어 요청 동사와 대소문자까지 비교한다 — 소문자 "post"는 어떤
+// 요청과도 맞지 않는다(gin Handle은 패닉, Match·echo Add는 닿지 않는 경로).
+func methodCase(fw routeFramework, m string) string {
+	if fw == fwChi {
+		return strings.ToUpper(m)
+	}
+	return m
 }
 
 // filterMethods는 계약의 동사(와 ANY)만 남긴다.
@@ -417,7 +462,7 @@ func constantMethodList(r registration, expr ast.Expr) ([]string, bool) {
 		if !ok {
 			return nil, false
 		}
-		out = append(out, strings.ToUpper(m))
+		out = append(out, methodCase(r.spec.fw, m))
 	}
 	return filterMethods(out), true
 }
@@ -455,7 +500,11 @@ func (s *routeScan) contexts(r registration, patterns []mountedPattern) []routeC
 	}
 	var out []routeContext
 	for _, n := range receivers {
-		for _, chain := range chainsOf(n, s.flow.nodes) {
+		chains, truncated := chainsOf(n, s.flow.nodes)
+		if truncated {
+			s.gap("route-coverage:", "route registration(s) reach their router through more than 64 mount chains; the chains beyond 64 are not declared", true).count++
+		}
+		for _, chain := range chains {
 			out = append(out, s.applyChain(r.spec.fw, patterns, chain.edges, chain.top))
 		}
 	}
@@ -471,8 +520,9 @@ type nodeChain struct {
 // maxChains는 한 노드가 펼칠 사슬 수 상한이다 — 넘으면 나머지는 버리고 공백으로 센다.
 const maxChains = 64
 
-// chainsOf는 노드의 모든 부모 사슬이다. 순환은 명시적 스택의 방문 표시로 끊는다.
-func chainsOf(start *routerNode, nodes []*routerNode) []nodeChain {
+// chainsOf는 노드의 모든 부모 사슬이다. 순환은 명시적 스택의 방문 표시로 끊는다. 상한을 넘겨 버린
+// 사슬이 있으면 두 번째 값이 참이다.
+func chainsOf(start *routerNode, nodes []*routerNode) ([]nodeChain, bool) {
 	type frame struct {
 		node  *routerNode
 		edges []parentEdge
@@ -480,17 +530,18 @@ func chainsOf(start *routerNode, nodes []*routerNode) []nodeChain {
 	}
 	var out []nodeChain
 	stack := []frame{{node: start, seen: map[*routerNode]bool{start: true}}}
-	for len(stack) > 0 && len(out) < maxChains {
+	for len(stack) > 0 {
+		if len(out) >= maxChains {
+			return out, true
+		}
 		fr := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if len(fr.node.parents) == 0 {
-			out = append(out, nodeChain{edges: fr.edges, top: fr.node})
-			continue
-		}
+		followed := false
 		for i := len(fr.node.parents) - 1; i >= 0; i-- {
 			e := fr.node.parents[i]
 			if e.parent == noParent {
 				out = append(out, nodeChain{edges: append(append([]parentEdge(nil), fr.edges...), e)})
+				followed = true
 				continue
 			}
 			parent := nodes[e.parent]
@@ -503,9 +554,15 @@ func chainsOf(start *routerNode, nodes []*routerNode) []nodeChain {
 			}
 			edges := append(append([]parentEdge(nil), fr.edges...), e)
 			stack = append(stack, frame{node: parent, edges: edges, seen: seen})
+			followed = true
+		}
+		// 부모가 없거나(루트) 모든 부모가 이미 지나온 순환이면 여기서 끝난다 — 순환만 남은 하위 라우터는
+		// 꼭대기가 하위 라우터라 base 앵커가 된다(등록을 조용히 잃지 않는다).
+		if !followed {
+			out = append(out, nodeChain{edges: fr.edges, top: fr.node})
 		}
 	}
-	return out
+	return out, false
 }
 
 // applyChain은 패턴에 사슬의 접두사를 안쪽부터 합성한다. 같은 프레임워크의 하위 라우터·chi
