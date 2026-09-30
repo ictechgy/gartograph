@@ -60,14 +60,14 @@ type declPart struct {
 //     루트(pkg._)다 — 그 식은 초기화 때 실행되고, 수확도 모듈 심볼을 쓰는 빈 선언을
 //     그 정점에서 긋는다.
 //   - import: 귀속 없음.
-func declParts(scan *schemaScan, p *packages.Package, decl ast.Decl) []declPart {
+func declParts(ids symbolIDs, p *packages.Package, decl ast.Decl) []declPart {
 	switch d := decl.(type) {
 	case *ast.FuncDecl:
-		return []declPart{{node: d, owner: funcOwner(scan.ids, p, d)}}
+		return []declPart{{node: d, owner: funcOwner(ids, p, d)}}
 	case *ast.GenDecl:
 		var parts []declPart
 		for _, spec := range d.Specs {
-			parts = append(parts, specParts(scan.ids, p, spec)...)
+			parts = append(parts, specParts(ids, p, spec)...)
 		}
 		return parts
 	}

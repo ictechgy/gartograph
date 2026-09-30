@@ -197,7 +197,7 @@ func scanFile(scan *schemaScan, p *packages.Package, f *ast.File,
 	tableNames map[string]string, tags *[]columnTag, models *[]modelSite) {
 	scan.mtime(p, f)
 	for _, decl := range f.Decls {
-		for _, part := range declParts(scan, p, decl) {
+		for _, part := range declParts(scan.ids, p, decl) {
 			scan.owner = part.owner
 			scanNode(scan, p, part.node, tableNames, tags, models)
 		}
