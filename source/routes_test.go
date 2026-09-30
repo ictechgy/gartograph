@@ -583,3 +583,48 @@ func Register() { http.HandleFunc("/other", nil) }
 	}
 	assertFacts(t, doc, []string{"GET /items root ts=strict usr=router.items"})
 }
+
+// TestRouteFactsReviewCases는 리뷰가 찾은 경우를 고정한다: 추적하지 못한 하위 라우터의 상수가 아닌
+// 경로는 base 앵커, 주소를 꺼낸 RedirectTrailingSlash는 모름, 한 등록의 공백은 마운트 펼침마다가
+// 아니라 한 번 센다.
+func TestRouteFactsReviewCases(t *testing.T) {
+	dir := routeModule(t, "1.27", map[string]string{"app/app.go": `package app
+
+import (
+	"net/http"
+	"os"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
+)
+
+func h(c *gin.Context) {}
+
+func setup(g gin.IRouter) { g.Group("/api").GET(os.Getenv("P"), h) }
+
+func New() *gin.Engine {
+	e := gin.New()
+	p := &e.RedirectTrailingSlash
+	*p = false
+	e.GET("/x", h)
+	return e
+}
+
+func ch(w http.ResponseWriter, r *http.Request) {}
+
+func Chi() http.Handler {
+	sub := chi.NewRouter()
+	sub.Get("/{a}-{b}", ch)
+	r := chi.NewRouter()
+	r.Mount("/one", sub)
+	r.Mount("/two", sub)
+	return r
+}
+`}, "gin", "chi")
+	doc := routeDoc(t, dir)
+	assertFacts(t, doc, []string{
+		"GET os.Getenv(\"P\") base dynamic usr=app.h",
+		"GET /x root usr=app.h",
+	})
+	assertLimitation(t, doc, "route-coverage:", "1 route registration(s) use path patterns that are not canonical")
+}

@@ -316,6 +316,11 @@ func (w *flowWalker) visit(n ast.Node) bool {
 		w.call(node)
 	case *ast.Ident:
 		w.observeMiddleware(node)
+	case *ast.UnaryExpr:
+		// `&e.RedirectTrailingSlash`는 포인터로 쓸 수 있는 자리다 — 값을 추적하지 않으므로 모름으로 둔다.
+		if node.Op == token.AND {
+			w.observeGinSetting(node.X, nil)
+		}
 	}
 	return true
 }
@@ -556,7 +561,8 @@ func (w *flowWalker) bindArguments(call *ast.CallExpr, fn *types.Func) {
 	}
 }
 
-// observeGinSetting은 gin Engine의 RedirectTrailingSlash 대입을 모은다.
+// observeGinSetting은 gin Engine의 RedirectTrailingSlash 대입을 모은다. rhs가 nil이면 값을 모르는
+// 쓰기(주소를 꺼낸 경우)다.
 func (w *flowWalker) observeGinSetting(lhs, rhs ast.Expr) {
 	sel, ok := unparen(lhs).(*ast.SelectorExpr)
 	if !ok || sel.Sel.Name != "RedirectTrailingSlash" {
@@ -833,6 +839,9 @@ func (f *routeFlow) ginTrailingSlash(root *routerNode) string {
 	}
 	policy := ""
 	for _, a := range values {
+		if a.value == nil {
+			return ""
+		}
 		tv, ok := a.pkg.TypesInfo.Types[a.value]
 		if !ok || tv.Value == nil || tv.Value.Kind() != constant.Bool {
 			return ""

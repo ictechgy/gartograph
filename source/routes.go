@@ -213,6 +213,19 @@ type routeGap struct {
 	suffixes        map[string]bool
 	methods         map[string]bool
 	unscoped        bool
+	// regs는 이미 센 등록 위치다 — 한 등록이 마운트 펼침·사슬마다 여러 번 닿아도 한 번만 센다.
+	regs map[token.Pos]bool
+}
+
+// note는 등록 하나를 한 번만 센다.
+func (g *routeGap) note(pos token.Pos) {
+	if g.regs == nil {
+		g.regs = map[token.Pos]bool{}
+	}
+	if !g.regs[pos] {
+		g.regs[pos] = true
+		g.count++
+	}
 }
 
 // echoLeaf는 echo 끝 파라미터 판정 재료 하나다.
@@ -220,7 +233,8 @@ type echoLeaf struct {
 	tokens   string
 	prefix   string // 끝 파라미터 템플릿(스코프 접두사), 끝이 파라미터가 아니면 빈 문자열
 	method   string
-	anchored bool // root 앵커
+	anchored bool      // root 앵커
+	regPos   token.Pos // 등록 위치(공백을 등록 단위로 센다)
 }
 
 // newRouteScan은 빈 수확 상태를 만든다.
@@ -502,7 +516,7 @@ func (s *routeScan) contexts(r registration, patterns []mountedPattern) []routeC
 	for _, n := range receivers {
 		chains, truncated := chainsOf(n, s.flow.nodes)
 		if truncated {
-			s.gap("route-coverage:", "route registration(s) reach their router through more than 64 mount chains; the chains beyond 64 are not declared", true).count++
+			s.gap("route-coverage:", "route registration(s) reach their router through more than 64 mount chains; the chains beyond 64 are not declared", true).note(r.call.Pos())
 		}
 		for _, chain := range chains {
 			out = append(out, s.applyChain(r.spec.fw, patterns, chain.edges, chain.top))
@@ -654,9 +668,9 @@ func (s *routeScan) contextShapes(r registration, ctx routeContext) []contextSha
 			continue
 		}
 		if parsed.dynamic {
-			s.gap("route-coverage:", "route registration(s) use path patterns that are not canonical templates (several parameters in one segment or a mid-path wildcard); they are not declared", true).count++
+			s.gap("route-coverage:", "route registration(s) use path patterns that are not canonical templates (several parameters in one segment or a mid-path wildcard); they are not declared", true).note(r.call.Pos())
 			if parsed.capped {
-				s.gap("route-template-expansion-capped:", "route registration(s) expand to more than 16 templates; they are not declared", true).count++
+				s.gap("route-template-expansion-capped:", "route registration(s) expand to more than 16 templates; they are not declared", true).note(r.call.Pos())
 			}
 			continue
 		}
@@ -752,12 +766,12 @@ func withStrips(shape routeShape, strips []string) routeShape {
 }
 
 // noteAnySuffix는 부분 catch-all(`/static*`)이 세그먼트 안 나머지도 받는다는 공백을 스코프와 함께 센다.
-func (s *routeScan) noteAnySuffix(ctx routeContext, cs contextShape, methods []string) {
-	if cs.anySuffixUnder == "" {
+func (s *routeScan) noteAnySuffix(r registration, ctx routeContext, cs contextShape, methods []string) {
+	if cs.anySuffixUnder == "" || len(methods) == 0 {
 		return
 	}
 	g := s.gap("route-coverage:", "catch-all route(s) end inside a path segment (for example /static*) and also serve paths that extend that segment; those paths are not declared", false)
-	g.count++
+	g.note(r.call.Pos())
 	if ctx.anchor != "root" || len(ctx.strips) > 0 {
 		g.unscoped = true
 		return
@@ -775,10 +789,10 @@ func (s *routeScan) shapeFacts(r registration, ctx routeContext, cs contextShape
 		methods = filterMethods([]string{cs.patternMethod})
 	}
 	if !known {
-		s.noteUnknownMethod(ctx, cs)
+		s.noteUnknownMethod(r, ctx, cs)
 		return nil
 	}
-	s.noteAnySuffix(ctx, cs, methods)
+	s.noteAnySuffix(r, ctx, cs, methods)
 	instance := instanceKey(ctx.top, r, cs.host)
 	var out []pendingFact
 	for _, method := range methods {
@@ -790,7 +804,8 @@ func (s *routeScan) shapeFacts(r registration, ctx routeContext, cs contextShape
 		}
 		if ctx.fw == fwEcho {
 			s.echoRoutes[instance] = append(s.echoRoutes[instance], echoLeaf{tokens: cs.leafTokens,
-				prefix: cs.leafPrefix, method: method, anchored: ctx.anchor == "root" && len(ctx.strips) == 0})
+				prefix: cs.leafPrefix, method: method, anchored: ctx.anchor == "root" && len(ctx.strips) == 0,
+				regPos: r.call.Pos()})
 		}
 	}
 	return out
@@ -846,9 +861,9 @@ func instanceKey(top *routerNode, r registration, host string) string {
 }
 
 // noteUnknownMethod는 동사를 증명하지 못한 등록을 그 템플릿 스코프의 공백으로 센다.
-func (s *routeScan) noteUnknownMethod(ctx routeContext, cs contextShape) {
+func (s *routeScan) noteUnknownMethod(r registration, ctx routeContext, cs contextShape) {
 	g := s.gap("route-coverage:", "route registration(s) take their method from a non-constant value; they are not declared", false)
-	g.count++
+	g.note(r.call.Pos())
 	s.scopeTemplate(g, cs.shape.template(), ctx.anchor)
 }
 
@@ -915,13 +930,10 @@ func (s *routeScan) dynamicFacts(r registration) []pendingFact {
 	if len(text) > 200 {
 		text = text[:197] + "..."
 	}
-	s.gap("route-coverage:", "route registration(s) have non-constant path patterns; they are declared as dynamic", true).count++
+	s.gap("route-coverage:", "route registration(s) have non-constant path patterns; they are declared as dynamic", true).note(r.call.Pos())
 	s.echoDynamic = s.echoDynamic || r.spec.fw == fwEcho
 	res := s.handlerOf(r)
-	anchor := "root"
-	if len(s.flow.receiverNodes(r)) == 0 {
-		anchor = "base"
-	}
+	anchor := s.dynamicAnchor(r)
 	var out []pendingFact
 	for _, method := range methods {
 		fact := RouteFact{Kind: "route-decl", Method: method, Channel: text, Dynamic: true,
@@ -930,6 +942,18 @@ func (s *routeScan) dynamicFacts(r registration) []pendingFact {
 			anon: res.anonymous, regPos: r.call.Pos()})
 	}
 	return out
+}
+
+// dynamicAnchor는 경로가 상수가 아닌 등록의 앵커다. 수신 라우터의 모든 사슬이 생성 호출까지 풀릴
+// 때만 root다 — 상수 경로와 같은 사슬 규칙(applyChain)을 써야 같은 수신자의 두 등록이 다른 앵커를
+// 주장하지 않는다.
+func (s *routeScan) dynamicAnchor(r registration) string {
+	for _, ctx := range s.contexts(r, []mountedPattern{{pattern: "/"}}) {
+		if ctx.anchor != "root" {
+			return "base"
+		}
+	}
+	return "root"
 }
 
 // gap은 (접두사, 문구) 공백을 돌려준다(처음이면 만든다). unscoped면 스코프 없이 센다.
@@ -1017,7 +1041,7 @@ func (s *routeScan) noteEchoLeaves() map[string]bool {
 			}
 			leaves[instance+"|"+leaf.prefix] = true
 			g := s.gap("route-coverage:", "echo route(s) end in a path parameter whose node has no children; echo also routes longer paths (across \"/\") to them, and those paths are not declared", false)
-			g.count++
+			g.note(leaf.regPos)
 			if !leaf.anchored {
 				g.unscoped = true
 				continue
