@@ -58,7 +58,7 @@ func TestSQLRelations(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sqlRelations(tc.sql)
+			got, _ := sqlRelations(tc.sql)
 			if len(got) != len(tc.want) {
 				t.Fatalf("sqlRelations(%q) = %v, want %v", tc.sql, got, tc.want)
 			}
@@ -566,5 +566,40 @@ func main() { run("SELECT 1") }
 	}
 	if !hasUnparsed {
 		t.Fatalf("expected unparsed-sources limitation: %v", doc.Limitations)
+	}
+}
+
+// 테이블 값 함수는 테이블 신원으로 보고하지 않고 뒤의 실제 테이블은 유지한다.
+func TestSQLTableValuedFunctions(t *testing.T) {
+	for _, tc := range []struct {
+		sql  string
+		want []string
+	}{
+		{"SELECT * FROM pragma_table_info('t')", nil},
+		{"SELECT * FROM users JOIN main.pragma_table_info('t') p ON true", []string{"users"}},
+		{"SELECT * FROM pragma_table_info('t') AS p, users", []string{"users"}},
+		{"SELECT * FROM pragma_table_info('t') p JOIN users ON true", []string{"users"}},
+	} {
+		got, unresolved := sqlRelations(tc.sql)
+		if unresolved != 1 {
+			t.Fatalf("unresolved = %d, want 1", unresolved)
+		}
+		if len(got) != len(tc.want) {
+			t.Fatalf("got %v, want %v", got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		}
+	}
+}
+
+// 함수 의존 공백은 소비자가 완전한 미사용 근거로 읽지 않도록 남긴다.
+func TestSQLFunctionLimitations(t *testing.T) {
+	scan := &schemaScan{sqlFunctions: 1}
+	limitations := scan.limitations()
+	if len(limitations) != 1 || !strings.HasPrefix(limitations[0], "unjoined-dynamic-relations: 1 ") {
+		t.Fatalf("missing SQL coverage evidence: %v", limitations)
 	}
 }
