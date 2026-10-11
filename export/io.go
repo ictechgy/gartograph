@@ -17,14 +17,7 @@ func SaveFile(d *graph.Document, path string) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("writing %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("renaming %s: %w", path, err)
-	}
-	return nil
+	return WriteFile(path, data)
 }
 
 // LoadFile은 JSON 파일에서 Document를 읽는다.

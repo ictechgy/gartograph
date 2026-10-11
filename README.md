@@ -143,6 +143,11 @@ gartograph cycles --graph .gartograph/graph.json --level type
 gartograph dead   --graph .gartograph/graph.json
 ```
 
+Saved graphs, bridge/schema/route facts, and baselines use a unique temporary file in the output directory, then replace
+the destination only after writing and closing successfully. Concurrent writes never share a temporary name. New artifacts
+are owner-readable/writable only (0600); replacing an existing regular file preserves its permission bits. Output symlinks
+are replaced, not followed. A failed write preserves the previous artifact.
+
 Harvest flags (all analysis commands):
 
 | Flag | Default | Meaning |

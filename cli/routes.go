@@ -9,9 +9,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
+	"github.com/ictechgy/gartograph/export"
 	"github.com/ictechgy/gartograph/source"
 )
 
@@ -99,7 +99,7 @@ func writeDocument(doc any, out string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if out != "" {
-		if err := os.WriteFile(out, append(data, '\n'), 0o644); err != nil {
+		if err := export.WriteFile(out, append(data, '\n')); err != nil {
 			return fail(stderr, fmt.Errorf("writing %s: %w", out, err))
 		}
 		return 0

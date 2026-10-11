@@ -1477,7 +1477,7 @@ func cmdBridges(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *out != "" {
-		if err := os.WriteFile(*out, append(data, '\n'), 0o644); err != nil {
+		if err := export.WriteFile(*out, append(data, '\n')); err != nil {
 			return fail(stderr, fmt.Errorf("writing %s: %w", *out, err))
 		}
 		return 0
@@ -1511,7 +1511,7 @@ func cmdSchema(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *out != "" {
-		if err := os.WriteFile(*out, append(data, '\n'), 0o644); err != nil {
+		if err := export.WriteFile(*out, append(data, '\n')); err != nil {
 			return fail(stderr, fmt.Errorf("writing %s: %w", *out, err))
 		}
 		return 0
