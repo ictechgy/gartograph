@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/ictechgy/gartograph/analysis"
+	"github.com/ictechgy/gartograph/export"
 	"github.com/ictechgy/gartograph/graph"
 )
 
@@ -146,12 +147,5 @@ func saveBaselineJSON(path string, body any) error {
 	if err != nil {
 		return fmt.Errorf("encoding baseline: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("writing %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("renaming %s: %w", path, err)
-	}
-	return nil
+	return export.WriteFile(path, append(data, '\n'))
 }
