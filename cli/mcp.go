@@ -258,12 +258,18 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 			}
 			lvl = parsed
 		}
+		if err := requireLevel(s.doc, lvl); err != nil {
+			return "", err
+		}
 		view, err := s.doc.View(lvl)
 		if err != nil {
 			return "", err
 		}
 		return marshal(analysis.Cycles(view))
 	case "gartograph_dead":
+		if err := requireLevel(s.doc, graph.LevelSymbol); err != nil {
+			return "", err
+		}
 		var a struct {
 			RetainPublic bool     `json:"retainPublic"`
 			Roots        []string `json:"roots"`
