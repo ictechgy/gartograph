@@ -28,6 +28,8 @@ type Neighbors struct {
 	DependsOn  []NeighborEdge   `json:"dependsOn"`
 	DependedBy []NeighborEdge   `json:"dependedBy"`
 	Truncated  bool             `json:"truncated,omitempty"`
+	// Limitations은 이웃이 비어 있어도 수확의 관측 공백을 숨기지 않는다.
+	Limitations []string `json:"limitations,omitempty"`
 }
 
 // Query는 정점 하나에 대해 depth까지 이웃을 되묻는다.
@@ -48,12 +50,13 @@ func Query(d *graph.Document, id string, depth int, maxNeighbors int) (*Neighbor
 	dependedBy, truncIn := walk(d, in, id, depth, maxNeighbors, true)
 
 	return &Neighbors{
-		ID:         id,
-		Kind:       vtx.Kind,
-		Depth:      depth,
-		DependsOn:  dependsOn,
-		DependedBy: dependedBy,
-		Truncated:  truncOut || truncIn,
+		ID:          id,
+		Kind:        vtx.Kind,
+		Depth:       depth,
+		DependsOn:   dependsOn,
+		DependedBy:  dependedBy,
+		Truncated:   truncOut || truncIn,
+		Limitations: d.Limitations,
 	}, nil
 }
 
@@ -68,7 +71,7 @@ func walk(d *graph.Document, adj map[string][]string, root string,
 	var out []NeighborEdge
 	truncated := false
 
-	for step := 0; step < depth; step++ {
+	for step := 0; step < depth && len(frontier) > 0; step++ {
 		var next []string
 		for _, cur := range frontier {
 			for _, to := range adj[cur] {
