@@ -301,7 +301,11 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
 
 - Deterministic JSON: sorted keys, sorted arrays — same input, same bytes.
 - `query` reports `depth`, `truncated`, and every edge kind between
-  neighbors (`edges: ["call", "implements"]`).
+  neighbors (`edges: ["call", "implements"]`). It preserves the source graph's
+  observed `limitations` in CLI and MCP responses, including queries with no
+  neighbors; the optional field is omitted when there are no limitations.
+  Traversal stops once all reachable neighbors have been visited, even when
+  the requested depth is very large.
 - `dead` reports `state` + `reason` + `exported` per finding and always
   includes the `roots` it used — reachability depends on them. `exported`
   is the triage axis: an unexported unreachable symbol is confined to the
