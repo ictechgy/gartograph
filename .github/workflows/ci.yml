@@ -6,6 +6,15 @@ on:
   pull_request:
 
 jobs:
+  release-assets:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: /bin/bash Scripts/test-publish-release-assets.sh
+
   test:
     runs-on: ubuntu-latest
     steps:
