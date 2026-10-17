@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -372,14 +373,25 @@ func walkImports(roots []*packages.Package) []*packages.Package {
 // 마커는 패키지 절보다 앞에 있어야 생성 표시로 인정된다.
 var generatedMarker = regexp.MustCompile(`^// Code generated .* DO NOT EDIT\.$`)
 
+// maxGeneratedHeader는 생성 표지를 찾으며 읽는 파일 앞부분의 상한(바이트)이다. 표지는 패키지
+// 절보다 앞에 있어야 해서 판정은 보통 첫 몇 줄에서 끝난다 — 상한은 패키지 절이 끝내 나오지
+// 않는 입력에서 읽기를 멈추게 하는 방어다.
+const maxGeneratedHeader = 1 << 20
+
 // isGeneratedFile은 파일의 패키지 절 이전에 생성 표지가 있는지 본다.
+// 정규 파일만 읽는다 — 쓰는 쪽이 없는 FIFO는 open에서 영원히 막히고 장치는 끝없이 읽히므로,
+// 막히지 않게 연 뒤(readFlags) 연 파일의 종류를 fstat로 본다. 경로를 Lstat하지 않는 이유는
+// 링크를 따라간 정상 .go 파일의 판정을 그대로 두기 위해서다.
 func isGeneratedFile(path string) bool {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, readFlags, 0)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	sc := bufio.NewScanner(io.LimitReader(f, maxGeneratedHeader))
 	for sc.Scan() {
 		line := sc.Text()
 		if strings.HasPrefix(line, "package ") {

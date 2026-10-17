@@ -41,6 +41,10 @@ type harvester struct {
 	// initRoots는 초기화 루트 정점 ID → doc.Vertices 인덱스다(위치 갱신용).
 	initRoots      map[string]int
 	generatedFiles map[string]bool // 파일 → 생성 파일 여부 캐시
+	// loadedFiles는 수확하는 패키지가 실제로 로드한 파일이다 — isGenerated는 이 파일만 연다.
+	// 위치의 파일 이름은 //line 지시문이 아무 경로로나 바꿀 수 있어, 그대로 열면 분석 대상이
+	// FIFO(무한 대기)·장치·루트 밖 파일을 읽게 만들 수 있다.
+	loadedFiles map[string]bool
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -60,6 +64,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 
 		initRoots:      make(map[string]int),
 		generatedFiles: make(map[string]bool),
+		loadedFiles:    loadedFileSet(internal),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -580,13 +585,34 @@ func (h *harvester) preferHandWritten(v *graph.Vertex, pos *graph.Position) {
 }
 
 // isGenerated는 파일이 생성 파일인지 캐시해 본다(markGenerated와 같은 판정).
+// 로드한 파일이 아니면 열지 않고 false다 — //line이 가리킨 경로는 markGenerated도 판정하지
+// 않아 그 위치의 정점은 어차피 generated가 아니므로, 두 판정이 같은 파일만 보게 된다.
 func (h *harvester) isGenerated(file string) bool {
+	if !h.loadedFiles[file] {
+		return false
+	}
 	gen, ok := h.generatedFiles[file]
 	if !ok {
 		gen = isGeneratedFile(file)
 		h.generatedFiles[file] = gen
 	}
 	return gen
+}
+
+// loadedFileSet은 패키지들이 로드한 Go 파일 경로 집합이다. 고르는 기준(CompiledGoFiles, 비면
+// GoFiles)이 markGenerated와 같다 — 생성 판정의 키가 두 곳에서 갈라지지 않게 한다.
+func loadedFileSet(pkgs []*packages.Package) map[string]bool {
+	out := make(map[string]bool)
+	for _, p := range pkgs {
+		files := p.CompiledGoFiles
+		if len(files) == 0 {
+			files = p.GoFiles
+		}
+		for _, f := range files {
+			out[f] = true
+		}
+	}
+	return out
 }
 
 // keepMarked는 주석 그룹에 keep 표지가 있는지 본다.
