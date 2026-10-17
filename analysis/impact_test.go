@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -64,6 +65,45 @@ func TestFindImpactDepth(t *testing.T) {
 func TestFindImpactNotFound(t *testing.T) {
 	if _, err := FindImpact(impactDoc(), "pkg.missing", 0, 0); err == nil {
 		t.Fatal("expected error for missing vertex")
+	}
+}
+
+// TestImpactKindsTowardPreviousLayer는 의존자의 edges가 최단 경로의 직전 층(depth 1은
+// 대상)으로 가는 간선 종류만 담는지 확인한다. 같은 층·더 깊은 층·자기 자신으로 가는
+// 간선까지 합치면 B가 R을 call로만 부르는데 "참조로도 쓴다"로 오독되고, 합쳐지는
+// 종류가 BFS 처리 순서에 따라 달라진다. 직전 층의 선행 정점이 여럿이면 그 종류는 모두 남는다.
+func TestImpactKindsTowardPreviousLayer(t *testing.T) {
+	d := &graph.Document{
+		Vertices: []graph.Vertex{
+			{ID: "m.A", Kind: graph.KindFunc}, {ID: "m.B", Kind: graph.KindFunc},
+			{ID: "m.R", Kind: graph.KindFunc}, {ID: "m.X", Kind: graph.KindFunc},
+		},
+		Edges: []graph.Edge{
+			{From: "m.A", To: "m.R", Kind: graph.EdgeCall},
+			{From: "m.B", To: "m.R", Kind: graph.EdgeCall},
+			// 같은 층(depth 1)끼리의 간선 — B의 edges에 섞이면 안 된다.
+			{From: "m.B", To: "m.A", Kind: graph.EdgeReferences},
+			// X는 depth 2다. 직전 층의 두 선행 정점으로 가는 종류는 둘 다 남는다.
+			{From: "m.X", To: "m.A", Kind: graph.EdgeCall},
+			{From: "m.X", To: "m.B", Kind: graph.EdgeEmbeds},
+			// 더 깊은 층으로 가는 간선과 자기 루프도 섞이면 안 된다.
+			{From: "m.A", To: "m.X", Kind: graph.EdgeSignature},
+			{From: "m.X", To: "m.X", Kind: graph.EdgeImplements},
+		},
+	}
+	res, err := FindImpact(d, "m.R", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ImpactEntry{
+		{ID: "m.A", Kind: graph.KindFunc, Depth: 1, Kinds: []graph.EdgeKind{graph.EdgeCall}},
+		{ID: "m.B", Kind: graph.KindFunc, Depth: 1, Kinds: []graph.EdgeKind{graph.EdgeCall}},
+		{ID: "m.X", Kind: graph.KindFunc, Depth: 2,
+			Kinds: []graph.EdgeKind{graph.EdgeCall, graph.EdgeEmbeds}},
+	}
+	if !reflect.DeepEqual(res.Dependers, want) {
+		t.Fatalf("edges must only name kinds toward the previous layer:\ngot  %+v\nwant %+v",
+			res.Dependers, want)
 	}
 }
 

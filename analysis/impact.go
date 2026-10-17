@@ -9,6 +9,11 @@ import (
 
 // ImpactEntry는 영향을 받는 정점 하나다.
 // Depth는 대상 정점에서 몇 홉 떨어져 의존하는지다 — 1이 직접 의존자다.
+// Kinds는 최단 경로의 직전 층 정점(대상에서 Depth-1 홉 거리, depth 1이면 대상 자신)으로
+// 가는 의존 간선 종류다. 직전 층에 닿는 정점이 여럿이면 그 종류를 모두 합친다 —
+// --files·--since처럼 루트가 여럿이면 depth 1 항목은 닿는 루트 전부의 종류를 싣는다.
+// 같은 층·더 깊은 층·자기 자신으로 가는 간선은 대상에 닿는 경로가 아니라 섞지 않는다 —
+// 섞으면 "어떤 관계로 깨지는가"를 오독하고, 합쳐지는 종류가 BFS 처리 순서에 따라 달라진다.
 type ImpactEntry struct {
 	ID    string           `json:"id"`
 	Kind  graph.VertexKind `json:"kind"`
@@ -54,8 +59,8 @@ func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]Imp
 	}
 	frontier := append([]string(nil), roots...)
 	var out []ImpactEntry
-	// 이미 모은 depender가 다른 루트에도 다른 종류의 간선으로 닿을 수 있다 —
-	// 방문 표시와 관계 수집을 분리해야 간선 종류가 유실되지 않는다.
+	// 이미 모은 depender가 직전 층의 다른 정점(다른 루트)에도 다른 종류의 간선으로
+	// 닿을 수 있다 — 방문 표시와 관계 수집을 분리해야 간선 종류가 유실되지 않는다.
 	index := map[string]int{}
 	truncated := false
 
@@ -64,8 +69,9 @@ func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]Imp
 		for _, cur := range frontier {
 			for _, from := range in[cur] {
 				if seen[from] {
-					// 이미 발견된 의존자라도 이 루트로의 간선 종류는 합친다.
-					if i, ok := index[from]; ok {
+					// 이번 층에서 발견된 의존자만 cur(직전 층)로의 간선 종류를 합친다 —
+					// 앞 층에서 발견된 정점에게 cur는 같은 층(자기 자신 포함)이거나 더 깊은 정점이다.
+					if i, ok := index[from]; ok && out[i].Depth == step {
 						out[i].Kinds = mergeKinds(out[i].Kinds,
 							dependencyKinds(d, from, cur, false))
 					}
