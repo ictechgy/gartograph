@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ictechgy/gartograph/export"
 	"github.com/ictechgy/gartograph/internal/testutil"
@@ -1120,6 +1121,51 @@ func TestBridgesNoInterop(t *testing.T) {
 		if strings.HasPrefix(l, "unscanned-ffi-interop:") {
 			t.Fatalf("no cgo means no interop limitation: %v", doc.Limitations)
 		}
+	}
+}
+
+// TestBridgesSkipsNonRegularSources는 bridges가 정규 파일이 아닌 .go 항목을 읽지 않고
+// unparsed로 세는지 확인한다. 분석 대상이 .go 이름의 FIFO나 장치 링크를 두면 파서가 open에서
+// 막히거나(FIFO) 끝없이 읽었다(/dev/zero — 회귀해도 메모리를 쓰지 않는 FIFO로 검증한다).
+// 건너뛴 파일은 limitation으로 남아야 "cgo 없음"과 구분되고, 읽지 않았으니 sourceModifiedAt
+// (이번 추출에서 읽은 소스의 최신 mtime)에도 들어가지 않는다. 나머지 파일의 관측은 그대로다.
+func TestBridgesSkipsNonRegularSources(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc main() {}\n",
+		"native/native.go": "package native\n\nimport \"C\"\n\n" +
+			"//export Add\nfunc Add(a, b C.int) C.int { return a + b }\n",
+	})
+	testutil.MakeFIFO(t, filepath.Join(dir, "pipe.go"))
+	elsewhere := filepath.Join(t.TempDir(), "pipe")
+	testutil.MakeFIFO(t, elsewhere)
+	if err := os.Symlink(elsewhere, filepath.Join(dir, "native", "linked.go")); err != nil {
+		t.Fatal(err)
+	}
+	read := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, f := range []string{"main.go", "native/native.go"} {
+		if err := os.Chtimes(filepath.Join(dir, f), read, read); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var code int
+	var out, errb string
+	testutil.FinishWithin(t, testutil.BlockDeadline, func() { code, out, errb = run(t, "bridges", "--dir", dir) })
+	if code != 0 {
+		t.Fatalf("bridges failed: %d %s", code, errb)
+	}
+	var doc struct {
+		SourceModifiedAt string   `json:"sourceModifiedAt"`
+		Limitations      []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	want := []string{
+		"unscanned-ffi-interop: 1 Go source files use cgo interop (1 //export symbols)",
+		"unparsed-sources: 2 Go files could not be parsed; cgo use there is uncounted",
+	}
+	if !reflect.DeepEqual(doc.Limitations, want) || doc.SourceModifiedAt != "2020-01-02T03:04:05.000Z" {
+		t.Fatalf("non-regular .go entries must be skipped as unparsed, unread:\n%s", out)
 	}
 }
 

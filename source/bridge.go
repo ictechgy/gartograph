@@ -118,10 +118,18 @@ func scanCgo(root string) (cgoScan, error) {
 }
 
 // scanGoFile은 파일 하나의 import "C"와 //export 지시자를 관측한다.
+// 정규 파일만 읽는다 — 분석 대상이 .go 이름으로 FIFO나 /dev/zero 링크를 두면 파서가 open에서
+// 영원히 막히거나 끝없이 읽는다. 읽지 않은 파일은 unparsed로 세어 limitation에 남기고(조용히
+// 빼면 그 파일의 cgo 사용이 "없음"으로 읽힌다), 읽은 소스가 아니므로 latest에도 넣지 않는다.
+// os.Stat가 링크를 따라가므로 정규 파일을 가리키는 링크는 지금처럼 읽는다.
 func scanGoFile(path string, scan *cgoScan) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		scan.unparsed++
+		return nil
 	}
 	if info.ModTime().After(scan.latest) {
 		scan.latest = info.ModTime()
