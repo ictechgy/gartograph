@@ -5,7 +5,8 @@
 #   1. 모든 uses가 40자 커밋 SHA와 버전 주석(owner/repo@<sha> # vX.Y.Z)으로 고정돼 있다.
 #      태그와 브랜치는 상류에서 옮길 수 있어, 오염된 코드가 다음 실행에 그대로 들어온다.
 #   2. 모든 actions/checkout이 with: persist-credentials: false를 준다.
-#      기본값(true)은 잡 토큰을 .git 설정에 남겨, 뒤 단계에서 도는 코드가 읽을 수 있다.
+#      기본값(true)은 잡 토큰을 git 설정(v6부터는 설정이 가리키는 임시 파일)에 남겨,
+#      뒤 단계에서 도는 코드가 읽을 수 있다.
 #   3. ci.yml의 최상위 permissions는 contents: read 하나뿐이고, 어느 잡도 write를 받지 않는다.
 #      ci는 PR 코드를 돌리므로 저장소 기본 토큰 권한에 기대지 않는다.
 #
@@ -85,7 +86,7 @@ track_step() {
 # close_item — 끝난 단계가 checkout이면 자격 증명을 남기지 않는지 판정한다.
 close_item() {
   if [ "$item_checkout" = 1 ] && [ "$item_persist" = 0 ]; then
-    report "$file" "$item_line" "actions/checkout must set 'with: persist-credentials: false'. The default writes the job token into .git/config, where every later step, including pull request code, can read it."
+    report "$file" "$item_line" "actions/checkout must set 'with: persist-credentials: false'. The default keeps the job token reachable from the checkout's git config (v6 and later store it in a file that config includes), where every later step, including pull request code, can read it."
   fi
   item=-1 item_key=-1 item_field='' item_checkout=0 item_persist=0
 }
