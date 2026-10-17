@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# 두 잡 모두 저장소를 읽기만 한다. 저장소 기본 토큰 설정과 무관하게
+# PR 코드(go test·go run)가 쓰기 권한 토큰을 받지 않게 한다.
+permissions:
+  contents: read
+
 jobs:
   release-assets:
     strategy:
@@ -12,14 +17,19 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      # 뒤 단계는 원격 git 인증을 쓰지 않으므로 checkout 토큰을 .git 설정에 남기지 않는다.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - run: /bin/bash Scripts/test-publish-release-assets.sh
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
