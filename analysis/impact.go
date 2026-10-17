@@ -51,8 +51,11 @@ func FindImpact(d *graph.Document, id string, depth, maxEntries int) (*Impact, e
 // impactFrom은 여러 루트의 합집합을 역방향 BFS로 모은다.
 // Depth는 가장 가까운 루트에서의 거리다 — 파일 집합 영향 분석처럼
 // 루트가 여럿일 때 "몇 홉이나 떨어져 있나"는 최단 거리여야 의미가 있다.
+// 간선 종류는 종류 포함 이웃 목록에서, 정점 종류는 한 번 만든 ID 색인에서 읽는다 —
+// 의존자마다 문서 전체 간선·정점을 훑으면 비용이 클로저 크기 × 문서 크기가 된다.
 func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]ImpactEntry, bool) {
-	in := graph.Incoming(d)
+	in := graph.KindedIncoming(d)
+	byID := indexByID(d)
 	seen := map[string]bool{}
 	for _, r := range roots {
 		seen[r] = true
@@ -67,13 +70,15 @@ func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]Imp
 	for step := 1; len(frontier) > 0 && (depth <= 0 || step <= depth); step++ {
 		var next []string
 		for _, cur := range frontier {
-			for _, from := range in[cur] {
+			ns := in[cur]
+			for i, end := 0, 0; i < len(ns); i = end {
+				end = neighborRunEnd(ns, i)
+				from := ns[i].ID
 				if seen[from] {
 					// 이번 층에서 발견된 의존자만 cur(직전 층)로의 간선 종류를 합친다 —
 					// 앞 층에서 발견된 정점에게 cur는 같은 층(자기 자신 포함)이거나 더 깊은 정점이다.
-					if i, ok := index[from]; ok && out[i].Depth == step {
-						out[i].Kinds = mergeKinds(out[i].Kinds,
-							dependencyKinds(d, from, cur, false))
+					if k, ok := index[from]; ok && out[k].Depth == step {
+						out[k].Kinds = mergeKinds(out[k].Kinds, distinctRunKinds(ns[i:end]))
 					}
 					continue
 				}
@@ -83,9 +88,8 @@ func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]Imp
 					truncated = true
 					continue
 				}
-				kinds := dependencyKinds(d, from, cur, false)
-				dep := ImpactEntry{ID: from, Depth: step, Kinds: kinds}
-				if v, ok := d.VertexByID(from); ok {
+				dep := ImpactEntry{ID: from, Depth: step, Kinds: distinctRunKinds(ns[i:end])}
+				if v, ok := byID[from]; ok {
 					dep.Kind = v.Kind
 				}
 				index[from] = len(out)

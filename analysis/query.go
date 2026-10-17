@@ -43,11 +43,11 @@ func Query(d *graph.Document, id string, depth int, maxNeighbors int) (*Neighbor
 	if depth < 1 {
 		depth = 1
 	}
-	out := graph.Adjacency(d)
-	in := graph.Incoming(d)
+	out := graph.KindedAdjacency(d)
+	in := graph.KindedIncoming(d)
 
-	dependsOn, truncOut := walk(d, out, id, depth, maxNeighbors, false)
-	dependedBy, truncIn := walk(d, in, id, depth, maxNeighbors, true)
+	dependsOn, truncOut := walk(out, id, depth, maxNeighbors)
+	dependedBy, truncIn := walk(in, id, depth, maxNeighbors)
 
 	return &Neighbors{
 		ID:          id,
@@ -60,12 +60,13 @@ func Query(d *graph.Document, id string, depth int, maxNeighbors int) (*Neighbor
 	}, nil
 }
 
-// walk는 한 방향의 인접 맵을 BFS로 넓혀 이웃 목록을 만든다.
-// reverse가 참이면 인접 맵이 들어오는 방향이라 간선 조회도 (to→cur)로 뒤집는다.
+// walk는 한 방향의 종류 포함 이웃 목록을 BFS로 넓혀 이웃 목록을 만든다.
+// 관계 종류는 이웃 목록에서 그 이웃의 구간을 읽는다 — 들어오는 방향 목록도 간선의
+// 실제 종류를 담고 있어 방향을 뒤집어 다시 찾지 않는다.
 // maxNeighbors를 넘기면 잘랐다는 사실을 함께 돌려준다 —
 // 잘린 이웃을 조용히 버리면 소비자가 "전부"로 오독한다.
-func walk(d *graph.Document, adj map[string][]string, root string,
-	depth, maxNeighbors int, reverse bool) ([]NeighborEdge, bool) {
+func walk(adj map[string][]graph.Neighbor, root string,
+	depth, maxNeighbors int) ([]NeighborEdge, bool) {
 	seen := map[string]bool{root: true}
 	frontier := []string{root}
 	var out []NeighborEdge
@@ -74,7 +75,10 @@ func walk(d *graph.Document, adj map[string][]string, root string,
 	for step := 0; step < depth && len(frontier) > 0; step++ {
 		var next []string
 		for _, cur := range frontier {
-			for _, to := range adj[cur] {
+			ns := adj[cur]
+			for i, end := 0, 0; i < len(ns); i = end {
+				end = neighborRunEnd(ns, i)
+				to := ns[i].ID
 				if seen[to] {
 					continue
 				}
@@ -84,10 +88,7 @@ func walk(d *graph.Document, adj map[string][]string, root string,
 					truncated = true
 					continue
 				}
-				out = append(out, NeighborEdge{
-					ID:    to,
-					Kinds: dependencyKinds(d, cur, to, reverse),
-				})
+				out = append(out, NeighborEdge{ID: to, Kinds: runKinds(ns[i:end])})
 			}
 		}
 		frontier = next
@@ -95,17 +96,46 @@ func walk(d *graph.Document, adj map[string][]string, root string,
 	return out, truncated
 }
 
-// dependencyKinds는 두 정점 사이의 의존 관계 종류를 모두 돌려준다.
+// neighborRunEnd는 정렬된 이웃 목록에서 i번째와 같은 이웃의 구간이 끝나는 위치다.
+// 목록이 (ID, Kind) 순이라 한 이웃과의 관계 종류는 [i, end)에 모여 있다.
+func neighborRunEnd(ns []graph.Neighbor, i int) int {
+	end := i + 1
+	for end < len(ns) && ns[end].ID == ns[i].ID {
+		end++
+	}
+	return end
+}
+
+// runKinds는 한 이웃 구간의 관계 종류를 정렬 순서대로 돌려준다.
+// 같은 관계가 중복된 문서에서는 EdgeKinds처럼 그 종류가 거듭 실린다.
+func runKinds(run []graph.Neighbor) []graph.EdgeKind {
+	kinds := make([]graph.EdgeKind, len(run))
+	for i, n := range run {
+		kinds[i] = n.Kind
+	}
+	return kinds
+}
+
+// distinctRunKinds는 한 이웃 구간의 관계 종류를 중복 없이 돌려준다 — 영향 항목의
+// edges는 관계 집합이라 같은 관계가 중복된 문서에서도 종류를 한 번만 싣는다.
+func distinctRunKinds(run []graph.Neighbor) []graph.EdgeKind {
+	kinds := make([]graph.EdgeKind, 0, len(run))
+	for i, n := range run {
+		if i == 0 || n.Kind != run[i-1].Kind {
+			kinds = append(kinds, n.Kind)
+		}
+	}
+	return kinds
+}
+
+// dependencyKinds는 from→to의 의존 관계 종류를 모두 돌려준다.
 // contains는 소유 관계라 제외한다 — 소유를 의존으로 섞으면
 // dependsOn이 "아무것도 의존하지 않는다"가 아니라 "잘못 채워진다"가 된다.
-// reverse는 들어오는 방향 질의에서 간선의 실제 방향을 맞춘다.
-func dependencyKinds(d *graph.Document, cur, to string, reverse bool) []graph.EdgeKind {
-	from, target := cur, to
-	if reverse {
-		from, target = to, cur
-	}
+// 문서 전체 간선을 훑으므로 경로의 홉처럼 몇 번만 묻는 곳에서만 쓴다 — 이웃마다
+// 묻는 질의는 종류 포함 이웃 목록(graph.KindedAdjacency)을 쓴다.
+func dependencyKinds(d *graph.Document, from, to string) []graph.EdgeKind {
 	var kinds []graph.EdgeKind
-	for _, k := range graph.EdgeKinds(d, from, target) {
+	for _, k := range graph.EdgeKinds(d, from, to) {
 		if k != graph.EdgeContains {
 			kinds = append(kinds, k)
 		}

@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -42,6 +43,64 @@ func TestAdjacencyExcludesContains(t *testing.T) {
 	if len(inc["sym"]) != 0 {
 		t.Fatalf("contains edge leaked into incoming: %v", inc["sym"])
 	}
+}
+
+// TestKindedAdjacency는 종류 포함 이웃 목록이 contains를 빼고 (ID, Kind) 순으로
+// 정렬돼 한 이웃의 관계 종류가 연속 구간을 이루는지 확인한다. 질의는 이 구간에서
+// 두 정점 사이의 관계 종류를 읽으므로, 정렬이 어긋나면 종류가 갈라지거나 사라진다.
+// 정렬되지 않은 문서와 중복 간선도 Adjacency·Incoming·EdgeKinds와 같은 사실을 담아야 한다.
+func TestKindedAdjacency(t *testing.T) {
+	doc := &Document{
+		Edges: []Edge{
+			{From: "a", To: "c", Kind: EdgeReferences},
+			{From: "a", To: "b", Kind: EdgeImport},
+			{From: "pkg", To: "a", Kind: EdgeContains},
+			{From: "a", To: "c", Kind: EdgeCall},
+			{From: "b", To: "c", Kind: EdgeCall},
+			{From: "a", To: "a", Kind: EdgeCall},
+			{From: "a", To: "c", Kind: EdgeCall},
+		},
+	}
+	out := KindedAdjacency(doc)
+	wantOut := map[string][]Neighbor{
+		"a": {{ID: "a", Kind: EdgeCall}, {ID: "b", Kind: EdgeImport},
+			{ID: "c", Kind: EdgeCall}, {ID: "c", Kind: EdgeCall}, {ID: "c", Kind: EdgeReferences}},
+		"b": {{ID: "c", Kind: EdgeCall}},
+	}
+	if !reflect.DeepEqual(out, wantOut) {
+		t.Fatalf("outgoing kinded adjacency:\ngot  %v\nwant %v", out, wantOut)
+	}
+	in := KindedIncoming(doc)
+	wantIn := map[string][]Neighbor{
+		"a": {{ID: "a", Kind: EdgeCall}},
+		"b": {{ID: "a", Kind: EdgeImport}},
+		"c": {{ID: "a", Kind: EdgeCall}, {ID: "a", Kind: EdgeCall},
+			{ID: "a", Kind: EdgeReferences}, {ID: "b", Kind: EdgeCall}},
+	}
+	if !reflect.DeepEqual(in, wantIn) {
+		t.Fatalf("incoming kinded adjacency:\ngot  %v\nwant %v", in, wantIn)
+	}
+	// 이웃 순서는 Adjacency·Incoming과 같아야 기존 질의의 출력 순서가 그대로다.
+	adj, inc := Adjacency(doc), Incoming(doc)
+	for key, ns := range out {
+		if ids := neighborIDs(ns); !reflect.DeepEqual(ids, adj[key]) {
+			t.Fatalf("outgoing order of %s differs from Adjacency: %v", key, ids)
+		}
+	}
+	for key, ns := range in {
+		if ids := neighborIDs(ns); !reflect.DeepEqual(ids, inc[key]) {
+			t.Fatalf("incoming order of %s differs from Incoming: %v", key, ids)
+		}
+	}
+}
+
+// neighborIDs는 종류 포함 이웃 목록에서 ID만 꺼낸다.
+func neighborIDs(ns []Neighbor) []string {
+	ids := make([]string, len(ns))
+	for i, n := range ns {
+		ids[i] = n.ID
+	}
+	return ids
 }
 
 // TestEdgeKinds는 한 쌍의 모든 관계 종류가 돌아오는지 확인한다.

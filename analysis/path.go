@@ -73,7 +73,7 @@ func Path(d *graph.Document, from, to string) (*PathResult, error) {
 	for i := 1; i < len(ids); i++ {
 		res.Hops[i] = PathHop{
 			ID:    ids[i],
-			Kinds: dependencyKinds(d, ids[i-1], ids[i], false),
+			Kinds: dependencyKinds(d, ids[i-1], ids[i]),
 		}
 	}
 	return res, nil
