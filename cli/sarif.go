@@ -158,7 +158,8 @@ func rulesSARIF(violations []analysis.Violation) ([]byte, error) {
 
 // cyclesSARIF는 순환을 SARIF 로그로 직렬화한다.
 // 순환은 계약 위반이라 error다 — 멤버는 논리 위치로, 순환을 이루는 간선의
-// 첫 지점은 물리 위치로 실어 둘 다 볼 수 있게 한다.
+// 첫 지점(Cycle.Position)은 물리 위치로 실어 둘 다 볼 수 있게 한다.
+// 증거 간선은 위치 없이 관계만 담으므로 위치는 Cycle.Position에서만 읽는다.
 func cyclesSARIF(cycles []analysis.Cycle) ([]byte, error) {
 	results := make([]sarifResult, 0, len(cycles))
 	for _, c := range cycles {
@@ -167,16 +168,11 @@ func cyclesSARIF(cycles []analysis.Cycle) ([]byte, error) {
 			loc.LogicalLocations = append(loc.LogicalLocations,
 				sarifLogical{FullyQualifiedName: m, Kind: "module"})
 		}
-		for _, e := range c.Edges {
-			if len(e.Positions) == 0 {
-				continue
-			}
-			p := e.Positions[0]
+		if p := c.Position; p != nil {
 			loc.PhysicalLocation = &sarifPhysical{
 				ArtifactLocation: sarifArtifact{URI: p.File},
 				Region:           sarifRegion{StartLine: p.Line, StartColumn: p.Column},
 			}
-			break
 		}
 		results = append(results, sarifResult{
 			RuleID: "dependency-cycle",

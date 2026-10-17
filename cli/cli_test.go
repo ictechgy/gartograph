@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ictechgy/gartograph/export"
 	"github.com/ictechgy/gartograph/internal/testutil"
 )
 
@@ -1812,7 +1813,17 @@ func TestCyclesSARIF(t *testing.T) {
 		Version string `json:"version"`
 		Runs    []struct {
 			Results []struct {
-				RuleID string `json:"ruleId"`
+				RuleID    string `json:"ruleId"`
+				Locations []struct {
+					PhysicalLocation *struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+						Region struct {
+							StartLine int `json:"startLine"`
+						} `json:"region"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
 			} `json:"results"`
 		} `json:"runs"`
 	}
@@ -1823,6 +1834,14 @@ func TestCyclesSARIF(t *testing.T) {
 		len(sarif.Runs[0].Results) != 1 ||
 		sarif.Runs[0].Results[0].RuleID != "dependency-cycle" {
 		t.Fatalf("unexpected SARIF: %s", out)
+	}
+	// 순환을 이루는 간선의 첫 지점이 물리 위치로 실려야 code scanning이 결과를
+	// 파일·줄에 놓는다 — 논리 위치만으로는 표시할 곳이 없다.
+	locs := sarif.Runs[0].Results[0].Locations
+	if len(locs) != 1 || locs[0].PhysicalLocation == nil ||
+		locs[0].PhysicalLocation.ArtifactLocation.URI != "a/a.go" ||
+		locs[0].PhysicalLocation.Region.StartLine != 3 {
+		t.Fatalf("cycle result must carry the first evidence site as physicalLocation: %s", out)
 	}
 	// baseline 왕복 — 쓰고 읽으면 같은 순환이 baselined로 간다.
 	bp := filepath.Join(dir, "b.json")
@@ -1835,6 +1854,14 @@ func TestCyclesSARIF(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("baseline read failed: %d", code)
 	}
+	// 위치는 SARIF에만 싣는다 — cycles JSON과 baseline 파일의 형식은 그대로다.
+	written, err := os.ReadFile(bp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "positions") || strings.Contains(string(written), "positions") {
+		t.Fatalf("cycles JSON and baseline must not carry positions:\n%s\n%s", out, written)
+	}
 	var rep struct {
 		Cycles    []any `json:"cycles"`
 		Baselined []any `json:"baselined"`
@@ -1844,6 +1871,69 @@ func TestCyclesSARIF(t *testing.T) {
 	}
 	if len(rep.Cycles) != 0 || len(rep.Baselined) != 1 {
 		t.Fatalf("known cycle must be baselined: %s", out)
+	}
+}
+
+// TestCyclesEvidenceOnce는 CLI JSON과 MCP gartograph_cycles가 같은 쌍의 관계 종류마다
+// 증거 간선을 한 번만 싣는지 확인한다. call과 references가 함께 있는 쌍(Go 호출에서
+// 흔하다)의 증거가 종류 수만큼 거듭 실리면, 고칠 간선 수를 세는 에이전트가 부풀려 센다.
+func TestCyclesEvidenceOnce(t *testing.T) {
+	docJSON := `{"version":2,"level":"symbol","vertices":[
+{"id":"m.A","kind":"func"},{"id":"m.B","kind":"func"}],
+"edges":[{"from":"m.A","to":"m.B","kind":"call","positions":[{"file":"a.go","line":3}]},
+{"from":"m.A","to":"m.B","kind":"references","positions":[{"file":"a.go","line":4}]},
+{"from":"m.B","to":"m.A","kind":"call","positions":[{"file":"b.go","line":5}]}]}`
+	p := filepath.Join(t.TempDir(), "g.json")
+	if err := os.WriteFile(p, []byte(docJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"from":"m.A","kind":"call","to":"m.B"},` +
+		`{"from":"m.A","kind":"references","to":"m.B"},{"from":"m.B","kind":"call","to":"m.A"}]`
+	type cycleEvidence struct {
+		Edges []map[string]any `json:"edges"`
+	}
+	// evidenceOf는 순환 하나의 증거 간선을 비교할 수 있게 다시 직렬화한다.
+	evidenceOf := func(cycles []cycleEvidence) string {
+		t.Helper()
+		if len(cycles) != 1 {
+			t.Fatalf("expected one cycle, got %d", len(cycles))
+		}
+		got, err := json.Marshal(cycles[0].Edges)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(got)
+	}
+	code, out, errb := run(t, "cycles", "--graph", p, "--level", "symbol", "--format", "json")
+	if code != 0 {
+		t.Fatalf("cycles json failed: %d %s", code, errb)
+	}
+	var report struct {
+		Cycles []cycleEvidence `json:"cycles"`
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("cycles output is not JSON: %v\n%s", err, out)
+	}
+	if got := evidenceOf(report.Cycles); got != want {
+		t.Fatalf("CLI evidence must name each relation once:\ngot  %s\nwant %s", got, want)
+	}
+	doc, err := export.LoadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := mcpSession(t, &mcpServer{doc: doc},
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gartograph_cycles","arguments":{"level":"symbol"}}}`)
+	result := res[0]["result"].(map[string]any)
+	if result["isError"] == true {
+		t.Fatalf("MCP cycles errored: %v", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var mcpCycles []cycleEvidence
+	if err := json.Unmarshal([]byte(text), &mcpCycles); err != nil {
+		t.Fatalf("MCP cycles text is not JSON: %v\n%s", err, text)
+	}
+	if got := evidenceOf(mcpCycles); got != want {
+		t.Fatalf("MCP evidence must match CLI:\ngot  %s\nwant %s", got, want)
 	}
 }
 
