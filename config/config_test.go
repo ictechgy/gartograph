@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ictechgy/gartograph/internal/testutil"
 )
 
 // writeRules는 규칙 파일을 임시 디렉터리에 쓰고 경로를 돌려준다.
@@ -381,5 +383,56 @@ func TestLimitsValidation(t *testing.T) {
 	}
 	if len(f.Limits) != 1 || *f.Limits[0].MaxIn != 0 || *f.Limits[0].MaxOut != 0 {
 		t.Fatalf("limits must round-trip: %+v", f.Limits)
+	}
+}
+
+// TestLoadRejectsNonRegular는 규칙 파일이 정규 파일(또는 그것을 가리키는 링크)이 아니면
+// 읽지 않고 원인을 담은 오류를 내는지 확인한다. .gartograph.yml은 분석 대상 저장소가 고르는
+// 경로라 /dev/zero 링크(끝없는 읽기)나 FIFO(open에서 무한 대기)일 수 있다 — 장치는
+// /dev/null로 대신 검증한다. 회귀하면 /dev/zero는 테스트 프로세스의 메모리를 다 쓴다.
+func TestLoadRejectsNonRegular(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo.yml")
+	testutil.MakeFIFO(t, fifo)
+	device := filepath.Join(dir, "device.yml")
+	if err := os.Symlink(os.DevNull, device); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{device, t.TempDir(), fifo} {
+		var err error
+		testutil.FinishWithin(t, testutil.BlockDeadline, func() { _, err = Load(path) })
+		if err == nil || !strings.Contains(err.Error(), "is not a regular file") ||
+			!strings.Contains(err.Error(), path) {
+			t.Fatalf("%s: want a not-a-regular-file error naming the path, got %v", path, err)
+		}
+	}
+	// 링크를 따라간 대상이 정규 파일이면 지금처럼 읽는다 — 공유 설정을 링크로 두는 저장소가 있다.
+	link := filepath.Join(dir, ".gartograph.yml")
+	if err := os.Symlink(writeRules(t, "components: {a: [a]}\n"), link); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := Load(link); err != nil || len(f.Components) != 1 {
+		t.Fatalf("a link to a regular rules file must load: %+v %v", f, err)
+	}
+}
+
+// TestLoadSizeLimit은 규칙 파일을 상한까지만 읽는지 확인한다. 상한은 --roots-from과 같은
+// 16 MiB다 — init이 큰 저장소에서 만든 설정은 받고, 그보다 큰 파일은 읽다가 메모리를 다
+// 쓰기 전에 거부한다.
+func TestLoadSizeLimit(t *testing.T) {
+	head := "components: {a: [a]}\n"
+	atLimit := writeRules(t, head+strings.Repeat("\n", maxRulesFileSize-len(head)))
+	if _, err := Load(atLimit); err != nil {
+		t.Fatalf("a rules file of exactly %d bytes must load: %v", maxRulesFileSize, err)
+	}
+	over := filepath.Join(t.TempDir(), ".gartograph.yml")
+	if err := os.WriteFile(over, []byte(head), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(over, maxRulesFileSize+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(over); err == nil || !strings.Contains(err.Error(), "larger than 16 MiB") {
+		t.Fatalf("an oversized rules file must be rejected with its limit, got %v", err)
 	}
 }

@@ -1711,6 +1711,53 @@ import _ "example.com/fixture/gen"
 	}
 }
 
+// TestConfigMustBeRegularFile은 분석 대상의 .gartograph.yml이 정규 파일이 아니면 명령이
+// 멈추지 않고 원인을 담아 2로 끝나는지 확인한다. 수확 명령은 전부 exclude를 읽으려고 이
+// 파일을 연다 — FIFO는 open에서, /dev/zero 링크는 읽기에서 끝나지 않았다(장치는 회귀해도
+// 메모리를 쓰지 않는 /dev/null로 검증한다). 정규 파일을 가리키는 링크는 지금처럼 읽힌다.
+func TestConfigMustBeRegularFile(t *testing.T) {
+	// replaced는 rulesFixture의 규칙 파일 자리에 place가 만든 파일을 둔 모듈이다.
+	replaced := func(place func(cfg string)) string {
+		dir := rulesFixture(t)
+		cfg := filepath.Join(dir, ".gartograph.yml")
+		if err := os.Remove(cfg); err != nil {
+			t.Fatal(err)
+		}
+		place(cfg)
+		return dir
+	}
+	fifoDir := replaced(func(cfg string) { testutil.MakeFIFO(t, cfg) })
+	deviceDir := replaced(func(cfg string) {
+		if err := os.Symlink(os.DevNull, cfg); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, dir := range []string{deviceDir, fifoDir} {
+		for _, cmd := range []string{"graph", "rules"} {
+			var code int
+			var errb string
+			testutil.FinishWithin(t, testutil.BlockDeadline, func() { code, _, errb = run(t, cmd, "--dir", dir) })
+			if code != 2 || !strings.Contains(errb, "is not a regular file") {
+				t.Fatalf("%s --dir %s: want exit 2 naming the cause, got %d %s", cmd, dir, code, errb)
+			}
+		}
+	}
+	shared := filepath.Join(t.TempDir(), "shared.yml")
+	if err := os.WriteFile(shared, []byte("components:\n  web: [\"web\"]\n  db: [\"db\"]\ndeps: {}\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := replaced(func(cfg string) {
+		if err := os.Symlink(shared, cfg); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if code, out, errb := run(t, "rules", "--dir", linkDir, "--strict"); code != 1 ||
+		!strings.Contains(out, "example.com/fixture/web") {
+		t.Fatalf("a linked regular rules file must still be checked: %d %s %s", code, out, errb)
+	}
+}
+
 // TestSharedUsage는 shared가 루트 하나만으로는 사용법 오류인지 확인한다 —
 // 교집합은 둘 이상의 루트가 있어야 의미가 있다.
 func TestSharedUsage(t *testing.T) {

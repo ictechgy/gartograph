@@ -169,6 +169,10 @@ module root. Components map module-relative package paths; `deps` is an
 **allowlist** — a component with no entry may depend on nothing outside
 itself.
 
+The rules file must be a regular file, or a symlink to one, of at most 16 MiB.
+Every harvesting command reads it for `exclude`, so a device, named pipe, or
+larger file is an error (exit 2) instead of an endless read.
+
 ```yaml
 components:
   cli:      ["cli"]

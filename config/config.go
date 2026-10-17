@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -137,6 +138,11 @@ type FileRule struct {
 // 파일 후보 이름 — 두 확장자를 다 받는다.
 var candidates = []string{".gartograph.yml", ".gartograph.yaml"}
 
+// maxRulesFileSize는 규칙 파일의 최대 바이트 수다. --roots-from 입력 상한(16 MiB)과 같다 —
+// init이 큰 저장소에서 만든 설정(컴포넌트 2만 개면 수 MB)은 받고, /dev/zero처럼 끝없이
+// 읽히는 입력은 메모리를 다 쓰기 전에 거부한다.
+const maxRulesFileSize = 16 << 20
+
 // Find는 dir 아래에서 규칙 파일을 찾는다.
 func Find(dir string) (string, bool) {
 	for _, name := range candidates {
@@ -151,9 +157,9 @@ func Find(dir string) (string, bool) {
 // Load는 규칙 파일을 읽어 검증한다.
 // 컴포넌트가 하나도 없으면 규칙 검사 자체가 무의미하므로 에러다.
 func Load(path string) (*File, error) {
-	data, err := os.ReadFile(path)
+	data, err := readRulesFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading rules file: %w", err)
+		return nil, err
 	}
 	var f File
 	if err := yaml.Unmarshal(data, &f); err != nil {
@@ -166,6 +172,36 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &f, nil
+}
+
+// readRulesFile은 규칙 파일을 상한까지 읽는다. .gartograph.yml은 분석 대상 저장소가 고르는
+// 경로라 /dev/zero나 FIFO를 가리키는 링크일 수 있다 — os.ReadFile은 그런 입력에서 메모리를
+// 다 쓰거나 open에서 영원히 막히고, 수확 명령은 전부 exclude를 읽으려고 이 파일을 연다.
+// 그래서 막히지 않게 열고(readFlags) 연 파일이 정규 파일인지 fstat로 본 뒤 읽는다.
+// 링크 자체는 막지 않는다 — 대상이 정규 파일이면 공유 설정을 링크로 두는 저장소가 그대로 돈다.
+func readRulesFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, readFlags, 0)
+	if err != nil {
+		return nil, fmt.Errorf("reading rules file: %w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("reading rules file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("rules file %s is not a regular file (mode %s); "+
+			"replace it with a YAML file or a link to one", path, info.Mode())
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxRulesFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading rules file: %w", err)
+	}
+	if len(data) > maxRulesFileSize {
+		return nil, fmt.Errorf("rules file %s is larger than %d MiB; "+
+			"check that it is the intended YAML rules file", path, maxRulesFileSize>>20)
+	}
+	return data, nil
 }
 
 // checkRefs는 규칙이 참조하는 컴포넌트명이 components에 정의됐는지 확인한다.
