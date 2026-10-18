@@ -341,6 +341,79 @@ func TestTraverseDepthCutIgnoresLateArrival(t *testing.T) {
 	}
 }
 
+// dominatedByScan은 정렬 목록 이전의 판정이다 — 보유 맵 전체를 훑어 r보다 작은 자기 아닌
+// 인덱스를 센다. 이분 탐색 판정(dominated)의 기준이다.
+func dominatedByScan(held map[int]int, owner, r, need int) bool {
+	smaller := 0
+	for idx := range held {
+		if idx != owner && idx < r {
+			smaller++
+		}
+	}
+	return smaller >= need
+}
+
+// sortedHeld는 보유 맵을 인덱스 오름차순 목록으로 바꾼다.
+func sortedHeld(held map[int]int) heldRoots {
+	var out heldRoots
+	for idx, level := range held {
+		out = append(out, heldRoot{index: idx, level: level})
+	}
+	slices.SortFunc(out, func(a, b heldRoot) int { return a.index - b.index })
+	return out
+}
+
+// TestDominatedMatchesScan은 무작위 보유 집합·owner·r에서 이분 탐색 판정이 전체 순회 판정과
+// 같은지 본다. 자기 인덱스(owner)를 빼면 정확히 need-1개가 되는 경계는 따로 넣는다.
+func TestDominatedMatchesScan(t *testing.T) {
+	check := func(held map[int]int, owner, r int) bool {
+		t.Helper()
+		sorted := sortedHeld(held)
+		var got bool
+		for _, need := range []int{decisiveRoots, dominatingRoots} {
+			got = dominated(sorted, owner, r, need)
+			if want := dominatedByScan(held, owner, r, need); got != want {
+				t.Fatalf("held %v owner %d r %d need %d: dominated = %v, scan %v", sorted, owner, r, need, got, want)
+			}
+			lv, ok := sorted.level(r)
+			if wantLv, wantOK := held[r]; ok != wantOK || lv != wantLv {
+				t.Fatalf("level(%d) = %d,%v, want %d,%v", r, lv, ok, wantLv, wantOK)
+			}
+		}
+		return got
+	}
+	upTo := func(n int) map[int]int {
+		held := map[int]int{}
+		for i := 0; i < n; i++ {
+			held[i] = i % 3
+		}
+		return held
+	}
+	// 0~65를 가진 정점: owner 10이 r=66보다 작으면 자기 아닌 더 작은 인덱스는 65개다. owner가 r
+	// 자신이면 r보다 작은 66개(0~65)가 모두 자기 아닌 인덱스다.
+	if check(upTo(66), 10, 66) || !check(upTo(66), 70, 66) || !check(upTo(66), -1, 66) || check(upTo(66), 10, 65) ||
+		!check(upTo(67), 66, 66) {
+		t.Fatal("owner boundary cases disagree with the definition")
+	}
+	rng := rand.New(rand.NewSource(5))
+	outcomes := map[bool]int{}
+	for iter := 0; iter < 20000; iter++ {
+		universe := 1 + rng.Intn(300)
+		held := map[int]int{}
+		for n := rng.Intn(min(universe, 160) + 1); len(held) < n; {
+			held[rng.Intn(universe)] = rng.Intn(5)
+		}
+		owner := -1
+		if rng.Intn(3) > 0 {
+			owner = rng.Intn(universe)
+		}
+		outcomes[check(held, owner, rng.Intn(universe+5))]++
+	}
+	if outcomes[true] == 0 || outcomes[false] == 0 {
+		t.Fatalf("property test never exercised both outcomes: %v", outcomes)
+	}
+}
+
 // compareTraversal은 두 결과의 도달 행을 필드별로 대조한다.
 func compareTraversal(t *testing.T, iter int, got, want *TraversalResult) {
 	t.Helper()
