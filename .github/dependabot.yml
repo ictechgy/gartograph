@@ -1,0 +1,14 @@
+# 워크플로 액션은 커밋 SHA로 고정한다. 고정값이 낡지 않게 주 1회 갱신 PR을 받는다.
+# gomod 갱신을 켜는 일은 의존성 정책 결정이라 여기서 다루지 않는다.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # 고정한 SHA를 바꾸는 통로는 이 PR뿐이라, 갓 나온 릴리스는 7일 지켜본 뒤에 받는다.
+    # 오염된 릴리스는 대개 그 안에 드러난다. 설정이 없으면 기본값은 3일이고, 보안 갱신은
+    # 쿨다운 없이 온다. github-actions는 semver별 일수를 지원하지 않아 default-days만 둔다.
+    cooldown:
+      default-days: 7

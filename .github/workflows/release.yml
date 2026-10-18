@@ -17,11 +17,14 @@ jobs:
     name: Build and publish release binaries
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      # checkout 토큰을 .git 설정에 남기지 않는다. 뒤 단계 중 gh는 GH_TOKEN을, tap push는
+      # 명시한 extraheader를 쓰고, 버전 확인은 로컬 git만 읽는다.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
 
