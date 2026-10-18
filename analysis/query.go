@@ -35,29 +35,43 @@ type Neighbors struct {
 // Query는 정점 하나에 대해 depth까지 이웃을 되묻는다.
 // 에이전트 소비용 JSON 계약: 잘렸으면 truncated, 깊이는 depth를 명시한다.
 // depth 1은 직접 이웃, 0 이하는 1로 정규화한다.
+// 한 번만 묻는 경로라 정점 하나는 목록에서 찾는다 — 정점 하나를 찾자고 정점 수만큼의 색인을 만들지 않는다.
 func Query(d *graph.Document, id string, depth int, maxNeighbors int) (*Neighbors, error) {
 	vtx, ok := d.VertexByID(id)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
+	return neighborsOf(d, vtx, graph.KindedAdjacency(d), graph.KindedIncoming(d), depth, maxNeighbors), nil
+}
+
+// Query는 색인 위의 Query다 — 같은 Index로 거듭 물으면 ID 색인과 양방향 이웃 목록을 다시 만들지 않는다.
+func (x *Index) Query(id string, depth int, maxNeighbors int) (*Neighbors, error) {
+	vtx := x.vertices()[id]
+	if vtx == nil {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	return neighborsOf(x.doc, vtx, x.outgoing(), x.incoming(), depth, maxNeighbors), nil
+}
+
+// neighborsOf는 Query의 본체다 — 찾은 정점에서 나가는(out)·들어오는(in) 종류 포함 이웃 목록을 depth까지
+// 넓힌다. 한 번짜리 Query와 색인 위의 Query가 이 함수를 함께 써서 답이 갈라지지 않는다.
+func neighborsOf(d *graph.Document, vtx *graph.Vertex, out, in map[string][]graph.Neighbor,
+	depth, maxNeighbors int) *Neighbors {
 	if depth < 1 {
 		depth = 1
 	}
-	out := graph.KindedAdjacency(d)
-	in := graph.KindedIncoming(d)
-
-	dependsOn, truncOut := walk(out, id, depth, maxNeighbors)
-	dependedBy, truncIn := walk(in, id, depth, maxNeighbors)
+	dependsOn, truncOut := walk(out, vtx.ID, depth, maxNeighbors)
+	dependedBy, truncIn := walk(in, vtx.ID, depth, maxNeighbors)
 
 	return &Neighbors{
-		ID:          id,
+		ID:          vtx.ID,
 		Kind:        vtx.Kind,
 		Depth:       depth,
 		DependsOn:   dependsOn,
 		DependedBy:  dependedBy,
 		Truncated:   truncOut || truncIn,
 		Limitations: d.Limitations,
-	}, nil
+	}
 }
 
 // walk는 한 방향의 종류 포함 이웃 목록을 BFS로 넓혀 이웃 목록을 만든다.

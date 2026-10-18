@@ -1,6 +1,10 @@
 package analysis
 
 import (
+	"fmt"
+	"math/rand"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -49,6 +53,104 @@ func TestSharedNotFound(t *testing.T) {
 	}
 	if _, err := Shared(doc, []string{"m/a", "m/ghost"}); err == nil {
 		t.Fatal("missing root must be an error")
+	}
+}
+
+// TestSharedMatchesPerRootReach는 무작위 문서에서 Shared가 루트마다 DependencyReachable로 도달 집합을
+// 구하던 구현(perRootShared)과 같은 결과를 내는지 확인한다. 겹친 루트, 서로 닿는 루트, 자기 루프,
+// contains, 정점 없는 끝을 섞는다 — 인접 맵을 한 번만 만드는 것은 비용만 줄여야 한다.
+func TestSharedMatchesPerRootReach(t *testing.T) {
+	r := rand.New(rand.NewSource(29))
+	sawShared, sawOnly := false, false
+	for trial := 0; trial < 500; trial++ {
+		d := randomDependencyDocument(r)
+		roots := make([]string, 2+r.Intn(3))
+		for i := range roots {
+			roots[i] = d.Vertices[r.Intn(len(d.Vertices))].ID
+		}
+		got, err := Shared(d, roots)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := perRootShared(d, roots); !reflect.DeepEqual(got, want) {
+			t.Fatalf("trial %d roots %v diverged:\ngot  %+v\nwant %+v\nedges %+v", trial, roots, got, want, d.Edges)
+		}
+		sawShared = sawShared || len(got.Shared) > 0
+		sawOnly = sawOnly || len(got.Only) > 0
+	}
+	if !sawShared || !sawOnly {
+		t.Fatalf("random documents must exercise shared (%v) and only (%v) sets", sawShared, sawOnly)
+	}
+}
+
+// perRootShared는 인접 맵을 한 번만 만들기 전의 Shared다 — 루트마다 DependencyReachable이 인접 맵을
+// 새로 만든다. 느려도 출력 대조 기준으로 그대로 둔다.
+func perRootShared(d *graph.Document, roots []string) *SharedResult {
+	reach := make(map[string]map[string]bool, len(roots))
+	count := map[string]int{}
+	for _, r := range roots {
+		reach[r] = DependencyReachable(d, []string{r})
+		for id := range reach[r] {
+			count[id]++
+		}
+	}
+	res := &SharedResult{Roots: roots, Limitations: d.Limitations}
+	for id, n := range count {
+		if n == len(roots) {
+			res.Shared = append(res.Shared, id)
+		}
+	}
+	sort.Strings(res.Shared)
+	for _, r := range roots {
+		var only []string
+		for id := range reach[r] {
+			if count[id] < len(roots) {
+				only = append(only, id)
+			}
+		}
+		if len(only) > 0 {
+			sort.Strings(only)
+			if res.Only == nil {
+				res.Only = map[string][]string{}
+			}
+			res.Only[r] = only
+		}
+	}
+	return res
+}
+
+// TestSharedBuildsAdjacencyOnce는 루트가 늘어도 Shared가 의존 인접 맵을 다시 만들지 않는지 할당 횟수로
+// 본다. 루트마다 인접 맵을 새로 만들면 할당이 루트 수 × 간선 출발 정점 수만큼 늘어난다. 시간 대신
+// 할당 횟수를 세므로 바쁜 머신에서도 결과가 흔들리지 않는다. 루트는 이웃이 없는 정점이라 루트 하나의
+// BFS는 할당 몇 번으로 끝난다.
+func TestSharedBuildsAdjacencyOnce(t *testing.T) {
+	const ring = 2000
+	d := &graph.Document{}
+	for i := 0; i < ring; i++ {
+		id := fmt.Sprintf("m.f%04d", i)
+		d.Vertices = append(d.Vertices, graph.Vertex{ID: id, Kind: graph.KindFunc})
+		d.Edges = append(d.Edges, graph.Edge{From: id, To: fmt.Sprintf("m.f%04d", (i+1)%ring), Kind: graph.EdgeCall})
+	}
+	var roots []string
+	for i := 0; i < 20; i++ {
+		roots = append(roots, fmt.Sprintf("m.root%02d", i))
+		d.Vertices = append(d.Vertices, graph.Vertex{ID: roots[i], Kind: graph.KindFunc})
+	}
+	var err error
+	allocations := func(n int) float64 {
+		return testing.AllocsPerRun(3, func() {
+			if _, e := Shared(d, roots[:n]); e != nil {
+				err = e
+			}
+		})
+	}
+	two, twenty := allocations(2), allocations(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if twenty > 1.5*two {
+		t.Fatalf("Shared must build the dependency adjacency once, not per root: "+
+			"%.0f allocations for 2 roots, %.0f for 20", two, twenty)
 	}
 }
 

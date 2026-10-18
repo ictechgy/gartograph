@@ -46,6 +46,12 @@ const ReasonUnreachable = "not reachable from retention roots"
 // 추가 지정의 존재는 한 번 만든 ID 색인으로 본다 — 지정마다 정점 목록을 훑지 않는다.
 func RetentionRoots(d *graph.Document, retainPublic bool,
 	extra []string) (roots []string, unknown []string) {
+	return NewIndex(d).RetentionRoots(retainPublic, extra)
+}
+
+// RetentionRoots는 색인 위의 RetentionRoots다 — 같은 Index로 거듭 물으면 살아 있는 문서 루트와
+// ID 색인을 다시 만들지 않는다. ID 색인은 추가 지정이 있을 때만 만든다.
+func (x *Index) RetentionRoots(retainPublic bool, extra []string) (roots []string, unknown []string) {
 	seen := map[string]bool{}
 	add := func(id string) {
 		if !seen[id] {
@@ -53,24 +59,21 @@ func RetentionRoots(d *graph.Document, retainPublic bool,
 			roots = append(roots, id)
 		}
 	}
-	for _, r := range d.RootIDs() {
+	for _, r := range x.liveRoots() {
 		add(r)
 	}
 	if retainPublic {
-		for _, v := range d.Symbols() {
+		for _, v := range x.doc.Symbols() {
 			if v.Exported {
 				add(v.ID)
 			}
 		}
 	}
-	if len(extra) > 0 {
-		byID := graph.VertexIndex(d)
-		for _, e := range extra {
-			if byID[e] != nil {
-				add(e)
-			} else {
-				unknown = append(unknown, e)
-			}
+	for _, e := range extra {
+		if x.vertices()[e] != nil {
+			add(e)
+		} else {
+			unknown = append(unknown, e)
 		}
 	}
 	sort.Strings(roots)
@@ -139,6 +142,11 @@ func IsExternalDispatch(d *graph.Document, from, to string) ([]string, bool) {
 // 더한 ReachAdjacency 위의 BFS다. contains는 의존이 아니라 제외된다.
 func Reachable(d *graph.Document, roots []string) map[string]bool {
 	return reachFrom(ReachAdjacency(d), roots)
+}
+
+// Reachable은 색인 위의 Reachable이다 — 같은 Index로 거듭 물으면 도달성 인접 맵을 다시 만들지 않는다.
+func (x *Index) Reachable(roots []string) map[string]bool {
+	return reachFrom(x.reachAdjacency(), roots)
 }
 
 // DependencyReachable은 문서의 의존 간선만 따르는 도달 집합이다.

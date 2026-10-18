@@ -39,14 +39,19 @@ type Impact struct {
 // depth 0 이하는 전이 끝까지(사실상 무제한) 본다 — 깊이 제한은
 // 소비자가 고르는 것이지 도구가 정할 기본값이 없기 때문이다.
 func FindImpact(d *graph.Document, id string, depth, maxEntries int) (*Impact, error) {
-	byID := graph.VertexIndex(d)
-	vtx := byID[id]
+	return NewIndex(d).FindImpact(id, depth, maxEntries)
+}
+
+// FindImpact는 색인 위의 FindImpact다 — 같은 Index로 거듭 물으면 ID 색인과 들어오는 이웃 목록을
+// 다시 만들지 않는다.
+func (x *Index) FindImpact(id string, depth, maxEntries int) (*Impact, error) {
+	vtx := x.vertices()[id]
 	if vtx == nil {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	out, truncated := impactFrom(graph.KindedIncoming(d), byID, []string{id}, depth, maxEntries)
+	out, truncated := impactFrom(x.incoming(), x.vertices(), []string{id}, depth, maxEntries)
 	return &Impact{ID: id, Kind: vtx.Kind, Depth: depth, Dependers: out,
-		Truncated: truncated, Limitations: d.Limitations}, nil
+		Truncated: truncated, Limitations: x.doc.Limitations}, nil
 }
 
 // impactFrom은 여러 루트의 합집합을 역방향 BFS로 모은다.
