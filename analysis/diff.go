@@ -256,6 +256,10 @@ func recordFieldChanges(d *Diff, id string, ov, nv *graph.Vertex) {
 		}
 	}
 	for _, name := range retyped {
+		// 비공개 필드는 패키지 밖에서 이름으로 쓸 수 없다 — 재형은 FieldChanges에만 남긴다.
+		if !isExportedName(name) {
+			continue
+		}
 		d.Breaking = append(d.Breaking, fmt.Sprintf(
 			"exported field %s.%s changed type: %s -> %s",
 			id, name, oldSet[name], newSet[name]))

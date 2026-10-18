@@ -243,6 +243,31 @@ func TestDiffStructFields(t *testing.T) {
 	}
 }
 
+// TestDiffUnexportedFieldRetype는 공개 struct의 비공개 필드 재형이 breaking이 아닌지
+// 확인한다 — 비공개 필드는 패키지 밖 코드가 이름으로 쓸 수 없어, 내부 필드 교체
+// (sync.Mutex → sync.RWMutex)가 `diff --strict` API 게이트를 막으면 안 된다.
+// 변경 자체는 FieldChanges.Retyped에 남고, 같은 struct의 공개 필드 재형은 계속 breaking이다.
+func TestDiffUnexportedFieldRetype(t *testing.T) {
+	mk := func(fields ...string) *graph.Document {
+		return &graph.Document{Vertices: []graph.Vertex{{ID: "m/a.S", Kind: graph.KindType,
+			Exported: true, Fields: fields}}}
+	}
+	d := DiffDocuments(mk("Name:string", "mu:sync.Mutex"), mk("Name:string", "mu:sync.RWMutex"))
+	if len(d.Breaking) != 0 {
+		t.Fatalf("retyping an unexported field must not be breaking: %+v", d.Breaking)
+	}
+	if len(d.FieldChanges) != 1 || !slices.Equal(d.FieldChanges[0].Retyped, []string{"mu"}) {
+		t.Fatalf("the unexported retype must still be recorded: %+v", d.FieldChanges)
+	}
+	d = DiffDocuments(mk("Name:string", "mu:sync.Mutex"), mk("Name:[]byte", "mu:sync.RWMutex"))
+	if !slices.Equal(d.Breaking, []string{"exported field m/a.S.Name changed type: string -> []byte"}) {
+		t.Fatalf("only the exported field retype is breaking: %+v", d.Breaking)
+	}
+	if len(d.FieldChanges) != 1 || !slices.Equal(d.FieldChanges[0].Retyped, []string{"Name", "mu"}) {
+		t.Fatalf("both retypes must be recorded: %+v", d.FieldChanges)
+	}
+}
+
 // TestConstValueBreaking은 공개 상수의 값 변경이 breaking인지 확인한다 —
 // 상수는 소비자 코드에 인라인되므로 재컴파일 없이 이미 빌드된 바이너리가
 // 다른 상수를 담는다. 값을 모르는 옛 문서와의 비교는 "몰랐다"다.
