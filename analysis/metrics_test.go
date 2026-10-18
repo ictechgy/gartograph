@@ -1,6 +1,9 @@
 package analysis
 
 import (
+	"fmt"
+	"math/rand"
+	"reflect"
 	"testing"
 
 	"github.com/ictechgy/gartograph/config"
@@ -113,6 +116,79 @@ func TestMetricsBlankRootKeepsOrphan(t *testing.T) {
 	rep := Metrics(d, metricsCfg())
 	if len(rep.Orphans) != 1 || rep.Orphans[0] != "example.com/m/util" {
 		t.Fatalf("a blank-declaration root must not hide the orphan: %+v", rep.Orphans)
+	}
+}
+
+// TestRootSetMatchesScan은 무작위 문서에서 rootSet이 루트마다 정점 목록을 훑던 구현(scanRootSet)과
+// 같은 집합을 내는지 확인한다. 빈 식별자 루트(pkg._), 패키지 없는 루트, 문서에 없는 루트, 겹친
+// 정점 ID(VertexByID처럼 앞의 정점이 쓰인다)를 섞는다.
+func TestRootSetMatchesScan(t *testing.T) {
+	r := rand.New(rand.NewSource(19))
+	sawBlank, sawGhost, sawDuplicate := false, false, false
+	for trial := 0; trial < 500; trial++ {
+		d := randomDependencyDocument(r)
+		for i := range d.Vertices {
+			if r.Intn(2) == 0 {
+				d.Vertices[i].Package = fmt.Sprintf("m/p%d", r.Intn(3))
+			}
+			if r.Intn(5) == 0 {
+				d.Vertices[i].Kind, d.Vertices[i].Name = graph.KindVar, "_"
+			}
+		}
+		if r.Intn(3) == 0 {
+			dup := d.Vertices[r.Intn(len(d.Vertices))]
+			dup.Kind, dup.Name, dup.Package = graph.KindFunc, "f", "m/other"
+			d.Vertices = append(d.Vertices, dup)
+			r.Shuffle(len(d.Vertices), func(i, j int) { d.Vertices[i], d.Vertices[j] = d.Vertices[j], d.Vertices[i] })
+			sawDuplicate = true
+		}
+		for k := r.Intn(6); k > 0; k-- {
+			id := d.Vertices[r.Intn(len(d.Vertices))].ID
+			if r.Intn(4) == 0 {
+				id = fmt.Sprintf("m.ghost%d", r.Intn(3))
+				sawGhost = true
+			}
+			if v, _ := d.VertexByID(id); v != nil && v.Kind == graph.KindVar && v.Name == "_" {
+				sawBlank = true
+			}
+			d.Roots = append(d.Roots, id)
+		}
+		if got, want := rootSet(d), scanRootSet(d); !reflect.DeepEqual(got, want) {
+			t.Fatalf("trial %d roots %v: got %v, want %v", trial, d.Roots, got, want)
+		}
+	}
+	if !sawBlank || !sawGhost || !sawDuplicate {
+		t.Fatalf("random documents must exercise blank (%v), missing (%v) and duplicated (%v) roots",
+			sawBlank, sawGhost, sawDuplicate)
+	}
+}
+
+// scanRootSet은 색인을 쓰기 전의 rootSet이다 — 루트마다 VertexByID로 정점 목록을 훑는다.
+// 느려도 출력 대조 기준으로 그대로 둔다.
+func scanRootSet(d *graph.Document) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range d.Roots {
+		v, ok := d.VertexByID(r)
+		if ok && v.Kind == graph.KindVar && v.Name == "_" {
+			continue
+		}
+		if ok && v.Package != "" {
+			out[v.Package] = true
+		} else {
+			out[r] = true
+		}
+	}
+	return out
+}
+
+// BenchmarkMetrics는 보존 루트 2만 개인 약 3만 정점 합성 문서의 결합도를 계산한다(설정 없음).
+// 루트마다 정점 목록을 훑던 rootSet이 이 규모에서 호출당 초 단위였다.
+func BenchmarkMetrics(b *testing.B) {
+	d := rootedSyntheticDocument(20000)
+	for b.Loop() {
+		if rep := Metrics(d, nil); len(rep.Components) != 300 {
+			b.Fatalf("metrics: %d components", len(rep.Components))
+		}
 	}
 }
 

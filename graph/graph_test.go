@@ -176,6 +176,30 @@ func TestVertexByID(t *testing.T) {
 	}
 }
 
+// TestVertexIndex는 ID 색인이 VertexByID와 같은 정점(원소 자체)을 가리키는지 확인한다.
+// 같은 ID가 겹친 문서(손으로 합친 저장 문서)에서도 앞의 정점이어야 조회를 색인으로 바꿔도 답이 같다.
+func TestVertexIndex(t *testing.T) {
+	doc := &Document{Vertices: []Vertex{
+		{ID: "p.a", Kind: KindFunc}, {ID: "p.b", Kind: KindType}, {ID: "p.a", Kind: KindVar},
+	}}
+	byID := VertexIndex(doc)
+	if len(byID) != 2 {
+		t.Fatalf("index must hold one entry per ID, got %v", byID)
+	}
+	for _, id := range []string{"p.a", "p.b", "missing"} {
+		want, ok := doc.VertexByID(id)
+		if got := byID[id]; got != want || (got != nil) != ok {
+			t.Fatalf("index[%s] = %+v, VertexByID = %+v %v", id, got, want, ok)
+		}
+	}
+	if byID["p.a"] != &doc.Vertices[0] {
+		t.Fatal("index must point at the document's own vertex, the first of a repeated ID")
+	}
+	if len(VertexIndex(&Document{})) != 0 {
+		t.Fatal("empty document must yield an empty index")
+	}
+}
+
 // TestSortMergesCandidate는 같은 관계를 합칠 때 한 지점이라도 확정이면 확정으로
 // 남는지 확인한다 — 팬아웃 표시가 확정 지점을 덮으면 근거 등급이 약해진다.
 func TestSortMergesCandidate(t *testing.T) {

@@ -101,10 +101,16 @@ func (d *Document) Symbols() []Vertex {
 
 // RootIDs는 문서에 실린 보존 루트 중 실제 정점이 있는 것만 돌려준다.
 // 문서가 잘렸거나 루트가 생략된 경우를 질의 쪽에서 매번 검사하지 않게 한다.
+// 존재는 한 번 만든 ID 색인으로 본다 — 루트마다 정점 목록을 훑으면 --tests로 테스트 함수가
+// 모두 루트가 된 문서에서 비용이 루트 수 × 정점 수가 된다.
 func (d *Document) RootIDs() []string {
+	if len(d.Roots) == 0 {
+		return nil
+	}
+	byID := VertexIndex(d)
 	var out []string
 	for _, r := range d.Roots {
-		if d.HasVertex(r) {
+		if byID[r] != nil {
 			out = append(out, r)
 		}
 	}

@@ -1,6 +1,15 @@
 package analysis
 
 import (
+	"errors"
+	"fmt"
+	"math/rand"
+	"path"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -92,6 +101,139 @@ func TestAffectedUnmapped(t *testing.T) {
 	if _, err := AffectedByFiles(affectedDoc(), nil, []string{"ghost"}, 0, 0); err == nil {
 		t.Fatal("missing extra root must be ErrNotFound")
 	}
+}
+
+// TestAffectedMatchesScan은 무작위 문서·파일 목록에서 VerticesForFiles·AffectedByFiles가 파일과 추가
+// 루트마다 정점 목록을 훑던 구현(scanVerticesForFiles)과 같은 roots·unmapped·오류·의존자를 내는지
+// 확인한다. 선언 파일, 디렉터리 패키지만 맞는 파일, 문서에 없는 패키지 디렉터리, .go가 아닌 파일,
+// 모듈 밖 파일, 상대·절대 경로, 겹친 파일, 문서에 없는 추가 루트를 섞는다. 정점 ID가 겹친 문서(손으로
+// 합친 저장 문서)도 섞는다 — 의존자의 정점 종류는 VertexByID처럼 앞의 정점에서 읽어야 한다.
+func TestAffectedMatchesScan(t *testing.T) {
+	r := rand.New(rand.NewSource(23))
+	dirs := []string{"", "a", "b", "a/c"}
+	sawMissing, sawPackageOnly := false, false
+	for trial := 0; trial < 500; trial++ {
+		d := randomDependencyDocument(r)
+		d.Root, d.Module = "/mod", "m"
+		for _, dir := range dirs {
+			if r.Intn(3) > 0 {
+				d.Vertices = append(d.Vertices, graph.Vertex{ID: path.Join("m", dir), Kind: graph.KindPackage})
+			}
+		}
+		for i := range d.Vertices {
+			if d.Vertices[i].Kind != graph.KindPackage && r.Intn(3) > 0 {
+				file := path.Join("/mod", dirs[r.Intn(len(dirs))], fmt.Sprintf("f%d.go", r.Intn(2)))
+				d.Vertices[i].Position = &graph.Position{File: file, Line: 1}
+			}
+		}
+		if r.Intn(3) == 0 {
+			dup := d.Vertices[r.Intn(len(d.Vertices))]
+			dup.Kind = graph.KindVar
+			d.Vertices = append(d.Vertices, dup)
+		}
+		var files []string
+		for k := r.Intn(6); k > 0; k-- {
+			file := path.Join(dirs[r.Intn(len(dirs))], fmt.Sprintf("f%d.go", r.Intn(3)))
+			switch r.Intn(5) {
+			case 0:
+				file = "/mod/" + file
+			case 1:
+				file = "/elsewhere/" + file
+			case 2:
+				file = strings.TrimSuffix(file, ".go") + ".md"
+			}
+			files = append(files, file)
+		}
+		var extra []string
+		for k := r.Intn(3); k > 0; k-- {
+			extra = append(extra, d.Vertices[r.Intn(len(d.Vertices))].ID)
+		}
+		if r.Intn(4) == 0 {
+			extra = append(extra, "m.ghost")
+		}
+
+		roots, unmapped := VerticesForFiles(d, files)
+		wantRoots, wantUnmapped := scanVerticesForFiles(d, files)
+		if !reflect.DeepEqual(roots, wantRoots) || !reflect.DeepEqual(unmapped, wantUnmapped) {
+			t.Fatalf("trial %d files %v:\ngot  %v %v\nwant %v %v", trial, files, roots, unmapped, wantRoots, wantUnmapped)
+		}
+		depth, maxEntries := r.Intn(3), r.Intn(3)
+		aff, err := AffectedByFiles(d, files, extra, depth, maxEntries)
+		if slices.Contains(extra, "m.ghost") {
+			if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "m.ghost") {
+				t.Fatalf("trial %d: missing extra root must be ErrNotFound naming it, got %v", trial, err)
+			}
+			sawMissing = true
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := dedupeSorted(append(append([]string(nil), wantRoots...), extra...))
+		wantDeps, wantTruncated := edgeScanImpactFrom(d, want, depth, maxEntries)
+		if !reflect.DeepEqual(aff.Roots, want) || !reflect.DeepEqual(aff.UnmappedFiles, wantUnmapped) ||
+			!reflect.DeepEqual(aff.Dependers, wantDeps) || aff.Truncated != wantTruncated {
+			t.Fatalf("trial %d files %v extra %v:\ngot  %+v\nwant roots %v unmapped %v deps %+v",
+				trial, files, extra, aff, want, wantUnmapped, wantDeps)
+		}
+		for _, id := range roots {
+			if v, _ := d.VertexByID(id); v != nil && v.Kind == graph.KindPackage && v.Position == nil {
+				sawPackageOnly = true
+			}
+		}
+	}
+	if !sawMissing || !sawPackageOnly {
+		t.Fatalf("random inputs must exercise missing extra roots (%v) and package-directory matches (%v)",
+			sawMissing, sawPackageOnly)
+	}
+}
+
+// scanVerticesForFiles는 색인을 쓰기 전의 VerticesForFiles다 — 파일마다 HasVertex로 정점 목록을
+// 훑어 디렉터리 패키지를 확인한다. 느려도 출력 대조 기준으로 그대로 둔다.
+func scanVerticesForFiles(d *graph.Document, files []string) (roots, unmapped []string) {
+	byFile := map[string][]string{}
+	for _, v := range d.Vertices {
+		if v.Position != nil {
+			abs := filepath.Clean(v.Position.File)
+			byFile[abs] = append(byFile[abs], v.ID)
+		}
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		if !strings.HasSuffix(f, ".go") {
+			unmapped = append(unmapped, f)
+			continue
+		}
+		abs := f
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(d.Root, f)
+		}
+		if resolved, err := filepath.Abs(abs); err == nil {
+			abs = resolved
+		}
+		abs = filepath.Clean(abs)
+		matched := false
+		for _, id := range byFile[abs] {
+			if !seen[id] {
+				seen[id] = true
+				roots = append(roots, id)
+			}
+			matched = true
+		}
+		if pkg := packageForFile(d, abs); pkg != "" && d.HasVertex(pkg) {
+			if !seen[pkg] {
+				seen[pkg] = true
+				roots = append(roots, pkg)
+			}
+			matched = true
+		}
+		if !matched {
+			unmapped = append(unmapped, f)
+		}
+	}
+	sort.Strings(roots)
+	sort.Strings(unmapped)
+	return roots, unmapped
 }
 
 // TestAffectedNoModule은 모듈 정보가 없는 문서와 모듈 밖 파일이

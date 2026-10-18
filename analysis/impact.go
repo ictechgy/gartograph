@@ -39,11 +39,12 @@ type Impact struct {
 // depth 0 이하는 전이 끝까지(사실상 무제한) 본다 — 깊이 제한은
 // 소비자가 고르는 것이지 도구가 정할 기본값이 없기 때문이다.
 func FindImpact(d *graph.Document, id string, depth, maxEntries int) (*Impact, error) {
-	vtx, ok := d.VertexByID(id)
-	if !ok {
+	byID := graph.VertexIndex(d)
+	vtx := byID[id]
+	if vtx == nil {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	out, truncated := impactFrom(d, []string{id}, depth, maxEntries)
+	out, truncated := impactFrom(graph.KindedIncoming(d), byID, []string{id}, depth, maxEntries)
 	return &Impact{ID: id, Kind: vtx.Kind, Depth: depth, Dependers: out,
 		Truncated: truncated, Limitations: d.Limitations}, nil
 }
@@ -51,11 +52,11 @@ func FindImpact(d *graph.Document, id string, depth, maxEntries int) (*Impact, e
 // impactFrom은 여러 루트의 합집합을 역방향 BFS로 모은다.
 // Depth는 가장 가까운 루트에서의 거리다 — 파일 집합 영향 분석처럼
 // 루트가 여럿일 때 "몇 홉이나 떨어져 있나"는 최단 거리여야 의미가 있다.
-// 간선 종류는 종류 포함 이웃 목록에서, 정점 종류는 한 번 만든 ID 색인에서 읽는다 —
-// 의존자마다 문서 전체 간선·정점을 훑으면 비용이 클로저 크기 × 문서 크기가 된다.
-func impactFrom(d *graph.Document, roots []string, depth, maxEntries int) ([]ImpactEntry, bool) {
-	in := graph.KindedIncoming(d)
-	byID := indexByID(d)
+// 간선 종류는 종류 포함 이웃 목록(in, graph.KindedIncoming)에서, 정점 종류는 ID 색인(byID,
+// graph.VertexIndex)에서 읽는다 — 의존자마다 문서 전체 간선·정점을 훑으면 비용이 클로저 크기 ×
+// 문서 크기가 된다. 두 색인은 호출하는 쪽이 만들어 루트 확인과 함께 쓴다.
+func impactFrom(in map[string][]graph.Neighbor, byID map[string]*graph.Vertex,
+	roots []string, depth, maxEntries int) ([]ImpactEntry, bool) {
 	seen := map[string]bool{}
 	for _, r := range roots {
 		seen[r] = true

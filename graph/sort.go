@@ -253,6 +253,19 @@ func (d *Document) HasVertex(id string) bool {
 	return ok
 }
 
+// VertexIndex는 정점 ID → 정점 색인이다. 같은 ID의 정점이 여럿이면 VertexByID처럼 앞의 것을 담는다.
+// 정점 존재나 속성을 여러 번 묻는 질의는 이 색인을 한 번 만들어 쓴다 — 물을 때마다 VertexByID로
+// 정점 목록을 훑으면 비용이 묻는 수 × 정점 수가 되고, --tests 문서의 보존 루트는 수만 개다.
+// 값은 d.Vertices의 원소를 가리킨다 — 정점 목록을 바꾸면(Sort 포함) 색인을 다시 만든다.
+func VertexIndex(d *Document) map[string]*Vertex {
+	out := make(map[string]*Vertex, len(d.Vertices))
+	// 뒤에서부터 덮어써 같은 ID 중 앞의 정점이 남게 한다.
+	for i := len(d.Vertices) - 1; i >= 0; i-- {
+		out[d.Vertices[i].ID] = &d.Vertices[i]
+	}
+	return out
+}
+
 // quote는 에러 메시지 안의 사용자 입력을 안전하게 감싼다.
 func quote(s string) string {
 	var b strings.Builder
