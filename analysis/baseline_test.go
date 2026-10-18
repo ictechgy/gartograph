@@ -89,6 +89,34 @@ func TestSplitBaselineFileScope(t *testing.T) {
 	}
 }
 
+// TestSplitBaselineFileScopeAcrossCheckouts는 다른 위치나 다른 OS의 체크아웃에서 쓴
+// fileScope baseline이 같은 위반으로 맞는지 확인한다 — 위치는 수확 머신의 절대 경로라,
+// 경로 전체가 키면 개발 머신에서 커밋한 baseline이 CI에서 fresh와 stale로 갈라진다.
+// 파일 이름이 같아도 import하는 패키지(From)가 다르면 다른 위반이다.
+func TestSplitBaselineFileScopeAcrossCheckouts(t *testing.T) {
+	mk := func(from, file string) Violation {
+		return Violation{Rule: "fileScope", Name: "r", From: from, To: "m/th",
+			Position: &graph.Position{File: file, Line: 3}}
+	}
+	cur := mk("m/web", "/src/checkout/web/web.go")
+	for _, recorded := range []string{
+		"/ci/work/repo/web/web.go", `C:\work\repo\web\web.go`, "web.go",
+	} {
+		fresh, baselined, stale := SplitBaseline([]Violation{cur},
+			[]Violation{mk("m/web", recorded)}, ViolationBaselineKey)
+		if len(baselined) != 1 || len(fresh) != 0 || len(stale) != 0 {
+			t.Fatalf("baseline recorded at %q must match the same file in another checkout: "+
+				"fresh=%+v stale=%+v", recorded, fresh, stale)
+		}
+	}
+	fresh, _, stale := SplitBaseline([]Violation{mk("m/api", "/src/checkout/api/web.go")},
+		[]Violation{mk("m/web", "/ci/work/repo/web/web.go")}, ViolationBaselineKey)
+	if len(fresh) != 1 || len(stale) != 1 {
+		t.Fatalf("same file name in another importing package is another violation: "+
+			"fresh=%+v stale=%+v", fresh, stale)
+	}
+}
+
 // TestCycleFindingBaselineKey는 cycles·dead baseline의 동일성 키를 확인한다.
 func TestCycleFindingBaselineKey(t *testing.T) {
 	c1 := Cycle{Members: []string{"a", "b"}}

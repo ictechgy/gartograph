@@ -1466,6 +1466,71 @@ fileRules:
 	}
 }
 
+// TestRulesFileScopeBaselineAcrossCheckouts는 한 체크아웃에서 쓴 fileScope baseline이
+// 같은 경로와 다른 경로로 복사한 저장소 모두에서 맞는지 종단으로 확인한다 — README대로
+// baseline을 커밋하면 CI는 다른 절대 경로에서 수확한다. baselined 항목은 지금 체크아웃의
+// 지점을 가리켜야 한다(표시 위치는 바뀌지 않는다).
+func TestRulesFileScopeBaselineAcrossCheckouts(t *testing.T) {
+	first := testutil.WriteModule(t, map[string]string{
+		"web/web.go":    "package web\n\nimport _ \"example.com/fixture/testhelp\"\n",
+		"testhelp/t.go": "package testhelp\n",
+		".gartograph.yml": `components:
+  web: ["web"]
+  testhelp: ["testhelp"]
+deps:
+  web: ["testhelp"]
+fileRules:
+  - name: no-testdeps-in-prod
+    from: "!*_test.go"
+    to: testhelp
+`,
+	})
+	moved := filepath.Join(t.TempDir(), "checkout")
+	if err := os.CopyFS(moved, os.DirFS(first)); err != nil {
+		t.Fatalf("copying the fixture to a second checkout: %v", err)
+	}
+	base := filepath.Join(t.TempDir(), "baseline.json")
+	if code, _, errb := run(t, "rules", "--dir", first, "--write-baseline", base); code != 0 {
+		t.Fatalf("--write-baseline failed: %d %s", code, errb)
+	}
+	// 임시 디렉터리가 심링크 아래(macOS의 /var)일 수 있어 양쪽을 실제 경로로 비교한다.
+	realPath := func(p string) string {
+		resolved, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			t.Fatalf("resolving %s: %v", p, err)
+		}
+		return resolved
+	}
+	for _, dir := range []string{first, moved} {
+		code, out, errb := run(t, "rules", "--dir", dir,
+			"--baseline", base, "--strict", "--format", "json")
+		if code != 0 {
+			t.Fatalf("%s: baselined fileScope violation must not fail strict: %d %s %s",
+				dir, code, out, errb)
+		}
+		var rep struct {
+			Violations []json.RawMessage `json:"violations"`
+			Baselined  []struct {
+				Rule     string `json:"rule"`
+				Position struct {
+					File string `json:"file"`
+				} `json:"position"`
+			} `json:"baselined"`
+			StaleBaseline []json.RawMessage `json:"staleBaseline"`
+		}
+		if err := json.Unmarshal([]byte(out), &rep); err != nil {
+			t.Fatalf("not JSON: %v\n%s", err, out)
+		}
+		if len(rep.Violations) != 0 || len(rep.Baselined) != 1 || len(rep.StaleBaseline) != 0 {
+			t.Fatalf("%s: expected 0 fresh + 1 baselined + 0 stale: %s", dir, out)
+		}
+		if rep.Baselined[0].Rule != "fileScope" || rep.Baselined[0].Position.File == "" ||
+			realPath(rep.Baselined[0].Position.File) != realPath(filepath.Join(dir, "web", "web.go")) {
+			t.Fatalf("%s: baselined entry must point at this checkout's web.go: %s", dir, out)
+		}
+	}
+}
+
 // cycleFixture는 심볼 레벨 상호 재귀 순환을 가진 모듈을 만든다.
 func cycleFixture(t *testing.T) string {
 	t.Helper()

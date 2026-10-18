@@ -235,6 +235,9 @@ gartograph dead   --baseline .dead-baseline.json --strict
 기록된 위반은 `baselined`로 보고되고, 더 이상 발생하지 않는 항목은
 `staleBaseline`으로 돌아옵니다 — 쌓이면 재생성하세요. SARIF와 `--strict`는
 새 위반만 봅니다.
+항목은 가리키는 사실로 짝지어지고 줄 번호나 체크아웃 경로는 보지 않습니다
+(`fileRules` 위반은 규칙·import 간선·파일 이름으로 맞춥니다) — 한 머신에서
+커밋한 baseline이 CI에서도 그대로 맞습니다.
 
 패턴: 정확 일치, `x/**` 재귀 접두사, `*` 세그먼트 글롭.
 `rules`·`cycles`·`dead` 모두 `--format sarif`를 받습니다 — 순환은

@@ -292,6 +292,9 @@ gartograph dead   --baseline .dead-baseline.json --strict
 Baselined violations are reported under `baselined`; entries that stop
 occurring come back as `staleBaseline` — regenerate when they pile up.
 SARIF output and `--strict` see only fresh violations.
+Entries match on what they name, never on line numbers or the checkout path
+(a `fileRules` violation matches by rule, import edge, and file name),
+so a baseline committed from one machine still matches in CI.
 
 Patterns: exact match, `x/**` recursive prefix, `*` segment glob. Packages
 matching no component are reported as `unmapped` — a mapping gap is "rules
