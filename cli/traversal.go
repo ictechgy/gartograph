@@ -45,6 +45,9 @@ const maxRevisionLength = 256
 // stdinReader는 `--roots-from -`의 입력이다 — 테스트가 바꿔 끼운다.
 var stdinReader io.Reader = os.Stdin
 
+// evalSymlinks는 심볼 위치 파일의 심링크를 푼다 — 테스트가 바꿔 끼워 파일마다 몇 번 푸는지 센다.
+var evalSymlinks = filepath.EvalSymlinks
+
 // forbiddenChars는 id·revision에 올 수 없는 문자다(제어 문자, U+2028/2029) — isthmus
 // 검증과 같은 집합이다. 줄바꿈이 섞인 id는 로그·문서에서 다른 id로 읽힐 수 있다.
 var forbiddenChars = regexp.MustCompile("[\u0000-\u001f\u007f-\u009f  ]")
@@ -477,12 +480,17 @@ func documentRevision(doc *graph.Document) (string, error) {
 type symbolizer struct {
 	vertices map[string]graph.Vertex
 	bases    []string // 위치를 project 상대로 바꿀 기준 디렉터리 후보
+	// resolved는 위치 파일 → 심링크를 푼 경로다(풀 수 없었으면 빈 문자열). 한 파일에 심볼이
+	// 많으므로 파일마다 한 번만 푼다 — 행마다 풀면 경로 구성요소마다 lstat가 반복된다. 값
+	// 수신자로 복사돼도 맵은 공유된다.
+	resolved map[string]string
 }
 
 // newSymbolizer는 정점 색인과 위치 기준을 만든다. 정점 위치는 수확 때의 절대 경로라
 // realpath project와 심링크 차이(/tmp ↔ /private/tmp)가 날 수 있어 문서 root도 기준으로 둔다.
 func newSymbolizer(doc *graph.Document, project string) symbolizer {
-	s := symbolizer{vertices: make(map[string]graph.Vertex, len(doc.Vertices)), bases: []string{project}}
+	s := symbolizer{vertices: make(map[string]graph.Vertex, len(doc.Vertices)), bases: []string{project},
+		resolved: map[string]string{}}
 	for _, v := range doc.Vertices {
 		s.vertices[v.ID] = v
 	}
@@ -508,7 +516,7 @@ func (s symbolizer) location(pos *graph.Position) *traversalLocation {
 		return nil
 	}
 	files := []string{pos.File}
-	if resolved, err := filepath.EvalSymlinks(pos.File); err == nil && resolved != pos.File {
+	if resolved := s.resolve(pos.File); resolved != "" && resolved != pos.File {
 		files = append(files, resolved)
 	}
 	for _, base := range s.bases {
@@ -521,6 +529,21 @@ func (s symbolizer) location(pos *graph.Position) *traversalLocation {
 		}
 	}
 	return nil
+}
+
+// resolve는 위치 파일의 심링크를 푼 경로다. 풀 수 없으면(지운 파일, 권한) 빈 문자열이다 — 그때는
+// 적힌 경로만 기준 디렉터리와 맞춘다(문서 root 아래면 그 상대 위치, 아니면 위치 생략). 실패도
+// 저장해 같은 파일을 다시 풀지 않는다.
+func (s symbolizer) resolve(file string) string {
+	if resolved, ok := s.resolved[file]; ok {
+		return resolved
+	}
+	resolved, err := evalSymlinks(file)
+	if err != nil {
+		resolved = ""
+	}
+	s.resolved[file] = resolved
+	return resolved
 }
 
 // kindStrings는 간선 종류를 문자열로 바꾼다(이미 정렬돼 있다).
