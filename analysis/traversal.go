@@ -18,9 +18,13 @@ const (
 	MaxTraversalRoots = 10_000
 	// MaxRootsPerReached는 정점 하나가 싣는 root 인덱스 상한이다(넘으면 rootsTruncated).
 	MaxRootsPerReached = 64
-	// dominatingRoots는 전파를 멈추게 하는 더 작은 root 수다 — 정점이 root라 자기
-	// 인덱스를 빼도 64개가 남도록 하나 더 둔다.
-	dominatingRoots = MaxRootsPerReached + 1
+	// decisiveRoots는 정점의 행을 정하는 더 작은 root 수다 — 싣는 64개와 rootsTruncated를 정하는
+	// 65번째. 정점이 자기 아닌 더 작은 root를 이만큼 가졌으면 더 큰 root가 닿아도 그 행은 그대로다.
+	decisiveRoots = MaxRootsPerReached + 1
+	// dominatingRoots는 전파를 멈추게 하는 더 작은 root 수다. 하류 정점이 root면 자기 인덱스가
+	// 빠지므로 decisiveRoots보다 하나 더 둔다 — 그래야 모든 정점이 자기 아닌 가장 작은 root
+	// decisiveRoots개를 정확한 단계와 함께 가진다(hasDepthCut이 그 개수에 기댄다).
+	dominatingRoots = decisiveRoots + 1
 	// evidenceMemoryBytes는 정확한 등급 비교(root당 비트 하나)가 쓸 메모리 상한이다.
 	evidenceMemoryBytes = 64 << 20
 )
@@ -84,8 +88,8 @@ type TraversalResult struct {
 //     다른 root에서 닿은 root도 싣되 roots에는 그 다른 root만 넣는다.
 //   - depth는 그 root 중 가장 가까운 것까지의 거리, via는 가장 가까운 root(같으면 작은
 //     인덱스)에서 depth-1 거리인 선행 정점 중 UTF-16 순서로 가장 작은 것이다.
-//   - 정점이 자기 아닌 더 작은 인덱스 root를 65개 이상 가졌으면 더 큰 root는 그 정점에서
-//     전파를 멈춘다 — 출력(작은 인덱스 64개·depth·via)을 바꿀 수 없다.
+//   - 정점이 자기 아닌 더 작은 인덱스 root를 66개 이상 가졌으면 더 큰 root는 그 정점에서
+//     전파를 멈춘다 — 출력(작은 인덱스 64개·depth·via)도, depth 잘림 판정도 바꿀 수 없다.
 //
 // 간선은 impact와 같은 의존 간선 전부(contains 제외)다. TypeEdges가 members면 필드 선언에서 나온
 // 타입 구조 간선을 필드 정점의 간선으로 옮긴다(typeedges.go).
@@ -179,8 +183,9 @@ type propagation struct {
 	pruned   bool
 }
 
-// propagate는 모든 root에서 단계 동기로 전파한다. 경계는 정점 ID 순으로 훑어 결과가
-// 맵 순회 순서에 흔들리지 않게 한다.
+// propagate는 모든 root에서 단계 동기로 전파한다. 단계마다 이웃에 도착하는 root를 먼저 모아
+// 인덱스 오름차순으로 받아들인다 — 그래야 결과가 맵 순회 순서에 흔들리지 않고, 경계 정점의
+// ID 순서와 root 인덱스 순서가 엇갈려도(큰 인덱스가 먼저 도착해도) 전파 중단(dominated)이 걸린다.
 func propagate(adj *traversalAdjacency, roots []string, maxDepth int) propagation {
 	p := propagation{levels: map[string]map[int]int{}}
 	owners := rootOwners(roots)
@@ -191,19 +196,33 @@ func propagate(adj *traversalAdjacency, roots []string, maxDepth int) propagatio
 	}
 	for level := 1; level <= maxDepth && len(frontier) > 0; level++ {
 		following := map[string][]int{}
-		for _, node := range sortedKeys(frontier) {
-			for _, nb := range adj.next[node] {
-				owner, isRoot := owners[nb]
-				if !isRoot {
-					owner = -1
-				}
-				p.pruned = spread(p.levels, owner, nb, frontier[node], level, following) || p.pruned
+		for nb, arrived := range arrivals(adj, frontier) {
+			owner, isRoot := owners[nb]
+			if !isRoot {
+				owner = -1
 			}
+			p.pruned = spread(p.levels, owner, nb, arrived, level, following) || p.pruned
 		}
 		frontier = following
 	}
 	p.depthCut = hasDepthCut(adj, p.levels, owners, frontier)
 	return p
+}
+
+// arrivals는 이번 단계에 이웃마다 도착하는 root 인덱스다(오름차순, 중복 없음). 한 단계 안에서
+// 이웃끼리는 서로의 보유 상태를 읽지 않으므로 이웃을 어떤 순서로 처리해도 결과가 같다.
+func arrivals(adj *traversalAdjacency, frontier map[string][]int) map[string][]int {
+	out := map[string][]int{}
+	for node, roots := range frontier {
+		for _, nb := range adj.next[node] {
+			out[nb] = append(out[nb], roots...)
+		}
+	}
+	for nb, roots := range out {
+		slices.Sort(roots)
+		out[nb] = slices.Compact(roots)
+	}
+	return out
 }
 
 // rootOwners는 root id → 인덱스다(root id는 유일하다고 호출자가 보장한다).
@@ -215,7 +234,9 @@ func rootOwners(roots []string) map[string]int {
 	return owners
 }
 
-// spread는 한 간선으로 root 인덱스들을 이웃에 넘긴다. 전파를 멈춘 쌍이 있으면 참이다.
+// spread는 한 단계에 이웃에 도착한 root 인덱스들(오름차순, 중복 없음)을 받아들인다. 전파를 멈춘
+// root가 있으면 참이다. 오름차순이라 처음 막힌 root 뒤의 root는 모두 막힌다(더 작은 인덱스가
+// 줄지 않는다) — 거기서 멈춘다. 그래서 정점은 단계마다 root를 dominatingRoots개까지만 더 받는다.
 func spread(levels map[string]map[int]int, owner int, nb string, roots []int, level int,
 	following map[string][]int) bool {
 	held := levels[nb]
@@ -223,35 +244,33 @@ func spread(levels map[string]map[int]int, owner int, nb string, roots []int, le
 		held = map[int]int{}
 		levels[nb] = held
 	}
-	pruned := false
 	for _, r := range roots {
 		if _, ok := held[r]; ok {
 			continue
 		}
-		if dominated(held, owner, r) {
-			pruned = true
-			continue
+		if dominated(held, owner, r, dominatingRoots) {
+			return true
 		}
 		held[r] = level
 		following[nb] = append(following[nb], r)
 	}
-	return pruned
+	return false
 }
 
-// dominated는 정점이 자기 아닌 root 중 r보다 작은 인덱스를 이미 65개 이상 가졌는지 본다.
-func dominated(held map[int]int, owner, r int) bool {
+// dominated는 정점이 자기 아닌 root 중 r보다 작은 인덱스를 이미 need개 이상 가졌는지 본다.
+func dominated(held map[int]int, owner, r, need int) bool {
 	count := len(held)
 	if _, ok := held[owner]; ok {
 		count--
 	}
-	if count < dominatingRoots {
+	if count < need {
 		return false
 	}
 	smaller := 0
 	for idx := range held {
 		if idx != owner && idx < r {
 			smaller++
-			if smaller >= dominatingRoots {
+			if smaller >= need {
 				return true
 			}
 		}
@@ -260,8 +279,10 @@ func dominated(held map[int]int, owner, r int) bool {
 }
 
 // hasDepthCut은 마지막 단계 경계에서 아직 그 root를 갖지 않은 이웃이 있으면 참이다 —
-// 깊이 상한이 도달 집합을 잘랐다는 뜻이다. 이웃이 그 root를 이미 전파 중단한
-// (dominated) 경우는 뺀다 — 한 걸음 더 가도 그 root는 실리지 않으므로 잘린 것이 아니다.
+// 깊이 상한이 도달 집합을 잘랐다는 뜻이다. 이웃이 그 root보다 작은 자기 아닌 root를
+// decisiveRoots개 이상 가졌으면 뺀다 — 한 걸음 더 가도 그 이웃의 행은 바뀌지 않는다. 전파가 그
+// 개수를 정확히 지키므로(dominatingRoots) 최단 경로에서 막혔다가 더 긴 경로로 마지막 단계에 늦게
+// 닿은 root를 잘림으로 오인하지 않는다.
 func hasDepthCut(adj *traversalAdjacency, levels map[string]map[int]int, owners map[string]int,
 	frontier map[string][]int) bool {
 	for node, roots := range frontier {
@@ -271,7 +292,7 @@ func hasDepthCut(adj *traversalAdjacency, levels map[string]map[int]int, owners 
 				owner = -1
 			}
 			for _, r := range roots {
-				if _, ok := levels[nb][r]; !ok && !dominated(levels[nb], owner, r) {
+				if _, ok := levels[nb][r]; !ok && !dominated(levels[nb], owner, r, decisiveRoots) {
 					return true
 				}
 			}
