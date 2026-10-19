@@ -302,6 +302,11 @@ so a baseline committed from one machine still matches in CI.
 Patterns: exact match, `x/**` recursive prefix, `*` segment glob. Packages
 matching no component are reported as `unmapped` — a mapping gap is "rules
 don't know this area", not "no rules apply".
+Loading the rules file rejects any other syntax in components, `exclude`, and
+`fileRules.from` (exit 2): `?`, `[...]`, `{...}`, `\`, more than one `*` in a
+segment, `**` anywhere but a trailing `/**`, a `*` before that `/**`, and
+empty segments — such a pattern could never match, so a rule built on it
+would pass silently.
 
 `rules`, `cycles`, and `dead` all accept `--format sarif` for CI code
 scanning — cycles report as `dependency-cycle` errors, unreachable symbols

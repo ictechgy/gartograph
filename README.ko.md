@@ -243,6 +243,10 @@ gartograph dead   --baseline .dead-baseline.json --strict
 커밋한 baseline이 CI에서도 그대로 맞습니다.
 
 패턴: 정확 일치, `x/**` 재귀 접두사, `*` 세그먼트 글롭.
+규칙 파일을 읽을 때 components·`exclude`·`fileRules.from`의 그 밖의
+문법은 거부합니다(exit 2) — `?`, `[...]`, `{...}`, `\`, 한 세그먼트의
+`*` 두 개 이상, 끝의 `/**`가 아닌 `**`, 그 `/**` 앞의 `*`, 빈 세그먼트.
+이런 패턴은 아무것도 맞지 않아 그 위의 규칙이 조용히 통과하기 때문입니다.
 `rules`·`cycles`·`dead` 모두 `--format sarif`를 받습니다 — 순환은
 `dependency-cycle` error, unreachable은 `unreachable-symbol` warning
 (삭제 판정이 아니라 사실)으로 보고됩니다.

@@ -1467,6 +1467,49 @@ fileRules:
 	}
 }
 
+// TestRulesRejectsUnmatchablePattern은 MatchPath가 적힌 그대로 맞출 수 없는 패턴이 든 설정을
+// 규칙 검사와 수확이 모두 2로 거부하는지 종단으로 확인한다. 받아 주던 때는 "app/**/*.go"
+// fileRules가 영원히 맞지 않아 프로덕션 import를 두고도 rules --strict가 0으로 통과했고,
+// "app/su?" exclude는 아무것도 빼지 않았다.
+func TestRulesRejectsUnmatchablePattern(t *testing.T) {
+	module := func(from, exclude string) string {
+		return testutil.WriteModule(t, map[string]string{
+			"app/app.go":         "package app\n\nimport _ \"example.com/fixture/testkit\"\n",
+			"app/sub/sub.go":     "package sub\n\nimport _ \"example.com/fixture/testkit\"\n",
+			"testkit/testkit.go": "package testkit\n",
+			".gartograph.yml": `components:
+  app: ["app/**"]
+  testkit: ["testkit"]
+deps:
+  app: ["testkit"]
+fileRules:
+  - name: no-testkit
+    from: "` + from + `"
+    to: testkit
+exclude: ["` + exclude + `"]
+`,
+		})
+	}
+	// 대조: 지원 문법이면 같은 규칙이 실제로 위반을 잡는다.
+	if code, out, errb := run(t, "rules", "--dir", module("app/*.go", "gen/**"), "--strict"); code != 1 ||
+		!strings.Contains(out, "violation[fileScope:no-testkit]") {
+		t.Fatalf("a supported pattern must catch the import: %d %s %s", code, out, errb)
+	}
+	for _, c := range []struct{ from, exclude, want string }{
+		{"app/**/*.go", "gen/**", `fileRules "no-testkit": from pattern "app/**/*.go"`},
+		{"app/*.go", "app/su?", `exclude: entry 0 "app/su?"`},
+	} {
+		dir := module(c.from, c.exclude)
+		for _, args := range [][]string{{"rules", "--dir", dir, "--strict"}, {"graph", "--dir", dir}} {
+			code, out, errb := run(t, args...)
+			if code != 2 || !strings.Contains(errb, c.want) || !strings.Contains(errb, "supported patterns") {
+				t.Fatalf("%s: an unmatchable pattern must fail with exit 2 naming it: %d %s %s",
+					args[0], code, out, errb)
+			}
+		}
+	}
+}
+
 // TestRulesFileScopeBaselineAcrossCheckouts는 한 체크아웃에서 쓴 fileScope baseline이
 // 같은 경로와 다른 경로로 복사한 저장소 모두에서 맞는지 종단으로 확인한다 — README대로
 // baseline을 커밋하면 CI는 다른 절대 경로에서 수확한다. baselined 항목은 지금 체크아웃의

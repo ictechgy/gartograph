@@ -2,6 +2,7 @@ package graph
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -212,5 +213,58 @@ func TestSortMergesCandidate(t *testing.T) {
 	doc.Sort()
 	if len(doc.Edges) != 2 || doc.Edges[0].Candidate || !doc.Edges[1].Candidate {
 		t.Fatalf("candidate merge wrong: %+v", doc.Edges)
+	}
+}
+
+// TestValidatePattern은 설정 패턴 검증이 MatchPath가 적힌 그대로 맞출 수 있는 문법만 받는지
+// 확인한다 — `?`·`[...]`·중간 `**`처럼 다른 글롭 도구의 문법은 MatchPath에서 글롭이 아니라서,
+// 받아 주면 그 규칙은 영원히 아무것도 맞지 않는다. 거부 사유와 지원 문법이 오류에 실려야
+// 설정 작성자가 무엇을 고칠지 안다.
+func TestValidatePattern(t *testing.T) {
+	valid := []string{
+		"cli", ".", "app/**", "github.com/aws/**", "*_test.go", "internal/*/api",
+		"*", "*/api", "gen/*-x", "a.b/c_d/e-f~g+h/**",
+	}
+	for _, p := range valid {
+		if err := ValidatePattern(p); err != nil {
+			t.Errorf("ValidatePattern(%q) = %v, want nil", p, err)
+		}
+		// 받은 패턴은 실제로 맞는 경로가 있어야 한다 — 검증의 목적이 죽은 패턴 거르기다.
+		witness := strings.ReplaceAll(strings.TrimSuffix(p, "/**"), "*", "x")
+		if !MatchPath(p, witness) {
+			t.Errorf("accepted pattern %q must match %q", p, witness)
+		}
+	}
+	invalid := []struct{ pattern, cause string }{
+		{"", "empty pattern"},
+		{"app/**/*.go", `"**" may only end a pattern`},
+		{"**/x", `"**" may only end a pattern`},
+		{"**", `"**" may only end a pattern`},
+		{"a/**/**", `"**" may only end a pattern`},
+		{"app/su?", `"?"`},
+		{"a/[ab]", `"["`},
+		{"a/b]", `"]"`},
+		{"a/{b,c}", `"{"`},
+		{"x}", `"}"`},
+		{`a\b`, `"\\"`},
+		{"a/*_*", `at most one "*"`},
+		{"a/**x", `at most one "*"`},
+		{"internal/*/**", `before "/**"`},
+		{"*/**", `before "/**"`},
+		{"app/", "empty segment"},
+		{"/app", "empty segment"},
+		{"a//b", "empty segment"},
+		{"/**", "empty segment"},
+	}
+	for _, c := range invalid {
+		err := ValidatePattern(c.pattern)
+		if err == nil {
+			t.Errorf("ValidatePattern(%q) = nil, want an error", c.pattern)
+			continue
+		}
+		if msg := err.Error(); !strings.Contains(msg, c.cause) || !strings.Contains(msg, "supported patterns") {
+			t.Errorf("ValidatePattern(%q) = %q, want the cause (%s) and the supported syntax",
+				c.pattern, msg, c.cause)
+		}
 	}
 }

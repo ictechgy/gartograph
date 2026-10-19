@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -208,9 +207,18 @@ func readRulesFile(path string) ([]byte, error) {
 // 정의되지 않은 이름은 영원히 매칭되지 않는 죽은 규칙이다 — 오타를 조용히
 // 삼키면 "규칙이 있다"는 착각을 만든다. 정의됐지만 정점에 매칭 안 되는
 // 컴포넌트는 여기서가 아니라 unmatchedComponents로 보고된다.
+// components·exclude·fileRules.from의 패턴도 같은 이유로 graph.ValidatePattern에
+// 맞춘다 — 매처가 해석하지 않는 문법(`?`·`[...]`·중간 `**`)은 영원히 맞지 않는다.
 func (f *File) checkRefs() error {
 	// 진단은 결정적이어야 한다 — 맵 순회 순서에 맡기면 같은 설정이
 	// 실행마다 다른 첫 오류를 낸다. 섹션별로 키를 정렬해 검사한다.
+	for _, name := range sortedKeys(f.Components) {
+		for _, pat := range f.Components[name] {
+			if err := graph.ValidatePattern(pat); err != nil {
+				return fmt.Errorf("components %q: pattern %q: %w", name, pat, err)
+			}
+		}
+	}
 	defined := func(name string) bool { _, ok := f.Components[name]; return ok }
 	check := func(section, side, name string) error {
 		if name == "" {
@@ -287,10 +295,10 @@ func (f *File) checkRefs() error {
 		if strings.TrimSpace(pat) == "" {
 			return fmt.Errorf("exclude: entry %d is an empty pattern", i)
 		}
-		// 문법이 깨진 글롭은 영원히 아무것도 매칭하지 않는 죽은 설정이다 —
-		// checkRefs와 같은 이유로 로드 시점에 거부한다.
-		if _, err := path.Match(pat, "probe"); err != nil {
-			return fmt.Errorf("exclude: entry %d %q is not a valid glob", i, pat)
+		// 매처가 해석하지 않는 문법은 영원히 아무것도 빼지 않는 죽은 설정이다 —
+		// path.Match로는 `?`·`[...]`가 통과하므로 매처와 같은 문법으로 거부한다.
+		if err := graph.ValidatePattern(pat); err != nil {
+			return fmt.Errorf("exclude: entry %d %q: %w", i, pat, err)
 		}
 	}
 	names := map[string]bool{}
@@ -304,6 +312,10 @@ func (f *File) checkRefs() error {
 		names[r.Name] = true
 		if r.From == "" {
 			return fmt.Errorf("fileRules %q: empty from file pattern", r.Name)
+		}
+		// 앞의 `!` 하나는 반전 표시라 MatchFile처럼 떼고 패턴만 본다.
+		if err := graph.ValidatePattern(strings.TrimPrefix(r.From, "!")); err != nil {
+			return fmt.Errorf("fileRules %q: from pattern %q: %w", r.Name, r.From, err)
 		}
 		if err := check("fileRules", "to", r.To); err != nil {
 			return err
@@ -374,7 +386,8 @@ func Render(f *File) ([]byte, error) {
 }
 
 // ComponentOf는 모듈 상대 경로를 컴포넌트로 해석한다.
-// 패턴은 정확 일치, `x/**` 재귀 접두사, path.Match 글롭 순으로 본다.
+// 패턴 문법은 graph.MatchPath다 — 정확 일치, `x/**` 재귀 접두사, 세그먼트당 `*` 하나인
+// 세그먼트 글롭.
 // 여러 컴포넌트가 맞으면 더 긴 패턴이 이긴다 — 구체적 규칙이 우선한다.
 // 길이까지 같으면 이름이 작은 쪽이 이긴다 — 맵 순회 순서에 맡기면
 // 같은 설정이 실행마다 다른 컴포넌트를 골라 baseline이 흔들린다.

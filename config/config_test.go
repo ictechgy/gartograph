@@ -358,6 +358,58 @@ func TestExcluded(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsUnsupportedPatterns는 components·exclude·fileRules.from의 패턴을 로드 시점에
+// MatchPath 문법으로 검증하는지 확인한다. path.Match만 보던 exclude는 `?`·`[...]`를, 검증이
+// 없던 components·fileRules는 무엇이든 받아서 영원히 맞지 않는 규칙이 rules --strict를 조용히
+// 통과시켰다. 오류는 섹션·항목·패턴과 지원 문법을 담아야 고칠 곳이 보인다.
+func TestLoadRejectsUnsupportedPatterns(t *testing.T) {
+	sections := []struct {
+		name   string
+		config func(pattern string) string
+		where  string // 오류가 가리켜야 할 섹션과 항목
+	}{
+		{"components", func(p string) string {
+			return "components: {a: [\"" + p + "\"], b: [b]}\n"
+		}, `components "a": pattern`},
+		{"exclude", func(p string) string {
+			return "components: {a: [a]}\nexclude: [gen, \"" + p + "\"]\n"
+		}, "exclude: entry 1"},
+		{"fileRules", func(p string) string {
+			return "components: {a: [a], b: [b]}\nfileRules: [{name: r, from: \"" + p + "\", to: b}]\n"
+		}, `fileRules "r": from pattern`},
+	}
+	for _, s := range sections {
+		for _, p := range []string{"app/**/*.go", "app/su?", "a/[ab]", "**", "a/*_*"} {
+			_, err := Load(writeRules(t, s.config(p)))
+			if err == nil {
+				t.Errorf("%s: Load accepted %q, which MatchPath can never match as written", s.name, p)
+				continue
+			}
+			if msg := err.Error(); !strings.Contains(msg, s.where) || !strings.Contains(msg, `"`+p+`"`) ||
+				!strings.Contains(msg, "supported patterns") {
+				t.Errorf("%s %q: error must name the entry, the pattern, and the supported syntax: %v",
+					s.name, p, err)
+			}
+		}
+		for _, p := range []string{"app/**", "*_test.go", "internal/*/api", "cli", "github.com/aws/**"} {
+			if _, err := Load(writeRules(t, s.config(p))); err != nil {
+				t.Errorf("%s: supported pattern %q rejected: %v", s.name, p, err)
+			}
+		}
+	}
+	// fileRules의 앞 `!` 하나는 반전 표시라 떼고 검증한다 — 이 저장소의 "!*_test.go"가 그대로
+	// 읽혀야 하고, 반전이 지원하지 않는 패턴을 가려서도 안 된다.
+	negated := func(from string) string {
+		return "components: {a: [a], b: [b]}\nfileRules: [{name: r, from: \"" + from + "\", to: b}]\n"
+	}
+	if _, err := Load(writeRules(t, negated("!*_test.go"))); err != nil {
+		t.Errorf("negated file pattern rejected: %v", err)
+	}
+	if _, err := Load(writeRules(t, negated("!app/**/*.go"))); err == nil {
+		t.Error("negation must not hide an unsupported pattern")
+	}
+}
+
 // TestLimitsValidation은 limits 항목의 검증을 확인한다 —
 // 정의되지 않은 컴포넌트·빈 상한·음수는 죽은 설정이라 로드 시점에 거부한다.
 func TestLimitsValidation(t *testing.T) {
