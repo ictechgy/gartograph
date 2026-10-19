@@ -61,7 +61,8 @@ func bfs(next map[string][]string, root string) map[string]int {
 	return dist
 }
 
-// oracleTraverse는 root마다 따로 BFS를 돌려 계약의 정의를 그대로 계산한다.
+// oracleTraverse는 root마다 따로 BFS를 돌려 계약의 정의를 그대로 계산한다. MaxReached는 (depth, id)
+// 순 앞의 행만 남기고, rootsTruncated는 남은 행의 목록을 64개로 잘랐을 때만 참이다.
 func oracleTraverse(d *graph.Document, req TraversalRequest) (*TraversalResult, bool) {
 	o := newOracleAdj(d, req.Direction)
 	full := make([]map[string]int, len(req.Roots))
@@ -113,10 +114,6 @@ func oracleTraverse(d *graph.Document, req TraversalRequest) (*TraversalResult, 
 		sort.Slice(preds, func(a, b int) bool { return utf16Less(preds[a], preds[b]) })
 		row := TraversalReached{ID: node, Via: preds[0], Depth: depth, Roots: idx,
 			Relationships: o.kinds[[2]string{preds[0], node}]}
-		if len(row.Roots) > MaxRootsPerReached {
-			row.Roots = row.Roots[:MaxRootsPerReached]
-			res.RootsTruncated = true
-		}
 		if res.EvidenceClassified {
 			row.Evidence = evidence
 		}
@@ -128,6 +125,15 @@ func oracleTraverse(d *graph.Document, req TraversalRequest) (*TraversalResult, 
 		}
 		return utf16Less(res.Reached[a].ID, res.Reached[b].ID)
 	})
+	if len(res.Reached) > req.MaxReached {
+		res.Reached = res.Reached[:req.MaxReached]
+	}
+	for i := range res.Reached {
+		if len(res.Reached[i].Roots) > MaxRootsPerReached {
+			res.Reached[i].Roots = res.Reached[i].Roots[:MaxRootsPerReached]
+			res.RootsTruncated = true
+		}
+	}
 	return res, depthCut
 }
 
@@ -361,6 +367,90 @@ func sortedHeld(held map[int]int) heldRoots {
 	}
 	slices.SortFunc(out, func(a, b heldRoot) int { return a.index - b.index })
 	return out
+}
+
+// TestTraverseMaxReachedRootsTruncated는 --max(MaxReached)로 행을 자를 때 rootsTruncated가 실린 행만
+// 보는지 확인한다. root R00…R69가 허브 X를 거쳐 C에 닿고 root Q만 A에 닿으면 행은 A·X(depth 1), C(depth 2)
+// 순이다. --max 1은 A만 남긴다 — 전파 중단(X에서 큰 root가 막힘)은 빠진 행에서 일어나 문서의 어느
+// 목록도 잘리지 않았다. 수정 전에는 전파 중단 여부로 정해져 root 순서에 따라 갈렸다(오름차순이면 참).
+// X 행이 실리면(--max 2·3) 참이다.
+func TestTraverseMaxReachedRootsTruncated(t *testing.T) {
+	d := &graph.Document{Edges: []graph.Edge{
+		{From: "Q", To: "A", Kind: graph.EdgeCall}, {From: "X", To: "C", Kind: graph.EdgeCall},
+	}}
+	hub := make([]string, 0, 70)
+	for i := 0; i < 70; i++ {
+		id := fmt.Sprintf("R%02d", i)
+		hub = append(hub, id)
+		d.Edges = append(d.Edges, graph.Edge{From: id, To: "X", Kind: graph.EdgeCall})
+	}
+	for _, descending := range []bool{false, true} {
+		roots := slices.Clone(hub)
+		if descending {
+			slices.Reverse(roots)
+		}
+		roots = append(roots, "Q")
+		for maxReached, want := range map[int]bool{1: false, 2: true, 3: true} {
+			req := TraversalRequest{Roots: roots, Direction: DirectionDependencies, MaxDepth: MaxTraversalDepth,
+				MaxReached: maxReached}
+			got := Traverse(d, req)
+			if len(got.Reached) != maxReached || got.RootsTruncated != want {
+				t.Fatalf("descending %v --max %d: %d rows, rootsTruncated %v, want %v", descending, maxReached,
+					len(got.Reached), got.RootsTruncated, want)
+			}
+			oracle, _ := oracleTraverse(d, req)
+			compareTraversal(t, maxReached, got, oracle)
+		}
+	}
+}
+
+// TestTraverseMaxReachedMatchesOracle는 --max로 행을 자른 결과(행·rootsTruncated)가 root별 BFS 정의와
+// 같은지 root 순서 셋(오름차순·내림차순·무작위)에서 대조한다. 자르는 지점은 처음·둘째 행, 무작위, 마지막
+// 행 하나 앞이다. 허브 문서에는 root 하나만 닿는 정점(A)을 더해 64개 넘는 목록이 모두 잘려 나가는
+// 경우를 연다.
+func TestTraverseMaxReachedMatchesOracle(t *testing.T) {
+	rng := rand.New(rand.NewSource(31))
+	orders := []func([]string){
+		func(r []string) { slices.Sort(r) },
+		func(r []string) { slices.Sort(r); slices.Reverse(r) },
+		func(r []string) { rng.Shuffle(len(r), func(i, j int) { r[i], r[j] = r[j], r[i] }) },
+	}
+	droppedOnly, kept := 0, 0
+	for iter := 0; iter < 40; iter++ {
+		d := randomTraversalDoc(rng, 120, 900)
+		base := randomRoots(rng, d, 70+rng.Intn(40))
+		if iter%2 == 0 {
+			d, base = hubTraversalDoc(80+rng.Intn(60), 1+rng.Intn(20))
+			d.Edges = append(d.Edges, graph.Edge{From: "Q", To: "A", Kind: graph.EdgeCall})
+			base = append(base, "Q")
+		}
+		maxDepth := []int{1, 2, 3, MaxTraversalDepth}[rng.Intn(4)]
+		full := Traverse(d, TraversalRequest{Roots: base, Direction: DirectionDependencies, MaxDepth: maxDepth,
+			MaxReached: MaxTraversalReached})
+		if len(full.Reached) < 2 {
+			continue
+		}
+		for _, maxReached := range []int{1, 2, 1 + rng.Intn(len(full.Reached)), len(full.Reached) - 1} {
+			for _, order := range orders {
+				roots := slices.Clone(base)
+				order(roots)
+				req := TraversalRequest{Roots: roots, Direction: DirectionDependencies, MaxDepth: maxDepth,
+					MaxReached: maxReached}
+				got := Traverse(d, req)
+				want, _ := oracleTraverse(d, req)
+				compareTraversal(t, iter, got, want)
+				switch {
+				case got.RootsTruncated:
+					kept++
+				case full.RootsTruncated:
+					droppedOnly++
+				}
+			}
+		}
+	}
+	if droppedOnly == 0 || kept == 0 {
+		t.Fatalf("cuts never dropped every truncated list (%d) or kept one (%d)", droppedOnly, kept)
+	}
 }
 
 // TestDominatedMatchesScan은 무작위 보유 집합·owner·r에서 이분 탐색 판정이 전체 순회 판정과

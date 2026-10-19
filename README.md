@@ -524,7 +524,8 @@ document over the same dependency edges as `impact`:
   through function values and reflection are not counted, so the document
   carries neither `dispatch` nor `unresolvedCalls` (no completeness claim).
 - `--depth` (1–128, default 128) and `--max` (1–100000 reached, default
-  100000) cut with `truncationReasons` `depth`/`max-reached`.
+  100000) cut with `truncationReasons` `depth`/`max-reached`. `rootsTruncated`
+  describes the listed symbols only: symbols dropped by `--max` do not set it.
 - `project` is the same realpath `schema` writes; `revision` is `--revision` or
   git `HEAD` when the work tree is clean (omitted with `--graph`);
   `graphRevision` is the SHA-256 of the graph JSON; `--generated-at` fixes the

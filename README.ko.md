@@ -380,7 +380,8 @@ breaking으로 분류하는 재료입니다.
   `candidate`. 함수 값·리플렉션 호출은 세지 않아 `dispatch`·`unresolvedCalls`는 싣지
   않습니다(완전성 주장 없음).
 - `--depth`(1–128, 기본 128)·`--max`(도달 1–100000, 기본 100000)로 자르면
-  `truncationReasons`에 `depth`·`max-reached`가 실립니다.
+  `truncationReasons`에 `depth`·`max-reached`가 실립니다. `rootsTruncated`는 실린
+  심볼만 봅니다 — `--max`로 빠진 심볼은 세지 않습니다.
 - `project`는 `schema`와 같은 realpath, `revision`은 `--revision` 또는 작업 트리가
   깨끗할 때의 git `HEAD`(`--graph`면 생략), `graphRevision`은 그래프 JSON의 SHA-256,
   `--generated-at`은 시각을 고정합니다.
