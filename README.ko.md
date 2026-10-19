@@ -84,9 +84,9 @@ gartograph query 'github.com/ictechgy/gartograph/graph.(Document).Sort'
 gartograph impact <정점ID> --depth 2           # 역방향 전이 — 바꾸면 뭐가 깨지나
 gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분석
                                               # (git 2.24 이상. --files cli/cli.go도 가능. '-'로 시작하거나
-                                              #  제어 문자가 든 값은 사용법 오류. git 호출은 fsmonitor 훅을
-                                              #  끄지만 작업 트리의 .git/config(필터 등)는 신뢰한다 —
-                                              #  출처를 모르는 트리에서는 --files를 쓴다)
+                                              #  제어 문자가 든 값은 사용법 오류. git은 저장소의 filter 드라이버·
+                                              #  fsmonitor 훅·diff 드라이버·index 갱신 없이 돌고 서브모듈 안으로
+                                              #  들어가지 않는다 — 보안 절. 시각이 바뀐 파일은 바뀐 파일로 센다)
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
 gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트별 고유분
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
@@ -256,6 +256,48 @@ gartograph dead   --baseline .dead-baseline.json --strict
 `dependency-cycle` error, unreachable은 `unreachable-symbol` warning
 (삭제 판정이 아니라 사실)으로 보고됩니다.
 
+## 보안
+
+gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패키지를 읽으려고
+`golang.org/x/tools/go/packages`를 거쳐 `go` 명령을 실행하고, `git`은
+`impact --since`(`git diff`)와 `--revision`·`--graph` 없는 순회 문서(`reach`,
+`impact --format language-traversal`)의 `revision`(`git ls-files`, `git status`,
+`git rev-parse`)에만 씁니다. `PATH`에서 처음 찾은 `git`을 실행합니다.
+
+이 git 호출은 모두 분석 대상 저장소의 git 설정이 명령을 실행하지 못하게 합니다.
+
+- 호출 바로 앞에서 git이 보는 filter 드라이버를 모읍니다
+  (`git config -z --includes --get-regexp '^filter\..*\.(clean|smudge|process)$'` —
+  저장소, 사용자, 시스템 설정을 모두 봅니다). 드라이버마다 `clean`·`smudge`·`process`를
+  빈 명령으로, `required`를 `false`로 덮어 git이 하나도 실행하지 않게 합니다.
+  `.gitattributes`와 `.git/info/attributes` 어느 쪽에서 건 드라이버든 같습니다.
+- `core.fsmonitor`, untracked cache, `log.showSignature`, 선택 잠금
+  (`GIT_OPTIONAL_LOCKS=0`)을 끕니다. `git diff`에는 `--no-ext-diff --no-textconv`와
+  `diff.autoRefreshIndex=false`도 줍니다 — index를 갱신하면 index를 쓰면서
+  `post-index-change` 훅이 실행됩니다.
+- 서브모듈 안에서는 git을 띄우지 않습니다. `git diff`에는 `--ignore-submodules=dirty`를
+  주고, index에 서브모듈이 있으면 `git status`를 아예 실행하지 않습니다(없으면
+  `--ignore-submodules=all`).
+- 드라이버를 모으지 못하거나 이름에 `=`·제어 문자가 든 드라이버가 있으면(git의 `-c`는
+  첫 `=`에서 나누므로 그 드라이버를 덮을 수 없습니다) 다른 git 명령을 실행하지 않습니다.
+  `impact --since`는 원인과 `--files` 안내를 담아 종료 코드 2로 끝나고, 순회 문서는
+  `revision`을 생략합니다(드라이버 이름 때문이면 `revision-unverified:` 한계로 알립니다).
+
+그래서 달라지는 것:
+
+- filter가 정규화하던 파일(git-lfs 등)은 원문으로 비교합니다. git의 stat 캐시가 낡으면
+  바뀐 파일로 보입니다 — `impact --since`는 그 파일을 내고, 순회 문서는 확인하지 못한
+  깨끗한 `HEAD`를 주장하지 않고 `revision`을 싣지 않습니다.
+- `impact --since`는 내용이 같아도 시각이 바뀐 파일을 바뀐 파일로 냅니다. git이 다시
+  읽어 확인하지 않기 때문입니다. 신뢰하는 checkout이면 먼저 `git status`로 git의 stat
+  캐시를 새로 고칩니다.
+- 서브모듈: `impact --since`는 기록된 커밋과 다른 커밋을 checkout한 서브모듈은 지금처럼
+  내지만, 서브모듈 안의 커밋하지 않은 변경은 내지 않습니다. 서브모듈이 있는 작업 트리는
+  `revision`을 자동으로 싣지 않고 `revision-unverified:` 한계로 알립니다 — 필요하면
+  `--revision`으로 줍니다.
+
+나머지 git 설정은 평소대로 적용됩니다. `--files`는 git을 쓰지 않습니다.
+
 ## 출력 계약(에이전트용)
 
 - 결정적 JSON — 같은 입력, 같은 바이트.
@@ -385,7 +427,9 @@ breaking으로 분류하는 재료입니다.
   `truncationReasons`에 `depth`·`max-reached`가 실립니다. `rootsTruncated`는 실린
   심볼만 봅니다 — `--max`로 빠진 심볼은 세지 않습니다.
 - `project`는 `schema`와 같은 realpath, `revision`은 `--revision` 또는 작업 트리가
-  깨끗할 때의 git `HEAD`(`--graph`면 생략), `graphRevision`은 그래프 JSON의 SHA-256,
+  깨끗할 때의 git `HEAD`(`--graph`면 생략. 저장소의 git 설정을 실행하지 않고는 깨끗한지
+  확인할 수 없는 작업 트리 — 서브모듈이 있는 트리, [보안](#보안) 절 — 도 생략하고
+  `revision-unverified:` 한계로 알립니다), `graphRevision`은 그래프 JSON의 SHA-256,
   `--generated-at`은 시각을 고정합니다.
 - 정점이 아닌 id는 `symbol` 없이 `roots`에 싣고 `root-not-found:` 한계·잘림 이유와 함께
   문서를 쓴 뒤 64로 끝납니다. 사용법 오류(root 없음, 제어 문자, 범위 밖 숫자, 잘못된

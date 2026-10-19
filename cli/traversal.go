@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -386,9 +387,10 @@ func buildTraversalDocument(in traversalRun, doc *graph.Document, req analysis.T
 	}
 	res := analysis.Traverse(doc, req)
 	sym := newSymbolizer(doc, project)
+	revision, revisionNote := traversalRevision(in, project)
 	out := &traversalDocument{
 		Format: formatTraversal, Version: 1, Tool: source.BridgeFactsTool{Name: "gartograph", Version: Version},
-		GeneratedAt: generatedAt, Platform: "go", Project: project, Revision: traversalRevision(in, project),
+		GeneratedAt: generatedAt, Platform: "go", Project: project, Revision: revision,
 		GraphRevision: graphRevision, Direction: req.Direction, RootsTruncated: res.RootsTruncated,
 		TruncationReasons: res.TruncationReasons, Reached: []traversalEntry{},
 	}
@@ -409,7 +411,7 @@ func buildTraversalDocument(in traversalRun, doc *graph.Document, req analysis.T
 	}
 	out.Truncated = len(out.TruncationReasons) > 0
 	sort.Strings(out.TruncationReasons)
-	out.Limitations = traversalLimitations(doc, res, missing)
+	out.Limitations = traversalLimitations(doc, res, missing, revisionNote)
 	return out, missing, nil
 }
 
@@ -427,53 +429,211 @@ func traversalProject(in traversalRun, doc *graph.Document) (string, error) {
 
 // traversalRevision은 --revision, 없으면 수확한 작업 트리가 깨끗할 때의 git HEAD다.
 // 저장 문서(--graph)는 어느 revision에서 만들었는지 모르므로 --revision 없이는 싣지 않는다 —
-// isthmus trace가 analysis-revision-unknown으로 드러낸다.
-func traversalRevision(in traversalRun, project string) string {
+// isthmus trace가 analysis-revision-unknown으로 드러낸다. 두 번째 값은 작업 트리를 일부러 보지
+// 않아 revision을 싣지 못한 이유를 담은 limitation 문구다(없으면 빈 문자열, gitRevision).
+func traversalRevision(in traversalRun, project string) (string, string) {
 	if in.flags.revisionSet {
-		return in.flags.revision
+		return in.flags.revision, ""
 	}
 	if in.graphPath != "" {
-		return ""
+		return "", ""
 	}
 	return gitRevision(project)
 }
 
-// gitRevision은 작업 트리가 깨끗하면 HEAD 커밋 id를 돌려준다. 커밋하지 않은 변경·추적
-// 안 하는 파일이 있으면 HEAD는 분석한 소스가 아니므로 빈 문자열이다. 저장소 index를
-// 고치지 않도록 선택 잠금·fsmonitor를 끈다(isthmus capture와 같은 설정).
-func gitRevision(dir string) string {
-	status, ok := runGit(dir, "status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=none")
-	if !ok || strings.TrimSpace(status) != "" {
-		return ""
+// gitRevision은 작업 트리가 깨끗하면 HEAD 커밋 id를 돌려준다. 커밋하지 않은 변경·추적 안 하는
+// 파일이 있으면 HEAD는 분석한 소스가 아니므로 빈 문자열이다. 모든 호출이 gitCommand의 격리를
+// 지난다 — 그래서 git-lfs처럼 filter로 정규화되던 파일은 stat 캐시가 낡으면 바뀐 것으로 보이고,
+// 그때는 깨끗하다고 주장하지 않는다(fail-safe, DECISIONS D1).
+// 서브모듈(index의 gitlink)이 있으면 status를 돌리지 않는다 — 서브모듈 작업 트리를 보려면 git이 그
+// 안에서 서브모듈 저장소 자신의 설정(filter 등)을 따르므로, 깨끗함을 증명할 수 없어 revision을 싣지
+// 않는다. 두 번째 값은 그처럼 일부러 보지 않은 이유를 담은 limitation 문구다. git이 없거나 저장소가
+// 아니거나 git이 실패하면 지금처럼 빈 문자열만 돌려준다 — revision이 없다는 것 자체가 소비자에게 가는
+// 신호다.
+func gitRevision(dir string) (string, string) {
+	index, err := runGit(dir, "ls-files", "--stage", "-z")
+	if err != nil {
+		return "", isolationNote(err)
 	}
-	head, ok := runGit(dir, "rev-parse", "--verify", "HEAD")
+	if n := countGitlinks(index); n > 0 {
+		return "", submoduleRevisionNote(n)
+	}
+	status, err := runGit(dir, "status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=all")
+	if err != nil || strings.TrimSpace(status) != "" {
+		return "", isolationNote(err)
+	}
+	head, err := runGit(dir, "rev-parse", "--verify", "HEAD")
 	head = strings.TrimSpace(head)
-	if !ok || !objectIDPattern.MatchString(head) {
-		return ""
+	if err != nil || !objectIDPattern.MatchString(head) {
+		return "", isolationNote(err)
 	}
-	return head
+	return head, ""
 }
 
-// gitCommand는 분석 대상 작업 트리에서 실행할 git 명령 하나를 만든다. 저장소 index를 고치지
-// 않도록 선택 잠금·fsmonitor·untracked cache를 끄고(isthmus capture와 같은 설정), 그 결과
-// .git/config의 core.fsmonitor 훅도 실행하지 않는다. 프롬프트를 막고 메시지를 C 로캘로 고정한다.
-// 모든 git 호출(runGit·changedFilesSince)이 이 설정을 공유한다 — 호출마다 따로 쓰면 한쪽만
-// 훅을 실행하는 어긋남이 생긴다.
-func gitCommand(dir string, args ...string) *exec.Cmd {
-	full := append([]string{"-C", dir, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"}, args...)
-	cmd := exec.Command("git", full...)
+// countGitlinks는 `git ls-files --stage -z` 출력에서 gitlink(mode 160000, 서브모듈) 경로 수를 센다.
+// 충돌 중인 gitlink는 stage마다 한 줄씩 나오므로 경로로 센다.
+func countGitlinks(index string) int {
+	paths := map[string]bool{}
+	for _, entry := range strings.Split(index, "\x00") {
+		if meta, path, ok := strings.Cut(entry, "\t"); ok && strings.HasPrefix(meta, "160000 ") {
+			paths[path] = true
+		}
+	}
+	return len(paths)
+}
+
+// submoduleRevisionNote는 서브모듈 때문에 revision을 싣지 않은 이유다.
+func submoduleRevisionNote(n int) string {
+	return fmt.Sprintf("revision-unverified: the work tree has %d git submodule(s); gartograph does not run git "+
+		"inside them (that would follow their repositories' configuration, such as filter commands), so it cannot "+
+		"tell whether the analyzed source is HEAD; pass --revision to record the analyzed revision", n)
+}
+
+// isolationNote는 격리할 수 없는 설정 때문에 git을 실행하지 않았을 때의 limitation 문구다. 그 밖의
+// 실패(git 없음, 저장소 아님, 설정을 읽지 못함 — 그때는 git 자체가 그 저장소에서 돌지 않는다)는 지금처럼
+// 빈 문자열이다.
+func isolationNote(err error) string {
+	if !errors.Is(err, errFilterDriverName) {
+		return ""
+	}
+	return "revision-unverified: " + errFilterDriverName.Error() +
+		", so no git command read the work tree; pass --revision to record the analyzed revision"
+}
+
+// filterDriverKeyPattern은 git이 작업 트리 파일을 읽고 쓸 때 실행하는 filter 드라이버 명령 키다.
+const filterDriverKeyPattern = `^filter\..*\.(clean|smudge|process)$`
+
+// errFilterDriverName은 -c로 덮을 수 없는 드라이버 이름이 설정에 있다는 오류다. 이름 원문은 싣지
+// 않는다 — 신뢰하지 않는 설정 값이고 제어 문자가 섞일 수 있다.
+var errFilterDriverName = errors.New("the git configuration defines a filter driver whose name contains '=' or " +
+	"a control character, which git cannot be told to skip (git config --get-regexp '^filter\\.' lists the " +
+	"drivers; rename or remove that one)")
+
+// gitCommand는 분석 대상 작업 트리에서 실행할 git 명령 하나를 만든다. 분석 대상 .git(과 사용자 설정)이
+// 정한 명령을 이 읽기 전용 질의가 실행하지 않게 격리한다(DECISIONS D1).
+//   - 바로 앞에서 설정된 filter 드라이버를 다시 모아(filterDriverNames) 이름마다 clean·smudge·process를
+//     빈 명령으로, required를 false로 덮는다. 빈 명령은 git이 실행하지 않는다. --attr-source는
+//     .git/info/attributes를 막지 못해 쓰지 않는다.
+//   - fsmonitor 훅·untracked cache·서명 확인 표시를 끈다(gitBaseArgs). 선택 잠금을 꺼 index를 고치지
+//     않는다(gitProcess).
+//
+// 드라이버를 모을 수 없거나 -c로 덮을 수 없는 이름이 있으면 명령을 만들지 않고 오류를 돌린다
+// (fail-closed). 모든 git 호출(runGit·changedFilesSince)이 이 함수를 지난다 — 호출마다 따로 쓰면
+// 한쪽만 설정의 명령을 실행하는 어긋남이 생긴다.
+func gitCommand(dir string, args ...string) (*exec.Cmd, error) {
+	names, err := filterDriverNames(dir)
+	if err != nil {
+		return nil, err
+	}
+	full := append(gitBaseArgs(dir), filterNeutralizingArgs(names)...)
+	return gitProcess(append(full, args...)), nil
+}
+
+// gitBaseArgs는 모든 git 호출(드라이버 조회 포함)이 맨 앞에 두는 인자다 — 작업 트리 위치와, 분석
+// 대상 설정의 명령을 실행하거나 저장소를 고치지 않게 끄는 설정(fsmonitor 훅, untracked cache 기록,
+// log 계열의 gpg 서명 확인)이다.
+func gitBaseArgs(dir string) []string {
+	return []string{"-C", dir, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+		"-c", "log.showSignature=false"}
+}
+
+// gitProcess는 인자 그대로 git 프로세스를 만든다. 선택 잠금을 꺼 index를 고치지 않고(isthmus
+// capture와 같은 설정), 프롬프트를 막고, 메시지를 C 로캘로 고정한다.
+func gitProcess(args []string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	return cmd
 }
 
-// runGit은 git 명령 하나를 실행한다. git이 없거나 실패하면 false다 — revision이 없다는
-// 것 자체가 소비자에게 가는 신호라 오류로 올리지 않는다.
-func runGit(dir string, args ...string) (string, bool) {
-	out, err := gitCommand(dir, args...).Output()
-	if err != nil {
-		return "", false
+// filterDriverNames는 dir에서 git이 읽는 설정 전체(시스템·사용자·저장소·worktree·include·환경 변수)에
+// 정의된 filter 드라이버 이름을 모은다. git config의 종료 1(출력 없음)은 "일치 없음"이다. 그 밖의
+// 실패, 형식이 다른 출력, -c로 덮을 수 없는 이름은 오류다(fail-closed) — 하나라도 덮지 못하면 그
+// 드라이버가 실행될 수 있다.
+func filterDriverNames(dir string) ([]string, error) {
+	out, err := gitProcess(append(gitBaseArgs(dir), "config", "-z", "--includes", "--get-regexp",
+		filterDriverKeyPattern)).Output()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 && len(out) == 0 {
+		return nil, nil
 	}
-	return string(out), true
+	if err != nil {
+		return nil, fmt.Errorf("could not list the git filter drivers to disable (git config: %s)", gitFailure(err))
+	}
+	names, err := parseFilterDriverNames(out)
+	if err != nil {
+		return nil, err
+	}
+	if slices.ContainsFunc(names, func(name string) bool { return !neutralizableDriverName(name) }) {
+		return nil, errFilterDriverName
+	}
+	return names, nil
+}
+
+// parseFilterDriverNames는 `git config -z --get-regexp` 출력에서 드라이버 이름을 정렬·중복 제거해
+// 뽑는다. 레코드는 `키\n값\0`(값 없는 키는 `키\0`)이고, 키의 섹션·변수 이름은 소문자로, subsection(이름)은
+// 그대로 나온다. 이름은 `filter.`과 마지막 `.키` 사이 전체다 — 점이 들어갈 수 있고 빈 이름(`[filter ""]`)도
+// git이 쓴다. 조회 정규식에 맞는 키만 올 수 있으므로 형식이 어긋나면 출력을 믿지 않고 오류다.
+func parseFilterDriverNames(out []byte) ([]string, error) {
+	var names []string
+	for _, record := range strings.Split(string(out), "\x00") {
+		if record == "" {
+			continue
+		}
+		key, _, _ := strings.Cut(record, "\n")
+		rest, ok := strings.CutPrefix(key, "filter.")
+		dot := strings.LastIndex(rest, ".")
+		if !ok || dot < 0 {
+			return nil, fmt.Errorf("could not list the git filter drivers to disable (git config printed the key %q)", key)
+		}
+		names = append(names, rest[:dot])
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
+}
+
+// neutralizableDriverName은 이름을 `-c filter.<이름>.<키>=`로 덮을 수 있는지 본다. git은 -c 값을 첫
+// '='에서 키와 값으로 나누므로 '='가 든 이름은 다른 키가 된다. 제어 문자(forbiddenChars)·깨진 UTF-8도
+// 거부한다 — windows에서는 인자가 UTF-16으로 바뀌며 깨진 바이트가 다른 문자가 되고, 제어 문자 이름은
+// 정상 설정에서 나오지 않는다.
+func neutralizableDriverName(name string) bool {
+	return !strings.Contains(name, "=") && utf8.ValidString(name) && !forbiddenChars.MatchString(name)
+}
+
+// filterNeutralizingArgs는 드라이버 이름마다 명령 세 키를 빈 값으로, required를 false로 덮는 -c 인자다 —
+// 빈 명령은 git이 실행하지 않고(filter 없이 원문을 쓴다), required=false라야 "filter 실패"로 끝나지 않는다.
+func filterNeutralizingArgs(names []string) []string {
+	var args []string
+	for _, name := range names {
+		key := "filter." + name + "."
+		args = append(args, "-c", key+"clean=", "-c", key+"smudge=", "-c", key+"process=", "-c", key+"required=false")
+	}
+	return args
+}
+
+// gitFailure는 git 실패를 한 줄로 줄인다 — stderr 첫 줄, 없으면 실행 오류 자체다.
+func gitFailure(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if line, _, _ := strings.Cut(strings.TrimSpace(string(ee.Stderr)), "\n"); line != "" {
+			return line
+		}
+	}
+	return err.Error()
+}
+
+// runGit은 git 명령 하나를 실행해 표준 출력을 돌려준다. 격리하지 못해 실행하지 않았거나(gitCommand)
+// git이 없거나 실패하면 오류다 — 부르는 쪽(gitRevision)이 revision을 생략하고, 격리하지 못한 경우만
+// 이유를 limitation으로 알린다.
+func runGit(dir string, args ...string) (string, error) {
+	cmd, err := gitCommand(dir, args...)
+	if err != nil {
+		return "", err
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 // documentRevision은 순회에 쓴 그래프 문서의 신원이다 — 결정적 JSON 바이트의 소문자
@@ -566,8 +726,10 @@ func kindStrings(kinds []graph.EdgeKind) []string {
 	return out
 }
 
-// traversalLimitations는 그래프가 센 한계에 순회가 센 공백을 더한다.
-func traversalLimitations(doc *graph.Document, res *analysis.TraversalResult, missing int) []string {
+// traversalLimitations는 그래프가 센 한계에 순회가 센 공백을 더한다. revisionNote는 작업 트리를
+// 일부러 보지 않아 revision을 싣지 못한 이유다(gitRevision, 없으면 빈 문자열).
+func traversalLimitations(doc *graph.Document, res *analysis.TraversalResult, missing int,
+	revisionNote string) []string {
 	out := append([]string{}, doc.Limitations...)
 	if missing > 0 {
 		out = append(out, fmt.Sprintf(
@@ -587,6 +749,9 @@ func traversalLimitations(doc *graph.Document, res *analysis.TraversalResult, mi
 			"are followed only from the fields that name them (--type-edges members); code that passes a whole struct "+
 			"value to reflection (encoding/json, ORM) may depend on them — rerun with --type-edges all to include them",
 			res.TypeEdgesNarrowed))
+	}
+	if revisionNote != "" {
+		out = append(out, revisionNote)
 	}
 	return out
 }

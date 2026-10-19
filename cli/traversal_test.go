@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -491,6 +492,183 @@ func TestTraversalGitRevision(t *testing.T) {
 	_, out, _ = run(t, "reach", "--dir", dir, fx+".main")
 	if doc := parseTraversal(t, out); doc.Revision != nil {
 		t.Fatalf("dirty tree must omit revision, got %q", *doc.Revision)
+	}
+}
+
+// TestParseFilterDriverNames는 `git config -z --get-regexp` 출력에서 드라이버 이름을 뽑는지 본다 — 이름은
+// `filter.`과 마지막 `.키` 사이 전체(점 포함, subsection이라 대소문자 그대로)이고, 빈 이름(`[filter ""]`)도
+// git이 쓰므로 버리지 않는다. 값 없는 키는 개행 없이 끝난다. 결과는 정렬·중복 제거돼 -c 순서가 결정적이다.
+func TestParseFilterDriverNames(t *testing.T) {
+	out := "filter.p.process\ncmd\x00filter.A.b.clean\nsh -c 'x\ny'\x00filter..clean\nc\x00" +
+		"filter.A.b.smudge\nc\x00filter.v.clean\x00"
+	got, err := parseFilterDriverNames([]byte(out))
+	if err != nil || !slices.Equal(got, []string{"", "A.b", "p", "v"}) {
+		t.Fatalf("parseFilterDriverNames = %q, %v", got, err)
+	}
+	if got, err := parseFilterDriverNames(nil); err != nil || len(got) != 0 {
+		t.Fatalf("no output must mean no drivers: %q, %v", got, err)
+	}
+	for _, bad := range []string{"core.editor\nvi\x00", "filter\x00"} {
+		if _, err := parseFilterDriverNames([]byte(bad)); err == nil {
+			t.Errorf("a key outside filter.<name>.<key> must be refused (fail-closed): %q", bad)
+		}
+	}
+}
+
+// TestFilterNeutralizingArgs는 드라이버 이름마다 clean·smudge·process를 빈 명령으로, required를 false로
+// 덮는 -c 인자를 만드는지 본다 — 빈 명령은 git이 실행하지 않고, required=false라야 "filter 실패"로 죽지 않는다.
+func TestFilterNeutralizingArgs(t *testing.T) {
+	got := filterNeutralizingArgs([]string{"", "a.b"})
+	want := []string{
+		"-c", "filter..clean=", "-c", "filter..smudge=", "-c", "filter..process=", "-c", "filter..required=false",
+		"-c", "filter.a.b.clean=", "-c", "filter.a.b.smudge=", "-c", "filter.a.b.process=", "-c", "filter.a.b.required=false",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("filterNeutralizingArgs = %q", got)
+	}
+}
+
+// TestNeutralizableDriverName은 -c로 덮을 수 없는 이름을 가려내는지 본다. git은 -c 값을 첫 '='에서 키와
+// 값으로 나누고, 제어 문자·깨진 UTF-8은 인자 변환(windows UTF-16)에서 다른 이름이 될 수 있다.
+func TestNeutralizableDriverName(t *testing.T) {
+	for _, name := range []string{"", "lfs", "a.b", "A B", "ünï", "x-y_z"} {
+		if !neutralizableDriverName(name) {
+			t.Errorf("%q must be neutralizable", name)
+		}
+	}
+	for _, name := range []string{"a=b", "=", "a\tb", "a\x1bb", "a\x7fb", "a\u0085b", "a\u2028b", "a\xffb"} {
+		if neutralizableDriverName(name) {
+			t.Errorf("%q must be refused", name)
+		}
+	}
+}
+
+// fakeGitLog는 PATH 맨 앞에 가짜 git을 두고, 호출마다 인자를 한 줄(인자 사이 \x1f)로 남길 로그 경로를
+// 돌려준다. answers는 하위 명령 이름 → 셸 동작이다(첫 일치 인자로 고른다). 없는 하위 명령은 종료 3이다.
+func fakeGitLog(t *testing.T, answers map[string]string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake git is a POSIX shell script")
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls.log")
+	var cases strings.Builder
+	for sub, action := range answers {
+		fmt.Fprintf(&cases, "    %s) %s ;;\n", sub, action)
+	}
+	script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\037' \"$a\"; done >> '" + log + "'\n" +
+		"printf '\\n' >> '" + log + "'\n" +
+		"for a in \"$@\"; do\n  case \"$a\" in\n" + cases.String() + "  esac\ndone\nexit 3\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	return log
+}
+
+// readGitCalls는 fakeGitLog가 남긴 호출들의 인자 목록이다.
+func readGitCalls(t *testing.T, log string) [][]string {
+	t.Helper()
+	data, err := os.ReadFile(log)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		calls = append(calls, strings.Split(strings.TrimSuffix(line, "\x1f"), "\x1f"))
+	}
+	return calls
+}
+
+// TestGitCallsCarryIsolation은 분석용 git 호출마다 바로 앞에서 filter 드라이버를 다시 조회하고, 모은 이름을
+// 빈 명령으로 덮으며, 공통 설정(fsmonitor·untracked cache·서명 표시 끄기)을 붙이는지 본다. diff에는 외부
+// diff·textconv를 끄고 서브모듈 안으로 들어가지 않으며 index를 갱신하지 않는 인자를, status에는 서브모듈을
+// 보지 않는 인자를 붙인다. 인자 하나하나가 분석 대상 설정의 명령 실행을 막는 계약이라 전부 고정한다.
+func TestGitCallsCarryIsolation(t *testing.T) {
+	const oid = "0123456789abcdef0123456789abcdef01234567"
+	log := fakeGitLog(t, map[string]string{
+		"config":    `printf 'filter.a.b.clean\nx\000filter.Z.smudge\ny\000filter.a.b.process\nz\000'; exit 0`,
+		"diff":      `printf 'x.go\000sub dir/y.go\000'; exit 0`,
+		"ls-files":  `printf '100644 ` + oid + ` 0\tx.go\000'; exit 0`,
+		"status":    `exit 0`,
+		"rev-parse": `echo ` + oid + `; exit 0`,
+	})
+	dir := t.TempDir()
+	files, err := changedFilesSince(dir, "origin/main...HEAD")
+	if err != nil || !slices.Equal(files, []string{"x.go", "sub dir/y.go"}) {
+		t.Fatalf("changedFilesSince = %q, %v", files, err)
+	}
+	if rev, note := gitRevision(dir); rev != oid || note != "" {
+		t.Fatalf("gitRevision = %q, %q", rev, note)
+	}
+	base := []string{"-C", dir, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+		"-c", "log.showSignature=false"}
+	query := append(slices.Clone(base), "config", "-z", "--includes", "--get-regexp", `^filter\..*\.(clean|smudge|process)$`)
+	isolated := append(slices.Clone(base), "-c", "filter.Z.clean=", "-c", "filter.Z.smudge=", "-c", "filter.Z.process=",
+		"-c", "filter.Z.required=false", "-c", "filter.a.b.clean=", "-c", "filter.a.b.smudge=",
+		"-c", "filter.a.b.process=", "-c", "filter.a.b.required=false")
+	want := [][]string{
+		query,
+		append(slices.Clone(isolated), "-c", "diff.autoRefreshIndex=false", "diff", "--name-only", "--relative",
+			"--no-renames", "-z", "--no-ext-diff", "--no-textconv", "--ignore-submodules=dirty",
+			"--end-of-options", "origin/main...HEAD", "--"),
+		query,
+		append(slices.Clone(isolated), "ls-files", "--stage", "-z"),
+		query,
+		append(slices.Clone(isolated), "status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=all"),
+		query,
+		append(slices.Clone(isolated), "rev-parse", "--verify", "HEAD"),
+	}
+	got := readGitCalls(t, log)
+	if len(got) != len(want) {
+		t.Fatalf("git ran %d times, want %d:\n%q", len(got), len(want), got)
+	}
+	for i := range want {
+		if !slices.Equal(got[i], want[i]) {
+			t.Errorf("git call %d:\n got %q\nwant %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestGitRefusesWithoutIsolation은 filter 드라이버를 모을 수 없거나 덮을 수 없으면 분석용 git을 하나도
+// 실행하지 않는지 본다(fail-closed, DECISIONS 원칙 1). impact --since는 원인과 --files를 담은 오류다.
+// revision은 생략하고, 덮을 수 없는 이름 때문이면 limitation 문구로 이유를 알린다. 설정을 읽지 못한 것은
+// git 자체가 그 저장소에서 동작하지 않는 경우라 지금처럼 revision만 생략한다(이름 원문은 싣지 않는다).
+func TestGitRefusesWithoutIsolation(t *testing.T) {
+	cases := []struct {
+		name, config, sinceSays string
+		limitation              bool
+	}{
+		{"config fails", `echo 'fatal: bad config line 3 in file .git/config' >&2; exit 128`,
+			"git config: fatal: bad config line 3 in file .git/config", false},
+		{"no match with output", `printf 'filter.x.clean\nc\000'; exit 1`, "could not list the git filter drivers", false},
+		{"equals sign", `printf 'filter.a=b.clean\nc\000'; exit 0`, "'='", true},
+		{"control character", `printf 'filter.a\tb.clean\nc\000'; exit 0`, "control character", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			log := fakeGitLog(t, map[string]string{"config": c.config, "diff": "exit 0", "ls-files": "exit 0",
+				"status": "exit 0", "rev-parse": "echo 0123456789abcdef0123456789abcdef01234567; exit 0"})
+			dir := t.TempDir()
+			_, err := changedFilesSince(dir, "HEAD")
+			if err == nil || !strings.Contains(err.Error(), c.sinceSays) || !strings.Contains(err.Error(), "--files") ||
+				!strings.Contains(err.Error(), "did not run git diff") {
+				t.Fatalf("changedFilesSince error = %v", err)
+			}
+			rev, note := gitRevision(dir)
+			if rev != "" || (note != "") != c.limitation ||
+				(c.limitation && (!strings.HasPrefix(note, "revision-unverified:") || !strings.Contains(note, "--revision"))) {
+				t.Fatalf("gitRevision = %q, %q", rev, note)
+			}
+			for i, call := range readGitCalls(t, log) {
+				if !slices.Contains(call, "config") {
+					t.Errorf("git call %d ran without isolation: %q", i, call)
+				}
+			}
+		})
 	}
 }
 

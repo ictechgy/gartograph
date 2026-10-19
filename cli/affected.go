@@ -26,9 +26,13 @@ func checkSinceRevision(rev string) error {
 // rev는 한 인자로 git에 넘기므로 `origin/main...HEAD` 같은 범위 표기도 쓸 수 있다.
 // --end-of-options 뒤에 두고 끝에 --를 붙여, 검증을 지난 값도 옵션·경로로 읽히지 않게 한다
 // (git 2.24 이상 — 더 오래된 git은 이 옵션을 사용법 오류로 거부하므로 그 실패는 요구 버전을
-// 담아 알린다, sinceUsageError). gitCommand가 fsmonitor 훅·선택 잠금을 끈다 — 분석 대상 .git/config의
-// core.fsmonitor 명령이 이 읽기 전용 질의에서 실행되면 안 된다. clean 필터·textconv 같은 나머지
-// 설정은 여전히 git이 따른다(README: 출처를 모르는 트리에서는 --files).
+// 담아 알린다, sinceUsageError). 분석 대상 .git 설정의 명령이 이 읽기 전용 질의에서 실행되면 안 된다
+// (DECISIONS D1): gitCommand가 filter 드라이버를 빈 명령으로 덮고 fsmonitor 훅·선택 잠금을 끈다.
+// 여기서는 외부 diff·textconv를 끄고(--no-ext-diff --no-textconv), 서브모듈 안에서 git을 띄우지 않는다
+// (--ignore-submodules=dirty — 서브모듈 HEAD가 기록과 다르면 그 경로는 여전히 바뀐 파일이다).
+// diff.autoRefreshIndex=false는 stat만 바뀐 파일을 내용 비교로 거르고 index를 다시 쓰는 단계를 끈다 —
+// 그 쓰기가 post-index-change 훅을 실행한다. 그래서 stat만 바뀐 파일도 바뀐 파일로 나온다(넓히는
+// 쪽, fail-safe). 격리할 수 없으면 git을 실행하지 않고 --files를 안내한다.
 // --no-renames는 rename을 delete+add로 펼친다 — 옛 경로도 변경 파일이어야
 // 그 패키지의 의존자가 영향 집합에 남는다. -z는 NUL 구분이라 인용되지 않은
 // 파일명을 그대로 준다 — 공백·비ASCII 이름도 안전하다.
@@ -36,8 +40,13 @@ func changedFilesSince(dir, rev string) ([]string, error) {
 	if err := checkSinceRevision(rev); err != nil {
 		return nil, err
 	}
-	cmd := gitCommand(dir, "diff", "--name-only", "--relative", "--no-renames", "-z",
+	cmd, err := gitCommand(dir, "-c", "diff.autoRefreshIndex=false", "diff", "--name-only", "--relative",
+		"--no-renames", "-z", "--no-ext-diff", "--no-textconv", "--ignore-submodules=dirty",
 		"--end-of-options", rev, "--")
+	if err != nil {
+		return nil, fmt.Errorf("impact --since %s did not run git diff: %w; pass the changed files with --files instead",
+			rev, err)
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError

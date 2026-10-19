@@ -107,9 +107,9 @@ gartograph impact github.com/ictechgy/gartograph/graph --depth 2
 
 # Diff-aware impact: what breaks given the files changed since a revision
 # (needs git 2.24+; a value that starts with '-' or holds control characters
-# is a usage error). git runs with fsmonitor hooks off but trusts the rest of
-# the work tree's .git/config (filters etc.); in a tree of unknown origin pass
-# --files instead.
+# is a usage error). git runs without the repository's filter drivers,
+# fsmonitor hook, diff drivers, and index refresh, and stays out of submodules
+# (see Security); a file whose timestamps changed counts as changed.
 gartograph impact --since origin/main...HEAD          # or --files cli/cli.go
 
 # Shortest dependency path: why does 'from' reach 'to'
@@ -316,6 +316,54 @@ would pass silently.
 `rules`, `cycles`, and `dead` all accept `--format sarif` for CI code
 scanning — cycles report as `dependency-cycle` errors, unreachable symbols
 as `unreachable-symbol` warnings (a fact, not a deletion verdict).
+
+## Security
+
+gartograph starts two external programs: the `go` command, through
+`golang.org/x/tools/go/packages`, to load packages for every harvest; and `git`,
+only for `impact --since` (`git diff`) and for the `revision` of a traversal
+document (`reach`, `impact --format language-traversal`) without `--revision`
+or `--graph` (`git ls-files`, `git status`, `git rev-parse`). It runs the first
+`git` on `PATH`.
+
+Every one of those git calls keeps the analyzed repository's git configuration
+from running commands:
+
+- Right before the call, gartograph lists the filter drivers git sees
+  (`git config -z --includes --get-regexp '^filter\..*\.(clean|smudge|process)$'`,
+  which covers the repository, your own and the system configuration) and
+  overrides each with empty `clean`, `smudge`, and `process` commands and
+  `required=false`, so git runs none of them. This holds for drivers named in
+  `.gitattributes` and in `.git/info/attributes`.
+- It turns off `core.fsmonitor`, the untracked cache, `log.showSignature`, and
+  optional locks (`GIT_OPTIONAL_LOCKS=0`); `git diff` also gets
+  `--no-ext-diff --no-textconv` and `diff.autoRefreshIndex=false` — refreshing
+  the index would write it and run the `post-index-change` hook.
+- It never starts git inside a submodule: `git diff` gets
+  `--ignore-submodules=dirty`, and `git status` does not run at all when the
+  index has a submodule (`--ignore-submodules=all` otherwise).
+- When the drivers cannot be listed, or a driver name contains `=` or a control
+  character (git's `-c` splits at the first `=`, so such a driver cannot be
+  overridden), no other git command runs: `impact --since` exits 2 with the
+  cause and points to `--files`; a traversal document omits `revision` (with a
+  `revision-unverified:` limitation for the driver name).
+
+What this changes:
+
+- A file that a filter normalizes (git-lfs and the like) is compared as raw
+  content. When git's stat cache is stale for it, it counts as changed:
+  `impact --since` lists it, and a traversal document records no `revision`
+  instead of claiming a clean `HEAD` it could not verify.
+- `impact --since` lists a file whose timestamps changed even when its content
+  did not, since git no longer re-reads it. In a checkout you trust, run
+  `git status` first to refresh git's stat cache.
+- Submodules: `impact --since` still lists a submodule checked out at a commit
+  other than the recorded one, but not uncommitted changes inside it. A work
+  tree with submodules gets no automatic `revision` and a
+  `revision-unverified:` limitation; pass `--revision` to record one.
+
+The rest of the git configuration applies as usual, and `--files` needs no git
+at all.
 
 ## Output contract (for agents)
 
@@ -531,9 +579,11 @@ document over the same dependency edges as `impact`:
   100000) cut with `truncationReasons` `depth`/`max-reached`. `rootsTruncated`
   describes the listed symbols only: symbols dropped by `--max` do not set it.
 - `project` is the same realpath `schema` writes; `revision` is `--revision` or
-  git `HEAD` when the work tree is clean (omitted with `--graph`);
-  `graphRevision` is the SHA-256 of the graph JSON; `--generated-at` fixes the
-  timestamp.
+  git `HEAD` when the work tree is clean (omitted with `--graph`, and with a
+  `revision-unverified:` limitation when a clean tree cannot be checked without
+  running the repository's git configuration — a tree with submodules, see
+  [Security](#security)); `graphRevision` is the SHA-256 of the graph JSON;
+  `--generated-at` fixes the timestamp.
 - Ids that are not vertices are listed in `roots` without `symbol`, with a
   `root-not-found:` limitation and truncation reason; the document is written
   and the command exits 64. Usage errors (no roots, control characters,

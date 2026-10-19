@@ -579,10 +579,273 @@ func TestImpactSinceGuardsGit(t *testing.T) {
 	}
 }
 
+// gitIn은 dir에서 git을 실행해 출력을 돌려주는 함수다 — 실패하면 테스트를 끝낸다. 커밋 신원과 로컬
+// 서브모듈 clone 허용(git 2.38.1부터 기본 거부)을 인자로 준다.
+func gitIn(t *testing.T, dir string) func(args ...string) string {
+	t.Helper()
+	return func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t",
+			"-c", "protocol.file.allow=always"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+}
+
+// commitFixture는 dir을 git 저장소로 만들어 전부 커밋하고, 그 저장소에서 git을 부르는 함수를 돌려준다.
+// prepare는 첫 커밋 전에 돈다(커밋할 때 이미 있어야 하는 filter 설정용). 사용자·시스템 git 설정은 읽지
+// 않는다 — 개발자 머신의 전역 설정(git-lfs의 filter.lfs 같은)이 결과를 바꾸지 않게 하기 위해서다.
+// gartograph가 띄우는 git도 이 환경을 물려받는다. 셸 스크립트 fixture라 windows에서는 건너뛴다.
+func commitFixture(t *testing.T, dir string, prepare func(git func(args ...string) string)) func(args ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("the repository configuration fixtures are POSIX shell scripts")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	git := gitIn(t, dir)
+	git("init", "-q")
+	if prepare != nil {
+		prepare(git)
+	}
+	git("add", "-A")
+	git("commit", "-qm", "init")
+	return git
+}
+
+// writeTestFile은 path에 내용을 쓴다(상위 디렉터리를 만든다). mode가 0이면 0o644다.
+func writeTestFile(t *testing.T, path, content string, mode os.FileMode) {
+	t.Helper()
+	if mode == 0 {
+		mode = 0o644
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// markerCommand는 실행되면 markers 안의 name 파일에 한 줄을 남기고 then을 실행하는 셸 스크립트를
+// at에 만든다 — 분석 대상 설정이 띄우는 명령(filter·훅)이 실제로 돌았는지 파일로 남긴다.
+func markerCommand(t *testing.T, at, markers, name, then string) string {
+	t.Helper()
+	writeTestFile(t, at, "#!/bin/sh\necho ran >> '"+filepath.Join(markers, "ran-"+name)+"'\n"+then+"\n", 0o755)
+	return at
+}
+
+// assertNoRepositoryCommandRan은 markerCommand가 남긴 마커가 하나도 없는지 본다.
+func assertNoRepositoryCommandRan(t *testing.T, markers, what string) {
+	t.Helper()
+	entries, err := os.ReadDir(markers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ran []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "ran-") {
+			ran = append(ran, e.Name())
+		}
+	}
+	if len(ran) > 0 {
+		t.Fatalf("%s ran commands from the analyzed repository's git configuration: %v", what, ran)
+	}
+}
+
+// staleStat은 파일의 시각을 과거로 돌려 git의 stat 캐시를 낡게 만든다 — 그래야 git이 내용을 다시
+// 읽어(clean filter를 거쳐) 바뀌었는지 본다. 내용은 그대로다.
+func staleStat(t *testing.T, at time.Time, paths ...string) {
+	t.Helper()
+	for _, p := range paths {
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// hasLimitation은 prefix로 시작하고 want를 담은 limitation이 있는지 본다.
+func hasLimitation(limitations []string, prefix, want string) bool {
+	for _, l := range limitations {
+		if strings.HasPrefix(l, prefix) && strings.Contains(l, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGitCallsDoNotRunRepositoryCommands는 분석용 git 호출(impact --since의 diff, 순회 revision 판독)이
+// 분석 대상 저장소 설정의 filter 드라이버와 post-index-change 훅을 실행하지 않는지 본다(DECISIONS D1).
+// 드라이버는 .git/info/attributes와 커밋된 .gitattributes 양쪽에서 걸고, 점이 든 이름과 장기 실행
+// process 키도 둔다. stat 캐시를 낡게 만들어야 git이 내용을 다시 읽는다 — 수정 전에는 그때 clean·process
+// 명령이 돌았고, git diff의 index 갱신이 post-index-change 훅을 실행했다. 내용을 바꾸지 않는 filter라
+// 순회는 여전히 깨끗한 HEAD를 싣고, --since는 stat만 바뀐 파일도 바뀐 파일로 낸다(diff.autoRefreshIndex=false).
+func TestGitCallsDoNotRunRepositoryCommands(t *testing.T) {
+	variants := []struct{ name, driver, key, attributes, then string }{
+		{"info attributes clean", "evil", "clean", ".git/info/attributes", "cat"},
+		{"committed gitattributes dotted name", "a.b", "clean", ".gitattributes", "cat"},
+		{"process", "p", "process", ".git/info/attributes", "exit 1"},
+	}
+	for _, v := range variants {
+		t.Run(v.name, func(t *testing.T) {
+			dir := traversalFixture(t)
+			git := commitFixture(t, dir, func(func(...string) string) {
+				if v.attributes == ".gitattributes" {
+					writeTestFile(t, filepath.Join(dir, ".gitattributes"), "*.go filter="+v.driver+"\n", 0)
+				}
+			})
+			head := git("rev-parse", "HEAD")
+			markers := t.TempDir()
+			git("config", "filter."+v.driver+"."+v.key,
+				markerCommand(t, filepath.Join(markers, "driver.sh"), markers, "filter", v.then))
+			if v.attributes != ".gitattributes" {
+				writeTestFile(t, filepath.Join(dir, v.attributes), "*.go filter="+v.driver+"\n", 0)
+			}
+			markerCommand(t, filepath.Join(dir, ".git", "hooks", "post-index-change"), markers, "hook", "")
+			mainGo := filepath.Join(dir, "main.go")
+			old := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+
+			staleStat(t, old, mainGo)
+			code, out, errb := run(t, "impact", "--dir", dir, "--since", "HEAD")
+			assertNoRepositoryCommandRan(t, markers, "impact --since HEAD")
+			if code != 0 || !strings.Contains(out, `"main.go"`) {
+				t.Fatalf("impact --since HEAD must list the file whose stat changed: %d %s %s", code, out, errb)
+			}
+			for _, args := range [][]string{{"reach", fx + ".main"}, {"impact", "--format", "language-traversal", fx + ".handleUsers"}} {
+				old = old.Add(time.Hour)
+				staleStat(t, old, mainGo)
+				code, out, errb := run(t, append(args, "--dir", dir)...)
+				assertNoRepositoryCommandRan(t, markers, args[0]+" (revision)")
+				if doc := parseTraversal(t, out); code != 0 || doc.Revision == nil || *doc.Revision != head {
+					t.Fatalf("%v: a filter that keeps the content must leave the clean HEAD %s: %d %s %s", args, head, code, out, errb)
+				}
+			}
+		})
+	}
+}
+
+// TestGitCallsRefuseUnneutralizableFilter는 이름에 '='가 든 filter 드라이버가 설정돼 있으면 분석용 git을
+// 실행하지 않는지 본다 — git은 -c 값을 첫 '='에서 나눠 그런 드라이버를 빈 명령으로 덮을 수 없다(fail-closed).
+// impact --since는 원인과 --files를 담은 오류(2)로 끝나고, 순회는 revision을 싣지 않고 그 이유를
+// limitation으로 알린다.
+func TestGitCallsRefuseUnneutralizableFilter(t *testing.T) {
+	dir := traversalFixture(t)
+	git := commitFixture(t, dir, nil)
+	markers := t.TempDir()
+	git("config", "filter.a=b.clean", markerCommand(t, filepath.Join(markers, "driver.sh"), markers, "filter", "cat"))
+	writeTestFile(t, filepath.Join(dir, ".git", "info", "attributes"), "*.go filter=a=b\n", 0)
+	mainGo := filepath.Join(dir, "main.go")
+
+	staleStat(t, time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC), mainGo)
+	code, out, errb := run(t, "impact", "--dir", dir, "--since", "HEAD")
+	assertNoRepositoryCommandRan(t, markers, "impact --since HEAD")
+	if code != 2 || out != "" || !strings.Contains(errb, "'='") || !strings.Contains(errb, "--files") {
+		t.Fatalf("an unneutralizable filter driver must stop impact --since with a --files hint: %d %q %q", code, out, errb)
+	}
+
+	staleStat(t, time.Date(2002, 1, 1, 0, 0, 0, 0, time.UTC), mainGo)
+	code, out, errb = run(t, "reach", "--dir", dir, fx+".main")
+	assertNoRepositoryCommandRan(t, markers, "reach")
+	doc := parseTraversal(t, out)
+	if code != 0 || doc.Revision != nil || !hasLimitation(doc.Limitations, "revision-unverified:", "--revision") {
+		t.Fatalf("reach must omit the revision and say why: %d %s %s", code, out, errb)
+	}
+}
+
+// TestGitCallsStayOutOfSubmodules는 서브모듈 저장소 자신의 설정(그 안의 filter 드라이버)을 실행하지 않는지
+// 본다 — 상위 저장소의 status·diff는 기본값이면 서브모듈 안에서 git을 띄워 그 설정을 따른다. 순회는 서브모듈
+// 작업 트리를 볼 수 없어 revision을 싣지 않고 limitation으로 알린다(fail-safe). impact --since는 서브모듈에
+// 기록된 커밋과 서브모듈 HEAD가 다르면 지금처럼 그 경로를 바뀐 파일로 낸다.
+func TestGitCallsStayOutOfSubmodules(t *testing.T) {
+	subSrc := t.TempDir()
+	writeTestFile(t, filepath.Join(subSrc, "notes.txt"), "v1\n", 0)
+	gitSrc := commitFixture(t, subSrc, nil)
+	writeTestFile(t, filepath.Join(subSrc, "notes.txt"), "v2\n", 0)
+	gitSrc("commit", "-qam", "v2")
+
+	dir := traversalFixture(t)
+	git := commitFixture(t, dir, nil)
+	git("submodule", "add", "-q", subSrc, "sub")
+	git("commit", "-qm", "add submodule")
+	subWork := filepath.Join(dir, "sub")
+	gitSub := gitIn(t, subWork)
+	markers := t.TempDir()
+	gitSub("config", "filter.subevil.clean", markerCommand(t, filepath.Join(markers, "driver.sh"), markers, "filter", "cat"))
+	writeTestFile(t, filepath.Join(gitSub("rev-parse", "--absolute-git-dir"), "info", "attributes"), "* filter=subevil\n", 0)
+	notes := filepath.Join(subWork, "notes.txt")
+
+	staleStat(t, time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC), notes)
+	code, out, errb := run(t, "reach", "--dir", dir, fx+".main")
+	assertNoRepositoryCommandRan(t, markers, "reach")
+	doc := parseTraversal(t, out)
+	if code != 0 || doc.Revision != nil || !hasLimitation(doc.Limitations, "revision-unverified:", "1 git submodule") {
+		t.Fatalf("reach must omit the revision of a tree with submodules and say why: %d %s %s", code, out, errb)
+	}
+
+	staleStat(t, time.Date(2002, 1, 1, 0, 0, 0, 0, time.UTC), notes)
+	code, out, errb = run(t, "impact", "--dir", dir, "--since", "HEAD")
+	assertNoRepositoryCommandRan(t, markers, "impact --since HEAD")
+	if code != 0 || strings.Contains(out, `"sub"`) {
+		t.Fatalf("a submodule at its recorded commit is not a changed path: %d %s %s", code, out, errb)
+	}
+
+	// 악성 설정을 걷어 낸 뒤 서브모듈을 기록과 다른 커밋으로 옮긴다 — 테스트 자신의 git이 마커를 남기지 않게.
+	gitSub("config", "--unset", "filter.subevil.clean")
+	gitSub("checkout", "-q", "--detach", "HEAD~1")
+	code, out, errb = run(t, "impact", "--dir", dir, "--since", "HEAD")
+	if code != 0 || !strings.Contains(out, `"sub"`) {
+		t.Fatalf("a submodule moved off its recorded commit must stay a changed path: %d %s %s", code, out, errb)
+	}
+}
+
+// TestGitTreatsFilteredFilesAsChanged는 clean filter가 내용을 바꾸던 파일(git-lfs 같은)을 filter 없이 읽으면
+// 바뀐 파일로 보는지 본다 — git은 작업 트리 원문과 커밋된(filter를 거친) blob을 비교한다. stat 캐시가
+// 그대로면 다시 읽지 않으므로 깨끗하다. 낡으면 순회는 깨끗하다고 주장하지 않고 revision을 싣지 않으며
+// (fail-safe), impact --since는 그 파일을 바뀐 파일로 낸다.
+func TestGitTreatsFilteredFilesAsChanged(t *testing.T) {
+	dir := traversalFixture(t)
+	data := filepath.Join(dir, "data.txt")
+	writeTestFile(t, data, "payload\n", 0)
+	writeTestFile(t, filepath.Join(dir, ".gitattributes"), "data.txt filter=upper\n", 0)
+	// 커밋 전에 시각을 과거로 둔다 — index 기록보다 한참 앞선 파일은 racy-clean으로 다시 읽히지 않는다.
+	staleStat(t, time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC), data)
+	git := commitFixture(t, dir, func(git func(...string) string) {
+		git("config", "filter.upper.clean", "tr a-z A-Z")
+	})
+	head := git("rev-parse", "HEAD")
+	if blob := git("show", "HEAD:data.txt"); blob != "PAYLOAD" {
+		t.Fatalf("fixture: the committed blob must be the filter's output, got %q", blob)
+	}
+
+	code, out, errb := run(t, "reach", "--dir", dir, fx+".main")
+	if doc := parseTraversal(t, out); code != 0 || doc.Revision == nil || *doc.Revision != head {
+		t.Fatalf("an untouched filtered file must not make the tree dirty: %d %s %s", code, out, errb)
+	}
+
+	staleStat(t, time.Date(2002, 1, 1, 0, 0, 0, 0, time.UTC), data)
+	code, out, errb = run(t, "reach", "--dir", dir, fx+".main")
+	doc := parseTraversal(t, out)
+	if code != 0 || doc.Revision != nil || hasLimitation(doc.Limitations, "revision-unverified:", "") {
+		t.Fatalf("a re-read filtered file must make the tree dirty (no revision, no extra limitation): %d %s %s",
+			code, out, errb)
+	}
+	code, out, errb = run(t, "impact", "--dir", dir, "--since", "HEAD")
+	if code != 0 || !strings.Contains(out, `"data.txt"`) {
+		t.Fatalf("impact --since must list the re-read filtered file: %d %s %s", code, out, errb)
+	}
+}
+
 // TestChangedFilesSinceExplainsUsageErrors는 git diff가 인자를 사용법 오류(종료 코드 129)로 거부하면
 // 원인과 해결 방향을 담은 한 줄 오류를 내는지 본다. git 2.24보다 오래된 git은 --end-of-options를 모르는
 // 옵션으로 보고 수십 줄 사용법만 찍는다 — 그대로 옮기면 왜 실패했는지 보이지 않는다. 그런 git을
 // 흉내 내는 가짜 git을 PATH에 둔다. 다른 실패(종료 코드 128의 bad revision)는 git의 말을 그대로 옮긴다.
+// diff 앞의 filter 드라이버 조회(git config)에는 "일치 없음"(종료 1)으로 답한다 — 오래된 git도 그 조회는 안다.
 func TestChangedFilesSinceExplainsUsageErrors(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake git is a POSIX shell script")
@@ -590,6 +853,7 @@ func TestChangedFilesSinceExplainsUsageErrors(t *testing.T) {
 	fake := t.TempDir()
 	script := "#!/bin/sh\n" +
 		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = config ]; then exit 1; fi\n" +
 		"  if [ \"$a\" = nope ]; then echo \"fatal: bad revision 'nope'\" >&2; exit 128; fi\n" +
 		"done\n" +
 		"echo 'usage: git diff [<options>] [<commit> [<commit>]] [--] [<path>...]' >&2\n" +
