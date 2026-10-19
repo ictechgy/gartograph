@@ -14,7 +14,8 @@
 //
 // 리터럴이 아닌 SQL 인자는 버리지 않고 원문 표현식을 실은 dynamic 사실로
 // 보존한다 — 조인하지 못하는 이유를 소비자가 셀 수 있어야 한다. 관계를 증명하지
-// 못한 피연산자(테이블 값 함수)가 든 SQL 리터럴도 같은 이유로 dynamic 사실 하나를 낸다.
+// 못한 피연산자(테이블 값 함수, 관계 자리의 `%s`·`?` 같은 자리표시자)가 든 SQL 리터럴도
+// 같은 이유로 dynamic 사실 하나를 낸다.
 package source
 
 import (
@@ -127,6 +128,7 @@ type schemaScan struct {
 	unattributed int       // 관계를 알 수 없는 컬럼 태그 수
 	unresolved   int       // TableName을 찾지 못한 모델 인자 수
 	sqlFunctions int       // 의존 관계를 증명하지 못한 테이블 값 함수 피연산자 수
+	placeholders int       // 관계 자리에 자리표시자가 와 관계를 읽지 못한 SQL 피연산자 수(함수 수와 따로 센다)
 	dynamic      int       // 리터럴로 읽히지 않아 조인 불가한 SQL 인자 수
 	missingUsrs  int       // 감싸는 심볼 정점이 없어 usr를 싣지 못한 사실 수
 	latest       time.Time // 읽은 소스의 최신 mtime
@@ -603,8 +605,9 @@ func scanLiteral(scan *schemaScan, p *packages.Package, lit *ast.BasicLit) {
 	if !sqlVerbPattern.MatchString(text) {
 		return
 	}
-	relations, unresolved := sqlRelations(text)
-	scan.sqlFunctions += unresolved
+	relations, functions, placeholders := sqlRelations(text)
+	scan.sqlFunctions += functions
+	scan.placeholders += placeholders
 	for _, name := range relations {
 		scan.push(RelationFact{
 			Kind:     "relation-use",
@@ -614,10 +617,11 @@ func scanLiteral(scan *schemaScan, p *packages.Package, lit *ast.BasicLit) {
 			owner:    scan.owner,
 		})
 	}
-	// 관계를 증명하지 못한 피연산자(테이블 값 함수)가 있으면 그 리터럴을 dynamic 사실 하나로도 남긴다 —
-	// isthmus는 생산자 limitation 문구가 아니라 dynamic 사실을 직접 세어 미사용 진단을 판정 불가로
-	// 내린다(GRAPH-EXCHANGE). 문구만 남기면 함수를 거쳐서만 읽는 테이블이 dead-schema 후보로 보인다.
-	if unresolved > 0 {
+	// 관계를 증명하지 못한 피연산자(테이블 값 함수, 관계 자리의 자리표시자)가 있으면 그 리터럴을 dynamic
+	// 사실 하나로도 남긴다 — isthmus는 생산자 limitation 문구가 아니라 dynamic 사실을 직접 세어 미사용
+	// 진단을 판정 불가로 내린다(GRAPH-EXCHANGE). 문구만 남기면 함수를 거쳐서만 읽거나 `fmt.Sprintf`로
+	// 이름을 채워 읽는 테이블이 dead-schema 후보로 보인다.
+	if functions+placeholders > 0 {
 		scan.push(RelationFact{
 			Kind:     "relation-use",
 			Channel:  dynamicSQLChannel(text),
@@ -671,6 +675,9 @@ func dynamicSQLChannel(text string) string {
 type sqlToken struct {
 	text   string
 	quoted bool
+	// placeholder는 실행 때 채워지는 자리를 여는 토큰(`%s`의 `%`, `{}`의 `{`, `?`, `:name`의 `:`,
+	// `@name`의 `@`, `$1`)인지다. 관계 자리에 오면 이름을 읽을 수 없으므로 관계 대신 미해석으로 센다.
+	placeholder bool
 }
 
 // relationKeywords는 뒤따르는 식별자가 관계 이름인 키워드다.
@@ -679,89 +686,363 @@ var relationKeywords = map[string]bool{
 	"table": true, "truncate": true,
 }
 
+// clauseWords는 관계 이름 자리에 올 수 없는 SQL 절 키워드다(tsograph sql-relations.ts의 목록과 같다).
+// 관계 자리에 오면 피연산자 목록이 끝난 것이고 미해석으로 세지 않는다 — `DO UPDATE SET`·`FROM {} WHERE`의
+// SET·WHERE가 관계 이름으로 새지 않는다. `table`은 `UPDATE table SET`의 진짜 관계 이름일 수 있어 빼고,
+// 산문 관사 the·an은 넣는다(a는 흔한 별칭이라 뺀다).
+var clauseWords = map[string]bool{
+	"where": true, "set": true, "on": true, "group": true, "order": true, "by": true, "having": true,
+	"limit": true, "offset": true, "union": true, "intersect": true, "except": true, "values": true,
+	"returning": true, "as": true, "left": true, "right": true, "inner": true, "outer": true, "full": true,
+	"cross": true, "natural": true, "lateral": true, "using": true, "and": true, "or": true, "not": true,
+	"null": true, "select": true, "insert": true, "delete": true, "from": true, "join": true, "into": true,
+	"update": true, "truncate": true, "with": true, "for": true, "in": true, "is": true, "case": true,
+	"when": true, "then": true, "else": true, "end": true, "distinct": true, "asc": true, "desc": true,
+	"if": true, "exists": true, "only": true, "between": true, "like": true, "to": true, "grant": true,
+	"revoke": true, "option": true, "cascade": true, "restrict": true, "privileges": true, "the": true,
+	"an": true,
+}
+
+// placeholderSymbols는 관계 자리에 오면 미해석으로 세는 한 글자 자리표시자 기호다 — Go fmt 동사(`%s`),
+// 템플릿 구멍(`{}`·`{{.Table}}`), 바인드 매개변수(`?`·`:name`·`@name`). `$1`은 lexSQL이 따로 읽는다.
+// 닫는 `}`는 자리를 열지 않으므로 기호 토큰일 뿐이다 — 구멍은 `{`에서 이미 셌고, `{{.Table}}`의
+// Table이 관계 키워드로 읽혀 `}`를 또 세거나 그 뒤 별칭을 관계로 읽지 않게 목록을 끝내기만 한다.
+// `%`·`:`·`@`는 동사나 이름이 바로 붙을 때만 자리를 연다(opensPlaceholder).
+const placeholderSymbols = "%{?:@"
+
+// opensPlaceholder는 text[i]의 자리표시자 기호가 실행 때 채워지는 자리를 여는지 본다. `?`·`{`는 늘
+// 자리다. `:`·`@`는 이름이나 번호가 바로 붙을 때(`:name`·`:1`·`@name`·`@@var`, `::` 캐스트는 아니다),
+// `%`는 fmt 동사가 바로 붙을 때(`%s`·`%[1]v`)만 자리다 — 산문 "update: pointer"의 `:`나 "100% of"의
+// `%`는 자리가 아니라 목록을 끝내는 기호일 뿐이다.
+func opensPlaceholder(text string, i int) bool {
+	c := text[i]
+	if c == '?' || c == '{' {
+		return true
+	}
+	if i+1 >= len(text) {
+		return false
+	}
+	next := text[i+1]
+	switch c {
+	case ':':
+		return (i == 0 || text[i-1] != ':') && (isIdentStart(next) || isDigit(next))
+	case '@':
+		return isIdentStart(next) || next == '@'
+	}
+	// `%` 뒤의 공백·제어 문자는 동사가 아니고, `%%`는 fmt가 글자 `%` 하나로 찍는다.
+	return next > ' ' && next != '%'
+}
+
 // sqlRelations는 SQL 텍스트에서 관계 이름을 읽는다.
 // 한정 이름(`schema.table`)은 그대로 두고, 이름 자체에 점이 있는 인용
 // 식별자("a.b")는 한 세그먼트로 읽는다 — escape는 사실 기록 시에 한다.
-func sqlRelations(text string) ([]string, int) {
+// 관계를 증명하지 못한 피연산자는 원인별로 센다: functions는 테이블 값 함수, placeholders는 관계 자리의
+// 자리표시자다. 계열 공통 규칙(R1 함수 인자 안의 FROM, R2 같은 문장의 CTE 이름, R3 IS [NOT] DISTINCT
+// FROM)과 GRANT·REVOKE 문장의 FROM·JOIN, 관계 자리의 절 키워드는 관계로 내지 않는다.
+func sqlRelations(text string) (relations []string, functions, placeholders int) {
 	tokens := lexSQL(text)
-	var out []string
-	unresolved := 0
-	seen := map[string]bool{}  // TRUNCATE TABLE처럼 겹치는 키워드 창의 중복을 막는다
-	consumed := map[int]bool{} // 이름·수식어로 소비된 토큰 — 키워드로 재발화하지 않는다
+	r := &relationReader{
+		tokens:   tokens,
+		shape:    shapeSQL(tokens),
+		seen:     map[string]bool{},
+		consumed: make([]bool, len(tokens)),
+	}
+	for i := range tokens {
+		r.visit(i)
+	}
+	return r.out, r.functions, r.placeholders
+}
+
+// relationReader는 sqlRelations 한 번의 판독 상태다.
+type relationReader struct {
+	tokens       []sqlToken
+	shape        sqlShape
+	out          []string
+	seen         map[string]bool // TRUNCATE TABLE처럼 겹치는 키워드 창의 중복을 막는다
+	consumed     []bool          // 이름·수식어로 소비된 토큰 — 키워드로 재발화하지 않는다
+	functions    int             // 관계를 증명하지 못한 테이블 값 함수 피연산자 수
+	placeholders int             // 관계 자리에 온 자리표시자 수
+}
+
+// visit은 i번째 토큰이 관계 자리를 여는 키워드면 뒤따르는 피연산자 목록을 읽는다.
+func (r *relationReader) visit(i int) {
+	tok := r.tokens[i]
+	if r.consumed[i] || tok.quoted || !relationKeywords[strings.ToLower(tok.text)] || !r.fires(i) {
+		return
+	}
+	r.readOperands(i, r.skipModifiers(i))
+}
+
+// fires는 관계 키워드가 그 자리에서 관계를 여는지 본다. GRANT·REVOKE 문장의 FROM·JOIN은 권한을 주고받는
+// 사용자·역할 자리다. FROM은 함수 인자 괄호 바로 안(R1, `EXTRACT(YEAR FROM d)`)이거나 IS [NOT] DISTINCT
+// FROM 비교 연산자의 일부(R3)일 때도 관계를 열지 않는다.
+func (r *relationReader) fires(i int) bool {
+	word := strings.ToLower(r.tokens[i].text)
+	switch {
+	case word != "from" && word != "join":
+		return true
+	case r.shape.grant[r.shape.statement[i]]:
+		return false
+	case word == "join":
+		return true
+	}
+	return !r.shape.inFunctionArguments(r.tokens, i) && !isDistinctFrom(r.tokens, i)
+}
+
+// skipModifiers는 ONLY·IF NOT EXISTS 같은 수식어를 건너뛰고 첫 피연산자 위치를 돌려준다. `table`은
+// TRUNCATE 뒤의 수식어일 때만 건너뛴다 — UPDATE table 같은 문에서 table이 진짜 관계 이름일 수 있고,
+// 억지로 건너뛰면 SET 같은 다음 단어가 관계명으로 읽힌다.
+func (r *relationReader) skipModifiers(keyword int) int {
+	headIsTruncate := strings.EqualFold(r.tokens[keyword].text, "truncate")
+	j := keyword + 1
+	for j < len(r.tokens) && !r.tokens[j].quoted && isNameModifier(r.tokens[j].text, headIsTruncate) {
+		r.consumed[j] = true
+		j++
+	}
+	return j
+}
+
+// isNameModifier는 관계 키워드와 이름 사이에 올 수 있는 수식어인지 본다.
+func isNameModifier(word string, afterTruncate bool) bool {
+	return strings.EqualFold(word, "only") || strings.EqualFold(word, "if") ||
+		strings.EqualFold(word, "not") || strings.EqualFold(word, "exists") ||
+		(afterTruncate && strings.EqualFold(word, "table"))
+}
+
+// readOperands는 keyword 뒤 j부터 쉼표로 이어지는 피연산자 목록(`FROM a, b`)을 읽는다.
+func (r *relationReader) readOperands(keyword, j int) {
+	fromOrJoin := strings.EqualFold(r.tokens[keyword].text, "from") ||
+		strings.EqualFold(r.tokens[keyword].text, "join")
+	for j < len(r.tokens) {
+		next, more := r.readOperand(j, fromOrJoin)
+		if !more || next >= len(r.tokens) || r.tokens[next].text != "," {
+			return
+		}
+		j = next + 1
+	}
+}
+
+// readOperand는 j의 피연산자 하나를 읽어 그 뒤 위치와, 목록이 이어질 수 있는지를 돌려준다. 이름이
+// 아니거나 이름을 알 수 없는 피연산자면 목록이 끝난 것이다(false).
+func (r *relationReader) readOperand(j int, fromOrJoin bool) (int, bool) {
+	tokens := r.tokens
+	name, next := readQualifiedName(tokens, j)
+	switch {
+	case name == "":
+		// 이름 자리의 절 키워드·괄호·기호는 목록의 끝이다 — 자리표시자만 미해석으로 센다.
+		if j < len(tokens) && tokens[j].placeholder {
+			r.placeholders++
+		}
+		return next, false
+	case symbolAt(tokens, next, ".") && next+1 < len(tokens) && tokens[next+1].placeholder:
+		// `public.%s`처럼 세그먼트 하나가 자리표시자면 관계 이름을 알 수 없다.
+		r.placeholders++
+		r.consume(j, next)
+		return next, false
+	case fromOrJoin && symbolAt(tokens, next, "("):
+		// FROM/JOIN의 함수 이름은 테이블이 아니다. 괄호 안 SQL은 바깥 스캔이 읽는다.
+		r.functions++
+		r.consume(j, next)
+		return r.skipFunctionAlias(r.shape.closeAfter[next]), true
+	}
+	r.consume(j, next)
+	// R2: 한정자 없는 이름이 같은 문장의 CTE 이름이면 관계가 아니다.
+	if !(next == j+1 && r.shape.isCTE(r.shape.statement[j], tokens[j])) && !r.seen[name] {
+		r.seen[name] = true
+		r.out = append(r.out, name)
+	}
+	return next, true
+}
+
+// skipFunctionAlias는 테이블 값 함수 괄호 뒤(next)의 별칭 — `AS p`, 또는 쉼표 바로 앞의 `p` — 을 건너뛴다.
+func (r *relationReader) skipFunctionAlias(next int) int {
+	if next+1 < len(r.tokens) && strings.EqualFold(r.tokens[next].text, "as") {
+		return next + 2
+	}
+	if next+1 < len(r.tokens) && r.tokens[next+1].text == "," {
+		return next + 1
+	}
+	return next
+}
+
+// consume은 [from, to) 토큰을 이름으로 소비했다고 표시한다 — 키워드로 다시 발화하지 않는다.
+func (r *relationReader) consume(from, to int) {
+	for k := from; k < to; k++ {
+		r.consumed[k] = true
+	}
+}
+
+// sqlShape는 토큰 목록을 한 번 훑어 미리 계산한 문장·괄호 정보다. 키워드마다 괄호 짝이나 문장 경계를
+// 다시 훑으면 닫히지 않은 괄호가 반복되는 입력에서 작업이 토큰 수의 제곱이 된다. 재귀 없이 스택으로 센다.
+type sqlShape struct {
+	statement  []int             // 토큰 → 문장 번호(비인용 `;`를 지날 때마다 1씩 는다)
+	group      []int             // 토큰 → 같은 문장 안에서 그 토큰을 감싼 가장 안쪽 `(` 위치(없으면 -1)
+	closeAfter []int             // `(` 위치 → 짝 `)` 다음 위치(닫히지 않으면 토큰 수). 그 밖은 -1
+	grant      []bool            // 문장 번호 → 머리 동사가 GRANT·REVOKE인지
+	ctes       []map[string]bool // 문장 번호 → 그 문장의 CTE 이름 비교 키(R2)
+	cteBodies  map[int]bool      // CTE 본문을 여는 `(` 위치 — 함수 인자 괄호가 아니다
+}
+
+// shapeSQL은 토큰 목록의 sqlShape를 계산한다.
+func shapeSQL(tokens []sqlToken) sqlShape {
+	s := sqlShape{
+		statement:  make([]int, len(tokens)),
+		group:      make([]int, len(tokens)),
+		closeAfter: make([]int, len(tokens)),
+		cteBodies:  map[int]bool{},
+	}
+	statements := s.markParens(tokens)
+	s.grant = make([]bool, statements)
+	s.ctes = make([]map[string]bool, statements)
+	s.markGrants(tokens)
+	s.markCTEs(tokens)
+	return s
+}
+
+// markParens는 토큰마다 문장 번호와 감싼 괄호를, `(`마다 짝 `)`를 기록하고 문장 수를 돌려준다. 짝은 텍스트
+// 전체의 스택으로 찾는다 — 테이블 값 함수 괄호를 건너뛰던 깊이 세기와 같은 짝이고, 짝 없는 `)`는 건너뛴다.
+// 감싼 괄호(R1)는 문장마다 새로 센다 — 닫히지 않은 함수 괄호가 다음 문장의 FROM까지 삼키지 않게 한다.
+func (s *sqlShape) markParens(tokens []sqlToken) int {
+	var open, groups []int
+	statement := 0
 	for i, tok := range tokens {
-		if consumed[i] || tok.quoted || !relationKeywords[strings.ToLower(tok.text)] {
-			continue
+		s.statement[i], s.group[i], s.closeAfter[i] = statement, -1, -1
+		if len(groups) > 0 {
+			s.group[i] = groups[len(groups)-1]
 		}
-		j := i + 1
-		// ONLY·IF NOT EXISTS 같은 수식어는 건너뛴다. `table`은 TRUNCATE 뒤의
-		// 수식어일 때만 건너뛴다 — UPDATE table 같은 문에서 table이 진짜
-		// 관계 이름일 수 있고, 억지로 건너뛰면 SET 같은 다음 단어가
-		// 관계명으로 읽힌다.
-		headIsTruncate := strings.EqualFold(tok.text, "truncate")
-		for j < len(tokens) && !tokens[j].quoted &&
-			(strings.EqualFold(tokens[j].text, "only") ||
-				strings.EqualFold(tokens[j].text, "if") ||
-				strings.EqualFold(tokens[j].text, "not") ||
-				strings.EqualFold(tokens[j].text, "exists") ||
-				(headIsTruncate && strings.EqualFold(tokens[j].text, "table"))) {
-			consumed[j] = true
-			j++
-		}
-		// 쉼표로 이어지는 목록(`FROM a, b`)을 읽는다.
-		for j < len(tokens) {
-			name, next := readQualifiedName(tokens, j)
-			if name == "" {
-				break
+		switch {
+		case tok.quoted:
+			// 인용 식별자는 기호가 아니다(`"("`라는 이름일 수 있다).
+		case tok.text == ";":
+			statement++
+			groups = groups[:0]
+		case tok.text == "(":
+			s.closeAfter[i] = len(tokens)
+			open, groups = append(open, i), append(groups, i)
+		case tok.text == ")":
+			if len(open) > 0 {
+				s.closeAfter[open[len(open)-1]] = i + 1
+				open = open[:len(open)-1]
 			}
-			// FROM/JOIN의 함수 이름은 테이블이 아니다. 괄호 안 SQL은 바깥 스캔이 읽는다.
-			if (strings.EqualFold(tok.text, "from") || strings.EqualFold(tok.text, "join")) && next < len(tokens) && !tokens[next].quoted && tokens[next].text == "(" {
-				unresolved++
-				for k := j; k < next; k++ {
-					consumed[k] = true
-				}
-				depth := 1
-				next++
-				for next < len(tokens) && depth > 0 {
-					if !tokens[next].quoted {
-						if tokens[next].text == "(" {
-							depth++
-						}
-						if tokens[next].text == ")" {
-							depth--
-						}
-					}
-					next++
-				}
-				if next+1 < len(tokens) && strings.EqualFold(tokens[next].text, "as") {
-					next += 2
-				} else if next+1 < len(tokens) && tokens[next+1].text == "," {
-					next++
-				}
-				if next < len(tokens) && tokens[next].text == "," {
-					j = next + 1
-					continue
-				}
-				break
+			if len(groups) > 0 {
+				groups = groups[:len(groups)-1]
 			}
-			if !seen[name] {
-				seen[name] = true
-				out = append(out, name)
-			}
-			for k := j; k < next; k++ {
-				consumed[k] = true
-			}
-			if next < len(tokens) && tokens[next].text == "," {
-				j = next + 1
-				continue
-			}
-			break
 		}
 	}
-	return out, unresolved
+	return statement + 1
+}
+
+// markGrants는 머리 동사(문장의 첫 이름 토큰)가 GRANT·REVOKE인 문장을 표시한다.
+func (s *sqlShape) markGrants(tokens []sqlToken) {
+	headed := -1 // 머리 동사를 이미 본 마지막 문장 번호
+	for i, tok := range tokens {
+		if s.statement[i] == headed || !isNameToken(tok) {
+			continue
+		}
+		headed = s.statement[i]
+		s.grant[headed] = strings.EqualFold(tok.text, "grant") || strings.EqualFold(tok.text, "revoke")
+	}
+}
+
+// markCTEs는 문장마다 CTE 이름을 모은다(R2) — `WITH [RECURSIVE] name [(cols)] AS [NOT] [MATERIALIZED] (`와
+// `, name [(cols)] AS [NOT] [MATERIALIZED] (`의 name이다. 본문을 여는 `(`도 기록한다 — MATERIALIZED 뒤
+// 괄호를 함수 인자(R1)로 읽으면 `WITH d AS MATERIALIZED (DELETE FROM t …)`의 t를 잃는다.
+func (s *sqlShape) markCTEs(tokens []sqlToken) {
+	for i := range tokens {
+		name := i + 1
+		switch {
+		case wordAt(tokens, i, "with"):
+			if wordAt(tokens, name, "recursive") {
+				name++
+			}
+		case !symbolAt(tokens, i, ","):
+			continue
+		}
+		body, ok := cteBody(tokens, s.closeAfter, name)
+		if !ok {
+			continue
+		}
+		statement := s.statement[i]
+		if s.ctes[statement] == nil {
+			s.ctes[statement] = map[string]bool{}
+		}
+		s.ctes[statement][cteKey(tokens[name])] = true
+		s.cteBodies[body] = true
+	}
+}
+
+// cteBody는 name 위치에서 `name [(cols)] AS [NOT] [MATERIALIZED] (`가 시작하면 본문 `(` 위치를 돌려준다.
+func cteBody(tokens []sqlToken, closeAfter []int, name int) (int, bool) {
+	if name >= len(tokens) || !(isNameToken(tokens[name]) || (tokens[name].quoted && tokens[name].text != "")) {
+		return 0, false
+	}
+	k := name + 1
+	if symbolAt(tokens, k, "(") {
+		k = closeAfter[k]
+	}
+	if !wordAt(tokens, k, "as") {
+		return 0, false
+	}
+	k++
+	if wordAt(tokens, k, "not") {
+		k++
+	}
+	if wordAt(tokens, k, "materialized") {
+		k++
+	}
+	return k, symbolAt(tokens, k, "(")
+}
+
+// isCTE는 한정자 없는 피연산자 tok이 같은 문장의 CTE 이름인지 본다(R2).
+func (s *sqlShape) isCTE(statement int, tok sqlToken) bool {
+	return s.ctes[statement][cteKey(tok)]
+}
+
+// cteKey는 CTE 이름과 피연산자의 비교 키다. 비인용 이름은 소문자로 접고 인용 이름은 그대로 둔다 —
+// PostgreSQL의 식별자 규칙이고 isthmus 참조 구현과 같다(계약은 대소문자가 다른 경우를 정하지 않는다).
+func cteKey(tok sqlToken) string {
+	if tok.quoted {
+		return tok.text
+	}
+	return strings.ToLower(tok.text)
+}
+
+// inFunctionArguments는 i번째 토큰이 함수 인자 괄호 바로 안에 있는지 본다(R1). 함수 인자 괄호는 바로 앞이
+// 함수 이름이고 첫 토큰이 SELECT·WITH·VALUES(하위 질의)가 아닌 괄호다. 함수 이름은 절 키워드가 아닌 비인용
+// 식별자이고, CTE 본문 괄호는 함수 인자가 아니다 — `AS (DELETE FROM t …)`·`MATERIALIZED (…)`의 FROM은
+// 관계를 낸다.
+func (s *sqlShape) inFunctionArguments(tokens []sqlToken, i int) bool {
+	open := s.group[i]
+	if open < 1 || s.cteBodies[open] {
+		return false
+	}
+	callee := tokens[open-1]
+	if !isNameToken(callee) || clauseWords[strings.ToLower(callee.text)] {
+		return false
+	}
+	return !wordAt(tokens, open+1, "select") && !wordAt(tokens, open+1, "with") &&
+		!wordAt(tokens, open+1, "values")
+}
+
+// isDistinctFrom은 i번째 FROM이 IS [NOT] DISTINCT FROM 비교 연산자의 일부인지 본다(R3).
+func isDistinctFrom(tokens []sqlToken, i int) bool {
+	return wordAt(tokens, i-1, "distinct") &&
+		(wordAt(tokens, i-2, "is") || (wordAt(tokens, i-2, "not") && wordAt(tokens, i-3, "is")))
+}
+
+// wordAt은 k번째 토큰이 인용되지 않은 단어 word인지 대소문자 없이 본다(범위 밖이면 false).
+func wordAt(tokens []sqlToken, k int, word string) bool {
+	return k >= 0 && k < len(tokens) && !tokens[k].quoted && strings.EqualFold(tokens[k].text, word)
+}
+
+// symbolAt은 k번째 토큰이 인용되지 않은 기호 symbol인지 본다(범위 밖이면 false).
+func symbolAt(tokens []sqlToken, k int, symbol string) bool {
+	return k >= 0 && k < len(tokens) && !tokens[k].quoted && tokens[k].text == symbol
 }
 
 // lexSQL은 SQL 텍스트를 어휘로 나눈다 — 인용 식별자는 내용을 보존하고
-// 그 외엔 식별자 문자열과 단일 기호 토큰만 만든다.
+// 그 외엔 식별자 문자열과 단일 기호 토큰만 만든다. `;`는 문장 경계로,
+// 자리표시자 기호와 `$1`은 관계 자리의 미해석 판정용으로 남긴다.
 func lexSQL(text string) []sqlToken {
 	var tokens []sqlToken
 	for i := 0; i < len(text); {
@@ -780,6 +1061,15 @@ func lexSQL(text string) []sqlToken {
 			}
 			tokens = append(tokens, sqlToken{text: text[i+1 : j], quoted: true})
 			i = j + 1
+		case c == '$' && i+1 < len(text) && isDigit(text[i+1]):
+			// `$1` 위치 매개변수는 이름이 아니라 자리표시자다 — `$`는 식별자 시작 문자라 따로 읽지
+			// 않으면 `FROM $1`이 관계 이름 `$1`이 된다. `$name`은 지금처럼 식별자다.
+			j := i + 1
+			for j < len(text) && isDigit(text[j]) {
+				j++
+			}
+			tokens = append(tokens, sqlToken{text: text[i:j], placeholder: true})
+			i = j
 		case isIdentStart(c):
 			j := i + 1
 			for j < len(text) && isIdentPart(text[j]) {
@@ -818,8 +1108,11 @@ func lexSQL(text string) []sqlToken {
 				i++
 			}
 		default:
-			if c == '.' || c == ',' || c == '(' || c == ')' {
+			switch {
+			case c == '.' || c == ',' || c == '(' || c == ')' || c == ';' || c == '}':
 				tokens = append(tokens, sqlToken{text: string(c)})
+			case strings.IndexByte(placeholderSymbols, c) >= 0:
+				tokens = append(tokens, sqlToken{text: string(c), placeholder: opensPlaceholder(text, i)})
 			}
 			i++
 		}
@@ -828,6 +1121,8 @@ func lexSQL(text string) []sqlToken {
 }
 
 // readQualifiedName은 `ident(.ident)*` 한정 이름을 읽어 다음 위치를 돌려준다.
+// 첫 세그먼트가 절 키워드면 이름이 아니다(관계 자리가 비었다). 점 뒤 세그먼트는 예약어여도
+// 식별자다(PostgreSQL attr_name·MySQL 규칙, `shop.order`) — 그래서 절 키워드를 거르지 않는다.
 func readQualifiedName(tokens []sqlToken, start int) (string, int) {
 	if start >= len(tokens) {
 		return "", start
@@ -838,7 +1133,7 @@ func readQualifiedName(tokens []sqlToken, start int) (string, int) {
 		if first.text == "" {
 			return "", start
 		}
-	} else if !isNameToken(first) {
+	} else if !isNameToken(first) || clauseWords[strings.ToLower(first.text)] {
 		return "", start
 	}
 	var b strings.Builder
@@ -866,9 +1161,9 @@ func escapeSegment(tok sqlToken) string {
 	return strings.ReplaceAll(tok.text, ".", "%2E")
 }
 
-// isNameToken은 비인용 토큰이 식별자인지 본다 — 기호·빈 문자열은 아니다.
+// isNameToken은 비인용 토큰이 식별자인지 본다 — 기호·자리표시자(`$1`)·빈 문자열은 아니다.
 func isNameToken(tok sqlToken) bool {
-	if tok.quoted || tok.text == "" {
+	if tok.quoted || tok.placeholder || tok.text == "" {
 		return false
 	}
 	return isIdentStart(tok.text[0])
@@ -882,7 +1177,12 @@ func isIdentStart(c byte) bool {
 
 // isIdentPart는 SQL 식별자의 이어지는 문자인지 본다.
 func isIdentPart(c byte) bool {
-	return isIdentStart(c) || (c >= '0' && c <= '9')
+	return isIdentStart(c) || isDigit(c)
+}
+
+// isDigit은 ASCII 숫자인지 본다.
+func isDigit(c byte) bool {
+	return c >= '0' && c <= '9'
 }
 
 // pushDynamic은 리터럴로 읽히지 않는 SQL 인자를 동적 사실로 보존한다.
@@ -895,7 +1195,7 @@ func (s *schemaScan) pushDynamic(p *packages.Package, expr ast.Expr) {
 		return
 	}
 	// dynamic 수치는 비리터럴 인자만 센다 — 미해석 피연산자의 dynamic 사실(scanLiteral)은
-	// table-valued 문구가 따로 센다.
+	// table-valued 문구와 자리표시자 문구가 따로 센다.
 	if s.push(RelationFact{
 		Kind:     "relation-use",
 		Channel:  dynamicSQLChannel(buf.String()),
@@ -984,6 +1284,12 @@ func (s *schemaScan) limitations() []string {
 		// 원인을 설명하는 문구다 — isthmus는 생산자 문구를 근거로 쓰지 않고 dynamic 사실을 직접
 		// 센다. 그래서 그런 피연산자가 든 리터럴은 scanLiteral이 dynamic 사실로도 낸다.
 		out = append(out, fmt.Sprintf("unjoined-dynamic-relations: %d table-valued SQL function operand(s) have unmodeled relation dependencies", s.sqlFunctions))
+	}
+	if s.placeholders > 0 {
+		// 테이블 값 함수 문구와 같은 이유로 남긴다 — 그런 리터럴도 scanLiteral이 dynamic 사실로 낸다.
+		out = append(out, fmt.Sprintf(
+			"unjoined-dynamic-relations: %d SQL placeholder operand(s) (%%s, {}, ?, $1, :name, @name) stand where a relation name belongs; the relations filled in at run time are uncounted",
+			s.placeholders))
 	}
 	if s.unparsed > 0 {
 		out = append(out, fmt.Sprintf(

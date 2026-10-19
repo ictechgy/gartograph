@@ -408,6 +408,20 @@ breaking으로 분류하는 재료입니다.
 심볼 정점일 때만 싣고, 없으면(빈 함수, 모듈 심볼을 쓰지 않는 빈 선언, exclude 패키지, 타입
 정보 없는 패키지) `symbol`을 빼고 체인 전용 `missing-relation-usrs:`로 셉니다.
 
+SQL 텍스트는 파서가 아니라 토큰 스캐너로 읽습니다. `FROM`·`JOIN`·`INTO`·`UPDATE`·`TABLE`·
+`TRUNCATE` 뒤의 이름이 relation-use이고, isthmus 계약의 SQL 텍스트 생산자 공통 규칙
+([GRAPH-EXCHANGE](https://github.com/ictechgy/isthmus/blob/main/docs/GRAPH-EXCHANGE.md))이
+관계가 아니라고 정한 경우는 내지 않습니다 — 함수 인자 안의 `FROM`(`EXTRACT(YEAR FROM
+created_at)`·`TRIM`·`SUBSTRING`. 그 안의 하위 질의는 그대로 셉니다), `;`로 나뉜 같은 문장의 CTE
+이름인 한정자 없는 이름(비인용 이름은 대소문자 없이, 인용 이름은 쓴 그대로 비교합니다. 규칙이
+문장 단위라 `WITH users AS (SELECT * FROM users …)`는 본문이 읽는 실제 `users`도 내지 않습니다),
+`IS [NOT] DISTINCT FROM`의 피연산자. 관계 자리의 절 키워드(`DO UPDATE SET`, `FROM the …`)는
+목록을 끝내고, `GRANT`·`REVOKE`의 `FROM`은 관계가 아니라 권한 주체입니다. 관계 이름 자리의
+자리표시자(`%s`·`{}`·`?`·`$1`·`:name`·`@name`)도 관계가 아닙니다 — 그 리터럴은 `dynamic` 사실
+하나가 되고, 수는 테이블 값 함수 피연산자와 따로 `unjoined-dynamic-relations:` limitation으로
+셉니다. 인용 식별자 안이나 이름 접두 뒤의 자리표시자는 알아보지 못합니다 — `"%s"`는 관계
+`%s`로, `log_%s`는 `log_`로 읽힙니다.
+
 `reach`(`dependencies`)와 `impact --format language-traversal`(`dependents`)은
 `impact`와 같은 의존 간선 위에서 isthmus
 [`language-traversal` v1](https://github.com/ictechgy/isthmus/blob/main/docs/LANGUAGE-TRAVERSAL.md)

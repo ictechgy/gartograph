@@ -557,6 +557,25 @@ declarations that touch no module symbol, excluded packages, packages without
 type information) carry no `symbol` and are counted in the chain-only
 `missing-relation-usrs:` limitation.
 
+SQL text is read by a token scanner, not a parser: the name after
+`FROM`/`JOIN`/`INTO`/`UPDATE`/`TABLE`/`TRUNCATE` is a relation use, except
+where the shared producer rules for SQL text in the isthmus contract
+([GRAPH-EXCHANGE](https://github.com/ictechgy/isthmus/blob/main/docs/GRAPH-EXCHANGE.md))
+say it is not — `FROM` inside function arguments (`EXTRACT(YEAR FROM
+created_at)`, `TRIM`, `SUBSTRING`; a subquery there still counts), an
+unqualified name that is a CTE of the same `;`-separated statement (unquoted
+names compare case-insensitively, quoted names as written; the rule is
+statement-wide, so `WITH users AS (SELECT * FROM users …)` drops the real
+`users` its body reads), and the operand of `IS [NOT] DISTINCT FROM`. A
+clause word in a relation position (`DO UPDATE SET`, `FROM the …`) ends the
+list, and the `FROM` of `GRANT`/`REVOKE` names a grantee, not a relation. A
+placeholder where a relation name belongs (`%s`, `{}`, `?`, `$1`, `:name`,
+`@name`) is not a relation either: the literal becomes one `dynamic` fact,
+and the count goes to its own `unjoined-dynamic-relations:` limitation next to
+the table-valued function operands. A placeholder inside a quoted identifier
+or after a name prefix is not recognized: `"%s"` is read as the relation
+`%s`, `log_%s` as `log_`.
+
 `reach` (direction `dependencies`) and `impact --format language-traversal`
 (direction `dependents`) write an isthmus
 [`language-traversal` v1](https://github.com/ictechgy/isthmus/blob/main/docs/LANGUAGE-TRAVERSAL.md)

@@ -26,3 +26,15 @@
   깨끗하다고 보지 않아 `revision`을 싣지 않는다(fail-safe). 서브모듈이 있는 작업 트리와 덮을 수 없는 filter
   드라이버 이름이 있는 저장소는 `revision`을 싣지 않고, `revision-unverified:` limitation으로 이유를 알린다.
   `revision`이 필요하면 `--revision`으로 준다.
+- `schema`: SQL 리터럴의 관계 판독이 계열 생산자 공통 규칙(isthmus GRAPH-EXCHANGE)을 따른다. 같은 문장의 CTE
+  이름, 함수 인자 안의 `FROM`(`EXTRACT`·`TRIM`·`SUBSTRING` 등), `IS [NOT] DISTINCT FROM`의 피연산자를
+  relation-use로 내지 않는다 — isthmus가 이 이름들을 선언과 잇지 못해 완전한 카탈로그와 맞추면 거짓
+  `relation-use-without-decl` error를 냈다. 규칙이 문장 단위라 자기 본문에서 같은 이름의 실제 테이블을 읽는
+  CTE(`WITH users AS (SELECT * FROM users …)`)는 그 사용도 내지 않는다.
+- `schema`: 관계 자리의 절 키워드(`DO UPDATE SET`의 `SET`, 산문의 `the` 등)는 관계 이름이 되지 않고,
+  `GRANT`·`REVOKE` 문장의 `FROM`은 권한 주체라 관계가 아니다(tsograph 판독과 같다).
+- `schema`: 관계 자리의 자리표시자(`%s`·`{}`·`?`·`$1`·`:name`·`@name`)를 관계로 내지 않는다(예전에는
+  `FROM %s`가 관계 `s`를, `FROM ? WHERE`가 `WHERE`를 냈다). 그 리터럴은 위치의 `dynamic` 사실 하나로 남고, 수는
+  새 limitation `unjoined-dynamic-relations: N SQL placeholder operand(s) …`로 테이블 값 함수 수와 따로 센다.
+  인용 식별자 안이나 이름 접두 뒤의 자리표시자(`"%s"`, `log_%s`)는 지금처럼 이름으로 읽는다.
+  이전 판독으로 돌리는 옵션은 없다.
