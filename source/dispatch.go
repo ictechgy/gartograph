@@ -21,12 +21,14 @@ import (
 // 타입×인터페이스 조합에 부르지 않기 위해 이름 포함 여부부터 본다.
 // hidden은 모듈 코드가 이름으로 쓸 수 없는 명명 인터페이스(비공개 이름 —
 // context.stringer — 또는 internal 경로) 표시다 — satisfies
-// 목록 정리(pruneHidden)의 재료다.
+// 목록 정리(pruneHidden)의 재료다. abbreviated는 이름(이름 없는 표기의 메서드 집합)에
+// 상한을 넘어 축약한 서명이 있다는 표시다 — satisfies에 실을 때 축약 항목으로 센다.
 type externalIface struct {
-	name   string
-	iface  *types.Interface
-	names  []string
-	hidden bool
+	name        string
+	iface       *types.Interface
+	names       []string
+	hidden      bool
+	abbreviated bool
 }
 
 // markExternalDispatch는 모듈 안 구체 타입의 메서드 중 외부 인터페이스를
@@ -34,7 +36,7 @@ type externalIface struct {
 // data의 명명 인터페이스와 의존 소스의 이름 없는 표기(anoniface.go) 둘이다.
 // 심볼 레벨 전용이다 — 타입 레벨 문서에는 메서드 정점이 없다.
 func (h *harvester) markExternalDispatch(internal []*packages.Package) {
-	anon := scanAnonymousInterfaces(internal)
+	anon := scanAnonymousInterfaces(internal, h.spell)
 	for _, l := range anon.limitations() {
 		h.doc.Limitation(l)
 	}
@@ -115,8 +117,8 @@ func (h *harvester) markTypeDispatch(named *types.Named, ifaces []externalIface,
 			if sel == nil {
 				continue
 			}
-			if fn, ok := sel.Obj().(*types.Func); ok {
-				h.addSatisfies(fn, ext.name, index)
+			if fn, ok := sel.Obj().(*types.Func); ok && h.addSatisfies(fn, ext.name, index) && ext.abbreviated {
+				h.abbreviated++
 			}
 		}
 	}
@@ -125,26 +127,27 @@ func (h *harvester) markTypeDispatch(named *types.Named, ifaces []externalIface,
 // addSatisfies는 메서드 정점 하나에 외부 인터페이스 이름과 리시버를 싣는다.
 // 모듈 밖 타입에서 승격된 메서드는 정점이 없어 건너뛴다 — 유령 정점 금지.
 // 리시버 타입 정점이 문서에 없으면 사실을 싣지 않는다 — 가리킬 곳 없는
-// Receiver는 도달성 계산에서 조용히 무시되는 유령 참조다.
-func (h *harvester) addSatisfies(fn *types.Func, ifaceName string, index map[string]int) {
+// Receiver는 도달성 계산에서 조용히 무시되는 유령 참조다. 이름을 새로 실었는지를 돌려준다.
+func (h *harvester) addSatisfies(fn *types.Func, ifaceName string, index map[string]int) bool {
 	if fn.Pkg() == nil {
-		return
+		return false
 	}
 	i, ok := index[h.id(fn)]
 	if !ok {
-		return
+		return false
 	}
 	receiver, ok := receiverTypeID(fn)
 	receiver = disambiguate(receiver, h.packageIDs)
 	if _, exists := index[receiver]; !ok || !exists {
-		return
+		return false
 	}
 	v := &h.doc.Vertices[i]
 	if slices.Contains(v.Satisfies, ifaceName) {
-		return
+		return false
 	}
 	v.Satisfies = append(v.Satisfies, ifaceName)
 	v.Receiver = receiver
+	return true
 }
 
 // receiverTypeID는 메서드 리시버의 명명 타입 정점 ID를 만든다.

@@ -53,6 +53,11 @@ type harvester struct {
 	// 위치의 파일 이름은 //line 지시문이 아무 경로로나 바꿀 수 있어, 그대로 열면 분석 대상이
 	// FIFO(무한 대기)·장치·루트 밖 파일을 읽게 만들 수 있다.
 	loadedFiles map[string]bool
+	// spell은 fields·methods·typeSet·satisfies의 정규 표기 변환기다(메모·상한·축약).
+	// abbreviated는 축약 표기가 든 채 문서에 실린 사실 항목 수다 — 표기는 테스트 변형의 재방문이나
+	// 아무도 만족하지 않는 이름 없는 인터페이스에서도 만들어지므로, 만들 때가 아니라 실을 때 센다.
+	spell       *typeSpeller
+	abbreviated int
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -75,6 +80,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		loadedFiles:    loadedFileSet(internal),
 		reflectPkgs:    make(map[string]bool),
 		baseFiles:      baseSyntaxFiles(internal),
+		spell:          newTypeSpeller(),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -112,6 +118,11 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		doc.Limitation(fmt.Sprintf(
 			"%d //go:linkname directives found; their targets may appear unreachable", h.linkname))
 	}
+	if h.abbreviated > 0 {
+		doc.Limitation(fmt.Sprintf("%d fields/methods/typeSet/satisfies entries abbreviate a type spelling "+
+			"over %d bytes as its first %d bytes followed by %s and a structural hash",
+			h.abbreviated, maxSpellingBytes, abbreviationPrefixBytes, graph.SpellingDigestMarker))
+	}
 	doc.Level = level
 }
 
@@ -145,8 +156,10 @@ func (h *harvester) addSymbolVertices(internal []*packages.Package, wantSymbols 
 				Position: position(p, obj.Pos()),
 				Exported: obj.Exported(),
 			}
-			if tn, isType := obj.(*types.TypeName); isType {
-				fillTypeShape(&v, tn)
+			// 이미 실린 정점(테스트 변형의 재방문)은 h.vertex가 버리므로 형태를 다시 펴지 않는다 —
+			// 축약 수도 문서에 실리는 항목만 센다.
+			if tn, isType := obj.(*types.TypeName); isType && !h.vertices[id] {
+				h.abbreviated += h.spell.fillTypeShape(&v, tn)
 			}
 			if cn, isConst := obj.(*types.Const); isConst {
 				v.Value = cn.Val().ExactString()
@@ -169,31 +182,40 @@ func (h *harvester) addSymbolVertices(internal []*packages.Package, wantSymbols 
 // fillTypeShape는 타입 정점에 형태 정보를 채운다 — 인터페이스 여부와
 // struct 필드 목록은 diff의 breaking 분류 재료다.
 // 모듈 안에 구현체가 없는 인터페이스도 표시해야 "메서드 추가 = 구현자
-// 파괴"를 소비자가 알 수 있다.
-func fillTypeShape(v *graph.Vertex, tn *types.TypeName) {
+// 파괴"를 소비자가 알 수 있다. 축약 표기가 든 항목 수를 돌려준다.
+func (s *typeSpeller) fillTypeShape(v *graph.Vertex, tn *types.TypeName) int {
 	named, ok := tn.Type().(*types.Named)
 	if !ok {
-		return
+		return 0
 	}
 	switch u := named.Underlying().(type) {
 	case *types.Interface:
+		var methods, elements int
 		v.Interface = true
-		v.Methods = interfaceMethods(u)
-		v.TypeSet = interfaceTypeSet(u)
+		v.Methods, methods = s.interfaceMethods(u)
+		v.TypeSet, elements = s.interfaceTypeSet(u)
+		return methods + elements
 	case *types.Struct:
-		v.Fields = structFields(u)
+		var fields int
+		v.Fields, fields = s.structFields(u)
+		return fields
 	}
+	return 0
 }
 
 // interfaceMethods는 인터페이스의 전체 메서드 집합(임베드 포함)을 정렬된 항목으로
-// 적는다. 항목 형식은 이름 없는 인터페이스의 이름과 같은 methodEntry다.
-func interfaceMethods(iface *types.Interface) []string {
+// 적는다. 항목 형식은 이름 없는 인터페이스의 이름과 같은 methodEntry다. 축약 항목 수도 돌려준다.
+func (s *typeSpeller) interfaceMethods(iface *types.Interface) ([]string, int) {
 	out := make([]string, iface.NumMethods())
+	abbreviated := 0
 	for i := range out {
-		out[i] = methodEntry(iface.Method(i))
+		var abbr bool
+		if out[i], abbr = s.methodEntry(iface.Method(i)); abbr {
+			abbreviated++
+		}
 	}
 	sort.Strings(out)
-	return out
+	return out, abbreviated
 }
 
 // interfaceTypeSet은 제약 인터페이스의 실효 타입 원소를 정렬된 항목으로 적는다 — 원소마다
@@ -202,20 +224,30 @@ func interfaceMethods(iface *types.Interface) []string {
 // 공개 계약의 변경이고, interface{ cmp.Ordered }로 바꾸는 동치 리팩터가 거짓 변경이 되지
 // 않는다. 유니언은 항을 정렬해 " | "로 잇고, 인터페이스 항은 펼친다(unionEntry). comparable은
 // 특수 항목으로 남기고, 메서드만 있는 임베드(error 등)는 원소가 없다. 원소가 없으면 nil.
-func interfaceTypeSet(iface *types.Interface) []string {
+// 축약 표기가 든 항목 수도 돌려준다(중복을 없앤 뒤의 항목 기준).
+func (s *typeSpeller) interfaceTypeSet(iface *types.Interface) ([]string, int) {
 	var out []string
+	abbreviated := map[string]bool{}
 	for _, et := range flattenElements(iface) {
-		switch {
-		case isComparable(et):
-			out = append(out, "comparable")
-		case isUnion(et):
-			out = append(out, unionEntry(et.(*types.Union)))
-		default:
-			out = append(out, canonicalType(et))
+		entry, abbr := s.typeSetEntry(et)
+		out = append(out, entry)
+		if abbr {
+			abbreviated[entry] = true
 		}
 	}
 	sort.Strings(out)
-	return slices.Compact(out)
+	return slices.Compact(out), len(abbreviated)
+}
+
+// typeSetEntry는 타입 원소 하나의 typeSet 항목과 그것이 축약 표기를 담았는지다.
+func (s *typeSpeller) typeSetEntry(et types.Type) (string, bool) {
+	switch {
+	case isComparable(et):
+		return "comparable", false
+	case isUnion(et):
+		return s.unionEntry(et.(*types.Union))
+	}
+	return s.canonicalType(et)
 }
 
 // flattenElements는 인터페이스의 타입 원소를 임베드 사슬까지 펼친다 — 임베드한 인터페이스는
@@ -266,21 +298,42 @@ func isUnion(t types.Type) bool {
 // interface{ int } 같은 틸드 없는 단일 항, interface{ signed } 같은 사슬)은 펼친 원소가
 // 하나(comparable 제외)면 그 원소의 항으로 바꾼다 — 이름 있는 제약의 변경이 그것을 항으로
 // 쓰는 공개 제약의 변경으로 보이게. 여러 원소(교집합)인 인터페이스 항은 유니언 항으로 펼칠
-// 수 없어 이름을 남긴다.
-func unionEntry(u *types.Union) string {
+// 수 없어 이름을 남긴다. 이미 펼친 인터페이스는 다시 펼치지 않는다(expandOnce) — 결과가 정렬·중복
+// 제거된 항 집합이라 같고, `U1 interface{ U0 | U0 }` 같은 사슬이 깊이마다 항을 두 배로 늘리지
+// 않는다(순환 임베드도 여기서 끝난다). 두 번째 값은 축약 표기가 든 항이 있는지다.
+func (s *typeSpeller) unionEntry(u *types.Union) (string, bool) {
 	var terms []string
+	abbreviated := false
+	expanded := map[*types.Interface]bool{}
 	stack := unionTerms(u)
 	for len(stack) > 0 {
 		term := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if expanded, ok := expandInterfaceTerm(term.Type()); ok {
-			stack = append(stack, expanded...)
+		if more, ok := expandOnce(term.Type(), expanded); ok {
+			stack = append(stack, more...)
 			continue
 		}
-		terms = append(terms, termString(term))
+		text, abbr := s.termString(term)
+		terms = append(terms, text)
+		abbreviated = abbreviated || abbr
 	}
 	sort.Strings(terms)
-	return strings.Join(slices.Compact(terms), " | ")
+	return strings.Join(slices.Compact(terms), " | "), abbreviated
+}
+
+// expandOnce는 인터페이스 항을 펼친다(expandInterfaceTerm). 이 유니언에서 이미 펼친 인터페이스면
+// 더할 항 없이 참이다 — 같은 항을 다시 더할 뿐이다. 펼침은 밑 인터페이스에만 달려 있어 그것으로
+// 가린다(같은 인터페이스를 가리키는 두 이름도 한 번).
+func expandOnce(t types.Type, expanded map[*types.Interface]bool) ([]*types.Term, bool) {
+	iface, _ := types.Unalias(t).Underlying().(*types.Interface)
+	if iface != nil && expanded[iface] {
+		return nil, true
+	}
+	terms, ok := expandInterfaceTerm(t)
+	if ok {
+		expanded[iface] = true
+	}
+	return terms, ok
 }
 
 // unionTerms는 유니언의 항 목록이다.
@@ -309,25 +362,32 @@ func expandInterfaceTerm(t types.Type) ([]*types.Term, bool) {
 	return []*types.Term{types.NewTerm(false, els[0])}, true
 }
 
-// termString은 유니언 항 하나의 정규 표기다(~ 포함).
-func termString(term *types.Term) string {
+// termString은 유니언 항 하나의 정규 표기다(~ 포함). 두 번째 값은 축약했는지다.
+func (s *typeSpeller) termString(term *types.Term) (string, bool) {
+	text, abbreviated := s.canonicalType(term.Type())
 	if term.Tilde() {
-		return "~" + canonicalType(term.Type())
+		return "~" + text, abbreviated
 	}
-	return canonicalType(term.Type())
+	return text, abbreviated
 }
 
 // structFields는 struct의 필드를 "name:Type" 형태로 선언 순서대로 적는다.
 // unkeyed composite literal은 필드 목록·순서·타입이 계약이라 이 셋이
 // 곧 호환성 판정의 단위다. 타입은 정규 표기(canonicalType)다 — 경로로 한정해
 // 같은 이름의 다른 타입을 섞지 않고, 별칭·byte 표기 차이로 거짓 변경을 내지 않는다.
-func structFields(st *types.Struct) []string {
+// 축약은 타입 부분에만 걸려 "name:"은 남는다. 축약 항목 수도 돌려준다.
+func (s *typeSpeller) structFields(st *types.Struct) ([]string, int) {
 	out := make([]string, st.NumFields())
+	abbreviated := 0
 	for i := range out {
 		f := st.Field(i)
-		out[i] = f.Name() + ":" + canonicalType(f.Type())
+		typ, abbr := s.canonicalType(f.Type())
+		out[i] = f.Name() + ":" + typ
+		if abbr {
+			abbreviated++
+		}
 	}
-	return out
+	return out, abbreviated
 }
 
 // methodVertices는 명명 타입의 메서드를 정점으로 만든다.

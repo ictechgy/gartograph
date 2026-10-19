@@ -365,6 +365,20 @@ What this changes:
 The rest of the git configuration applies as usual, and `--files` needs no git
 at all.
 
+A harvest has no overall time or memory budget. Declarations that each use the
+previous one twice — nested aliases (`type A1 = struct{ a, b A0 }`,
+`type F1 = func(F0, F0)`) and union constraints
+(`type U1 interface{ U0 | U0 }`) — no longer make gartograph's own spelling
+work, memory, or output grow exponentially: it memoizes each type's spelling
+length, caps a spelling at 64 KiB (see [Graph document](#graph-document)),
+expands each interface term of a union once, and visits each type once when it
+filters anonymous interfaces. Type checking (`go/types`) itself still takes
+time exponential in the depth of some of these chains (union chains, struct
+alias chains, and named struct chains such as `type S1 struct{ a, b S0 }`),
+and a document still grows with the number of declarations, up to 64 KiB per
+entry. Run gartograph on an untrusted repository under an external limit: a
+timeout, `ulimit`, or a container.
+
 ## Output contract (for agents)
 
 - Deterministic JSON: sorted keys, sorted arrays — same input, same bytes.
@@ -445,6 +459,20 @@ reports an exported constraint whose type set changed (narrowing breaks
 instantiations, widening can break generic code relying on the allowed
 operations); an empty set renders as `any`. Equivalent rewrites of a
 multi-element intersection may still be reported.
+
+A canonical spelling — one type, or one method signature — is capped at
+64 KiB (65536 bytes). Real code stays far below it (the longest spelling in
+x/tools, pgx, the Kubernetes modules we measured, and this repository is under
+400 bytes), but declarations that each use the previous one twice double a
+spelling at every level (`type A1 = struct{ a, b A0 }`,
+`type A2 = struct{ a, b A1 }`, …). Past the cap, a `fields`, `methods`,
+`typeSet`, or `satisfies` entry spells that type as its first 256 bytes,
+`…sha256:`, and a hex SHA-256 of the type's structure: equal types still give
+equal entries and different types different ones, so `diff` compares them as
+before. Field names (`name:`) and method names stay in front. A `limitations`
+entry counts the entries that carry an abbreviation, and
+`--type-edges members` treats an abbreviated field type as naming any type,
+since the rest may lie past the prefix.
 
 `dispatchEvidence: true` (symbol-level harvests) marks documents whose edges
 carry `candidate: true` when every site of the relation is an interface-dispatch
@@ -618,7 +646,8 @@ columns), and in reverse a field type spread to every method of its container.
 `members` moves each field-declaration edge `T → X` (references/signature, not
 from the type-parameter header) to the vertices of the fields whose type names
 `X` in the type's field list (`fields`, canonical types: `a, b *X`, `m map[K]X`,
-`Box[X]`, `struct{ x X }`), so `T.f → X`: reaching `T` no longer reaches `X`;
+`Box[X]`, `struct{ x X }`; a field type abbreviated past the spelling cap counts
+as naming any `X`), so `T.f → X`: reaching `T` no longer reaches `X`;
 code that reads `f` still does. Code that reads a field of an unreached struct
 now reaches the field's type, which `all` missed. Both directions stay
 one plain graph, so `depth = via depth + 1` and the roots-inclusion rule of the
