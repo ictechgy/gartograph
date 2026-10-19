@@ -1445,6 +1445,9 @@ func cmdUnusedDeps(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "%d unused requires (%d indirect, %d used)\n",
 			len(rep.Unused), len(rep.UnusedIndirect), rep.UsedRequires)
+		for _, l := range rep.Limitations {
+			fmt.Fprintf(stdout, "limitation: %s\n", l)
+		}
 	default:
 		fmt.Fprintf(stderr, "unknown format %q\n", *format)
 		return 2

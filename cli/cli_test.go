@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -2215,6 +2216,105 @@ func main() { dep.F() }
 	}
 	if len(rep.Unused) != 0 || rep.UsedRequires != 1 {
 		t.Fatalf("imported require must count as used: %s", out)
+	}
+	// 오류도 제외 파일도 없는 모듈은 limitations 키가 없다 — 알릴 것이 없으면 조용하다.
+	if strings.Contains(out, "limitations") {
+		t.Fatalf("a clean module must not carry limitations: %s", out)
+	}
+}
+
+// unusedDepsReport는 unused-deps JSON 보고에서 테스트가 보는 필드다.
+type unusedDepsReport struct {
+	Unused       []string `json:"unused"`
+	UsedRequires int      `json:"usedRequires"`
+	Limitations  []string `json:"limitations"`
+}
+
+// runUnusedDepsJSON은 unused-deps를 JSON으로 실행해 보고를 읽는다.
+func runUnusedDepsJSON(t *testing.T, dir string) unusedDepsReport {
+	t.Helper()
+	code, out, errb := run(t, "unused-deps", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("unused-deps failed: %d %s", code, errb)
+	}
+	var rep unusedDepsReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	return rep
+}
+
+// TestUnusedDepsCountsConstraintExcludedFiles는 빌드 제약으로 빠진 파일의 import도 "사용"으로
+// 세는지 확인한다 — go mod tidy는 ignore 외의 모든 태그·플랫폼 파일을 보므로, 다른 OS 전용 파일과
+// //go:build integration 파일에서만 쓰는 require는 tidy가 지킨다. //go:build ignore 파일만 쓰는
+// require는 tidy가 지우므로 미사용이다. 읽은 제외 파일 수는 limitation으로 남는다.
+func TestUnusedDepsCountsConstraintExcludedFiles(t *testing.T) {
+	otherOS := "windows"
+	if runtime.GOOS == "windows" {
+		otherOS = "linux"
+	}
+	files := map[string]string{
+		"go.mod": `module example.com/fixture
+
+go 1.27
+
+require (
+	example.com/ignored v0.0.0
+	example.com/integ v0.0.0
+	example.com/other v0.0.0
+)
+
+replace (
+	example.com/ignored => ./ignored
+	example.com/integ => ./integ
+	example.com/other => ./other
+)
+`,
+		"main.go":                "package main\n\nfunc main() {}\n",
+		"run_" + otherOS + ".go": "package main\n\nimport \"example.com/other\"\n\nfunc init() { other.F() }\n",
+		"integ_test.go": "//go:build integration\n\npackage main\n\nimport (\n\t\"testing\"\n\n" +
+			"\t\"example.com/integ\"\n)\n\nfunc TestInteg(t *testing.T) { integ.F() }\n",
+		"gen.go": "//go:build ignore\n\npackage main\n\nimport \"example.com/ignored\"\n\nfunc main() { ignored.F() }\n",
+	}
+	for _, m := range []string{"ignored", "integ", "other"} {
+		files[m+"/go.mod"] = "module example.com/" + m + "\n\ngo 1.27\n"
+		files[m+"/"+m+".go"] = "package " + m + "\n\nfunc F() {}\n"
+	}
+	dir := testutil.WriteModule(t, files)
+	rep := runUnusedDepsJSON(t, dir)
+	if !slices.Equal(rep.Unused, []string{"example.com/ignored"}) || rep.UsedRequires != 2 {
+		t.Fatalf("excluded-file imports must count as used, ignore-tagged ones must not: %+v", rep)
+	}
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
+		"2 source files excluded by build constraints were read for their imports only;") {
+		t.Fatalf("the two read excluded files must be counted: %v", rep.Limitations)
+	}
+	if code, _, _ := run(t, "unused-deps", "--dir", dir, "--strict"); code != 1 {
+		t.Fatalf("the ignore-only require is still a direct unused require, strict must exit 1: %d", code)
+	}
+}
+
+// TestUnusedDepsLoadErrors는 받을 수 없는 require(오프라인·인증 실패)를 import하는 패키지가 로드에
+// 실패해도 그 require를 미사용으로 오보하지 않는지 확인한다 — 실패한 import 경로를 require 목록의
+// 가장 긴 모듈에 귀속하고, 로드 오류 수를 limitation으로 남긴다. 판정 근거가 빈 사실을 숨기면
+// 소비자가 쓰는 require를 지운다.
+func TestUnusedDepsLoadErrors(t *testing.T) {
+	t.Setenv("GOPROXY", "off")
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod":  "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/missing v1.0.0\n",
+		"main.go": "package main\n\nimport _ \"example.com/missing/pkg\"\n\nfunc main() {}\n",
+	})
+	rep := runUnusedDepsJSON(t, dir)
+	if len(rep.Unused) != 0 || rep.UsedRequires != 1 {
+		t.Fatalf("a require whose package failed to load is still imported: %+v", rep)
+	}
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
+		"1 packages reported load errors;") {
+		t.Fatalf("load errors must be counted: %v", rep.Limitations)
+	}
+	code, out, _ := run(t, "unused-deps", "--dir", dir)
+	if code != 0 || !strings.Contains(out, "limitation: 1 packages reported load errors;") {
+		t.Fatalf("text output must show the limitation: %d %s", code, out)
 	}
 }
 

@@ -87,6 +87,9 @@ gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
 gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트별 고유분
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
+                                               # (tidy처럼 빌드 제약 제외 파일·로드 실패 import도 셈,
+                                               #  //go:build ignore 제외 — 두 공백은 limitations에 셈.
+                                               #  이 플랫폼 파일이 없는 패키지는 로드되지 않아 --goos로 확인)
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 # (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·
 #  인터페이스 메서드 추가·서명 변경(직접·임베드 경유 — 두 문서에 메서드 집합이 있으면
