@@ -628,13 +628,14 @@ func scanLiteral(scan *schemaScan, p *packages.Package, lit *ast.BasicLit) {
 	}
 }
 
-// maxDynamicChannel은 dynamic 사실 채널의 최대 바이트 수다 — pushDynamic의 120바이트 절단과 같다.
+// maxDynamicChannel은 dynamic 사실 채널의 최대 바이트 수다(SQL 리터럴과 비리터럴 인자 모두).
 const maxDynamicChannel = 120
 
-// dynamicSQLChannel은 SQL 리터럴 원문을 dynamic 사실의 채널로 다듬는다. 공백류(줄바꿈·탭 포함)는
-// 한 칸으로 접고 C0·DEL·C1 제어 문자는 지운다 — isthmus는 제어 문자가 든 채널의 문서를 통째로
-// 거부하는데, 여러 줄 raw 문자열 SQL은 Go에서 흔하다. 길면 pushDynamic처럼 117바이트에 "..."를
-// 붙이되 UTF-8 문자 경계에서 자른다. 남는 것이 없으면 <dynamic>이다(채널은 비면 안 된다).
+// dynamicSQLChannel은 SQL 리터럴 원문이나 비리터럴 인자의 원문 식을 dynamic 사실의 채널로 다듬는다.
+// 공백류(줄바꿈·탭 포함)는 한 칸으로 접고 C0·DEL·C1 제어 문자는 지운다 — isthmus는 제어 문자가 든
+// 채널의 문서를 통째로 거부하는데, 여러 줄 raw 문자열 SQL과 여러 줄에 걸친 인자 식은 Go에서 흔하다.
+// 길면 117바이트에 "..."를 붙이되 UTF-8 문자 경계에서 자른다. 남는 것이 없으면 <dynamic>이다(채널은
+// 비면 안 된다).
 func dynamicSQLChannel(text string) string {
 	var b strings.Builder
 	pendingSpace := false
@@ -885,21 +886,19 @@ func isIdentPart(c byte) bool {
 }
 
 // pushDynamic은 리터럴로 읽히지 않는 SQL 인자를 동적 사실로 보존한다.
-// channel에는 잘린 원문 표현식을 실어 어느 위치의 호출인지 남긴다.
+// channel에는 잘린 원문 표현식을 실어 어느 위치의 호출인지 남긴다. 원문은 dynamicSQLChannel로
+// 다듬는다 — 여러 줄 식(`"SELECT … " +` 뒤 줄바꿈)을 go/printer가 줄바꿈·탭째 찍고, raw 문자열
+// 피연산자는 제어 문자를 그대로 담는다. isthmus는 그런 채널이 하나라도 있으면 문서를 통째로 거부한다.
 func (s *schemaScan) pushDynamic(p *packages.Package, expr ast.Expr) {
 	var buf strings.Builder
 	if err := printer.Fprint(&buf, p.Fset, expr); err != nil {
 		return
 	}
-	text := buf.String()
-	if len(text) > 120 {
-		text = text[:117] + "..."
-	}
 	// dynamic 수치는 비리터럴 인자만 센다 — 미해석 피연산자의 dynamic 사실(scanLiteral)은
 	// table-valued 문구가 따로 센다.
 	if s.push(RelationFact{
 		Kind:     "relation-use",
-		Channel:  text,
+		Channel:  dynamicSQLChannel(buf.String()),
 		Dynamic:  true,
 		Location: s.locate(p.Fset, expr.Pos()),
 		owner:    s.owner,

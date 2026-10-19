@@ -664,6 +664,44 @@ func TestSchemaFactsTableValuedOperandIsDynamic(t *testing.T) {
 	}
 }
 
+// TestSchemaFactsMultilineNonLiteralChannel은 여러 줄에 걸친 비리터럴 SQL 인자의 dynamic 사실 채널이
+// isthmus가 받는 한 줄 문자열인지 확인한다 — go/printer는 식의 줄바꿈·들여쓰기 탭을 그대로 찍고, raw
+// 문자열 피연산자는 줄바꿈을 담는다. 제어 문자가 든 채널 하나로 isthmus는 문서 전체를 거부한다. 긴 식은
+// 바이트가 아니라 UTF-8 문자 경계에서 잘려야 한다(잘린 바이트는 JSON에서 U+FFFD로 바뀐다). 한 줄 식은
+// 그대로다.
+func TestSchemaFactsMultilineNonLiteralChannel(t *testing.T) {
+	long := strings.Repeat("\"가나다라마\" +\n\t\t", 8) + "table"
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport \"database/sql\"\n\nvar db *sql.DB\n\nfunc run(table string) {\n" +
+			"\tdb.Query(\"SELECT id FROM \" +\n\t\ttable)\n" +
+			"\tdb.Query(`SELECT *\n\tFROM ` + table)\n" +
+			"\tdb.Query(table + \" LIMIT 1\")\n" +
+			"\tdb.Query(" + long + ")\n}\n\nfunc main() { run(\"t\") }\n",
+	})
+	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	if err != nil {
+		t.Fatalf("SchemaFacts: %v", err)
+	}
+	byLine := map[int]string{}
+	for _, f := range doc.Facts {
+		if fact := f.(RelationFact); fact.Dynamic {
+			byLine[fact.Location.Line] = fact.Channel
+		}
+	}
+	for line, want := range map[int]string{
+		8: `"SELECT id FROM " + table`, 10: "`SELECT * FROM ` + table", 12: `table + " LIMIT 1"`,
+	} {
+		if byLine[line] != want {
+			t.Errorf("line %d channel = %q, want %q (all: %v)", line, byLine[line], want, byLine)
+		}
+	}
+	cut := byLine[13]
+	if len(cut) > maxDynamicChannel || !strings.HasSuffix(cut, "...") || !utf8.ValidString(cut) ||
+		strings.ContainsAny(cut, "\n\t") {
+		t.Fatalf("a long multi-line expression must be cut at a rune boundary into one line: %q", cut)
+	}
+}
+
 // TestDynamicSQLChannel은 SQL 원문을 isthmus가 받는 채널로 다듬는지 확인한다 — 공백류는 한 칸으로
 // 접고, 제어 문자는 지우고, 120바이트를 넘으면 UTF-8 문자 경계에서 잘라 "..."를 붙이고, 남는 것이
 // 없으면 <dynamic>이다.
