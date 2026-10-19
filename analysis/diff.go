@@ -95,6 +95,7 @@ func diffVertices(d *Diff, old, new *graph.Document) {
 	newV := indexVertices(new)
 	oldSig := signatureTargets(old)
 	newSig := signatureTargets(new)
+	embeds := fieldEmbeds{old: structEmbeds(old), new: structEmbeds(new)}
 
 	for _, k := range sortedKeys(oldV) {
 		ov := oldV[k]
@@ -109,7 +110,7 @@ func diffVertices(d *Diff, old, new *graph.Document) {
 		}
 		// 짝지어진 정점은 새 문서의 ID로 보고한다 — 소비자가 지금 찾을 수 있는 이름이다.
 		recordVertexChanges(d, nv.ID, ov, nv)
-		recordFieldChanges(d, nv.ID, ov, nv)
+		recordFieldChanges(d, nv.ID, ov, nv, embeds)
 		recordSignatureChange(d, nv.ID, ov, oldSig[k], newSig[k])
 	}
 	for _, k := range sortedKeys(newV) {
@@ -181,6 +182,10 @@ func recordVertexChanges(d *Diff, id string, ov, nv *graph.Vertex) {
 // recordFieldChanges는 struct 타입의 필드 목록 차이를 적는다.
 // apidiff의 판정을 따른다:
 //   - 공개 필드의 제거·재형(type 변경)은 breaking이다.
+//   - 비공개 임베드 필드의 재형도 breaking이다 — 공개 struct가 승격으로 내보내는 필드·메서드가
+//     바뀐다(*inner → inner면 값 T의 메서드 집합에서 포인터 리시버 메서드가 빠지고, inner[int] →
+//     inner[string]이면 승격 메서드의 서명이 바뀐다). 수확은 승격 메서드를 선언 타입 아래에 두고
+//     구체 타입은 포인터 메서드 집합으로만 싣기 때문에 다른 규칙으로는 이 변화가 보이지 않는다.
 //   - 모든 필드가 공개인 struct는 unkeyed literal이 가능하므로
 //     필드 목록이 조금이라도 바뀌면(추가·순서 포함) breaking이다.
 //   - 비공개 필드가 섞인 struct는 unkeyed literal이 원래 불가라
@@ -188,7 +193,7 @@ func recordVertexChanges(d *Diff, id string, ov, nv *graph.Vertex) {
 //
 // 어느 쪽 문서도 필드를 수확하지 않았으면(옛 형식·비struct) 건너뛴다 —
 // 모르는 것을 변경으로 울리지 않는다.
-func recordFieldChanges(d *Diff, id string, ov, nv *graph.Vertex) {
+func recordFieldChanges(d *Diff, id string, ov, nv *graph.Vertex, embeds fieldEmbeds) {
 	if ov.Fields == nil && nv.Fields == nil {
 		return
 	}
@@ -256,13 +261,17 @@ func recordFieldChanges(d *Diff, id string, ov, nv *graph.Vertex) {
 		}
 	}
 	for _, name := range retyped {
-		// 비공개 필드는 패키지 밖에서 이름으로 쓸 수 없다 — 재형은 FieldChanges에만 남긴다.
-		if !isExportedName(name) {
-			continue
+		switch {
+		case isExportedName(name):
+			d.Breaking = append(d.Breaking, fmt.Sprintf(
+				"exported field %s.%s changed type: %s -> %s",
+				id, name, oldSet[name], newSet[name]))
+		case embeds.old.embedded(ov.ID, name, oldSet[name]) || embeds.new.embedded(nv.ID, name, newSet[name]):
+			d.Breaking = append(d.Breaking, fmt.Sprintf(
+				"embedded field %s.%s changed type: %s -> %s — the promoted fields and methods may change",
+				id, name, oldSet[name], newSet[name]))
 		}
-		d.Breaking = append(d.Breaking, fmt.Sprintf(
-			"exported field %s.%s changed type: %s -> %s",
-			id, name, oldSet[name], newSet[name]))
+		// 그 밖의 비공개 필드는 패키지 밖에서 이름으로 쓸 수 없다 — 재형은 FieldChanges에만 남긴다.
 	}
 	if allExported && (len(added) > 0 || reordered) {
 		d.Breaking = append(d.Breaking, fmt.Sprintf(
@@ -308,6 +317,46 @@ func isExportedName(name string) bool {
 		return unicode.IsUpper(r)
 	}
 	return false
+}
+
+// fieldEmbeds는 두 문서의 struct 임베드 색인이다 — 필드 재형을 양쪽 문서 기준으로 가린다.
+type fieldEmbeds struct{ old, new embedIndex }
+
+// embedIndex는 struct 타입의 정규 ID → 그 struct가 임베드한 명명 타입의 정규 ID 집합이다.
+// 필드 목록("name:Type")에는 임베드 표지가 없어 수확의 embeds 간선으로 가린다. 수확은 struct 임베드
+// 필드마다 그 명명 타입으로 embeds 간선을 긋고(모듈 안 정점일 때), 비공개 이름의 임베드 필드는
+// (별칭·universe 타입이 아니면) 같은 패키지의 타입이라 간선이 늘 있다. 인터페이스 임베드 간선도
+// 담기지만 키가 인터페이스 ID라 struct 조회와 섞이지 않는다.
+type embedIndex map[string]map[string]bool
+
+// structEmbeds는 문서의 embeds 간선으로 embedIndex를 만든다. 끝점은 충돌 접미사를 뗀다 — 필드
+// 타입의 정규 표기는 접미사 없는 경로 한정 이름이다.
+func structEmbeds(d *graph.Document) embedIndex {
+	out := embedIndex{}
+	for _, e := range d.Edges {
+		if e.Kind != graph.EdgeEmbeds {
+			continue
+		}
+		from := graph.CanonicalID(e.From)
+		if out[from] == nil {
+			out[from] = map[string]bool{}
+		}
+		out[from][graph.CanonicalID(e.To)] = true
+	}
+	return out
+}
+
+// embedded는 struct owner의 필드 name(정규 타입 typ)이 임베드 필드인지 본다. 임베드 필드의 이름은
+// 타입의 비한정 이름이다(앞의 *, 경로, [...] 타입 인자를 뗀다). 이름과 embeds 간선이 둘 다 맞아야
+// 임베드로 본다 — 타입과 이름이 같은 명명 필드(config *config)는 간선이 없고, 임베드한 타입과 같은
+// 타입의 명명 필드(parent *node)는 이름이 달라 빠진다. 별칭으로 임베드한 필드(이름이 별칭 이름)와
+// universe 타입(error) 임베드는 가려내지 못한다.
+func (x embedIndex) embedded(owner, name, typ string) bool {
+	target := strings.TrimPrefix(typ, "*")
+	if open := strings.IndexByte(target, '['); open >= 0 {
+		target = target[:open]
+	}
+	return target[strings.LastIndexByte(target, '.')+1:] == name && x[graph.CanonicalID(owner)][target]
 }
 
 // diffTypeSets는 공개 제약 인터페이스의 타입 집합 변경을 breaking으로 잡는다 — 좁히면

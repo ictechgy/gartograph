@@ -268,6 +268,72 @@ func TestDiffUnexportedFieldRetype(t *testing.T) {
 	}
 }
 
+// structDoc은 공개 struct 정점 id(필드 fields)와 그 struct가 임베드한 타입으로 가는 embeds 간선을
+// 담은 문서다. 임베드 대상 정점은 간선 끝이 문서에 있도록 함께 넣는다.
+func structDoc(id string, fields []string, embeds ...string) *graph.Document {
+	d := &graph.Document{Vertices: []graph.Vertex{{ID: id, Kind: graph.KindType, Exported: true, Fields: fields}}}
+	for _, to := range embeds {
+		d.Vertices = append(d.Vertices, graph.Vertex{ID: to, Kind: graph.KindType})
+		d.Edges = append(d.Edges, graph.Edge{From: id, To: to, Kind: graph.EdgeEmbeds})
+	}
+	return d
+}
+
+// TestDiffEmbeddedFieldRetype는 공개 struct가 임베드한 비공개 타입의 재형이 breaking인지 확인한다 —
+// 임베드 필드의 이름은 타입 이름이라 비공개지만, 승격 필드·메서드는 공개 struct의 API다(*inner →
+// inner면 값 T가 포인터 리시버 메서드를 잃고, inner[int] → inner[string]이면 승격 메서드의 서명이
+// 바뀐다). 임베드 여부는 embeds 간선과 필드 이름으로 가린다 — 타입과 이름이 같은 명명 필드, 임베드한
+// 타입과 같은 타입의 명명 필드, 비공개 명명 필드(mu)는 계속 breaking이 아니다.
+func TestDiffEmbeddedFieldRetype(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		old, new *graph.Document
+		want     []string
+	}{
+		{"pointer embed becomes value embed",
+			structDoc("m/a.T", []string{"inner:*m/a.inner", "Name:string"}, "m/a.inner"),
+			structDoc("m/a.T", []string{"inner:m/a.inner", "Name:string"}, "m/a.inner"),
+			[]string{"embedded field m/a.T.inner changed type: *m/a.inner -> m/a.inner — " +
+				"the promoted fields and methods may change"}},
+		{"type argument of a generic embed",
+			structDoc("m/a.T", []string{"inner:m/a.inner[int]"}, "m/a.inner"),
+			structDoc("m/a.T", []string{"inner:m/a.inner[map[string]m/b.V[int]]"}, "m/a.inner"),
+			[]string{"embedded field m/a.T.inner changed type: m/a.inner[int] -> " +
+				"m/a.inner[map[string]m/b.V[int]] — the promoted fields and methods may change"}},
+		// 명명 필드가 같은 이름의 임베드가 되면 새 문서 기준으로 승격이 생긴다.
+		{"named field becomes an embed",
+			structDoc("m/a.T", []string{"inner:m/a.other"}),
+			structDoc("m/a.T", []string{"inner:*m/a.inner"}, "m/a.inner"),
+			[]string{"embedded field m/a.T.inner changed type: m/a.other -> *m/a.inner — " +
+				"the promoted fields and methods may change"}},
+		// 충돌 접미사(#symbol)는 수확 패키지 집합에 따라 붙는다 — 짝짓기와 같이 떼고 본다.
+		{"collision suffix on both ends",
+			structDoc("m/a.T", []string{"inner:*m/a.inner"}, "m/a.inner"),
+			structDoc("m/a.T#symbol", []string{"inner:m/a.inner"}, "m/a.inner#symbol"),
+			[]string{"embedded field m/a.T#symbol.inner changed type: *m/a.inner -> m/a.inner — " +
+				"the promoted fields and methods may change"}},
+		{"unexported named field",
+			structDoc("m/a.T", []string{"Name:string", "mu:sync.Mutex"}),
+			structDoc("m/a.T", []string{"Name:string", "mu:sync.RWMutex"}), nil},
+		{"named field typed like its name",
+			structDoc("m/a.T", []string{"config:*m/a.config"}),
+			structDoc("m/a.T", []string{"config:m/a.config"}), nil},
+		{"named field of an embedded type",
+			structDoc("m/a.T", []string{"node:*m/a.node", "parent:*m/a.node"}, "m/a.node"),
+			structDoc("m/a.T", []string{"node:*m/a.node", "parent:m/a.node"}, "m/a.node"), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := DiffDocuments(tc.old, tc.new)
+			if !slices.Equal(d.Breaking, tc.want) {
+				t.Fatalf("breaking = %q, want %q", d.Breaking, tc.want)
+			}
+			if len(d.FieldChanges) != 1 || len(d.FieldChanges[0].Retyped) != 1 {
+				t.Fatalf("the retype must be recorded either way: %+v", d.FieldChanges)
+			}
+		})
+	}
+}
+
 // TestConstValueBreaking은 공개 상수의 값 변경이 breaking인지 확인한다 —
 // 상수는 소비자 코드에 인라인되므로 재컴파일 없이 이미 빌드된 바이너리가
 // 다른 상수를 담는다. 값을 모르는 옛 문서와의 비교는 "몰랐다"다.

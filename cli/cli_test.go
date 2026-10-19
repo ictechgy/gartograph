@@ -3349,6 +3349,50 @@ func TestDiffInterfaceGainedMethodHarvested(t *testing.T) {
 	}
 }
 
+// TestDiffEmbeddedFieldRetypeHarvested는 실제 수확 문서에서 공개 struct가 임베드한 비공개 타입의
+// 재형이 diff --strict를 막는지 확인한다 — *inner → inner면 값 T가 포인터 리시버 메서드 Foo를 잃어
+// `var _ fooer = T{}` 같은 소비자가 깨지는데, 수확은 구체 타입을 포인터 메서드 집합으로 싣고 승격
+// 메서드를 선언 타입 아래에 둬 시그니처·정점 비교로는 보이지 않는다. 같은 이름의 명명 필드와 내부
+// 필드(mu) 재형은 계속 게이트를 막지 않는다.
+func TestDiffEmbeddedFieldRetypeHarvested(t *testing.T) {
+	const inner = "package a\n\ntype inner struct{ n int }\n\nfunc (i *inner) Foo() int { return i.n }\n\n"
+	const generic = "package a\n\ntype inner[V any] struct{ v V }\n\nfunc (i inner[V]) Get() V { return i.v }\n\n"
+	for _, tc := range []struct {
+		name     string
+		old, new string
+		code     int
+		want     string
+	}{
+		{"pointer embed to value embed", inner + "type T struct {\n\t*inner\n\tName string\n}\n",
+			inner + "type T struct {\n\tinner\n\tName string\n}\n", 1,
+			"breaking: embedded field example.com/fixture/a.T.inner changed type: " +
+				"*example.com/fixture/a.inner -> example.com/fixture/a.inner"},
+		{"generic embed type argument", generic + "type T struct{ inner[int] }\n",
+			generic + "type T struct{ inner[string] }\n", 1,
+			"breaking: embedded field example.com/fixture/a.T.inner changed type: " +
+				"example.com/fixture/a.inner[int] -> example.com/fixture/a.inner[string]"},
+		{"named field typed like its name", inner + "type T struct{ inner *inner }\n",
+			inner + "type T struct{ inner inner }\n", 0, "0 breaking"},
+		{"internal mutex", "package a\n\nimport \"sync\"\n\ntype T struct {\n\tName string\n\tmu sync.Mutex\n}\n",
+			"package a\n\nimport \"sync\"\n\ntype T struct {\n\tName string\n\tmu sync.RWMutex\n}\n", 0, "0 breaking"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			oldPath, newPath := filepath.Join(tmp, "old.json"), filepath.Join(tmp, "new.json")
+			for src, out := range map[string]string{tc.old: oldPath, tc.new: newPath} {
+				dir := testutil.WriteModule(t, map[string]string{"a/a.go": src})
+				if code, _, errb := run(t, "graph", "--level", "type", "--dir", dir, "--out", out); code != 0 {
+					t.Fatalf("graph failed: %d %s", code, errb)
+				}
+			}
+			code, out, _ := run(t, "diff", oldPath, newPath, "--strict")
+			if code != tc.code || !strings.Contains(out, tc.want) {
+				t.Fatalf("diff --strict = %d, want %d with %q:\n%s", code, tc.code, tc.want, out)
+			}
+		})
+	}
+}
+
 // TestDeadRTAKeepsMethodRoots는 문서 루트인 메서드(keep 표지)가 --algo rta에서도
 // 루트로 잡히고 그 피호출자까지 도달하는지 확인한다 — SSA 패키지 Members에는 메서드가
 // 없어, 루트이면서 unreachable로 보고되는 모순이 있었다. 제네릭 본문은 x/tools rta가
