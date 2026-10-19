@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/ictechgy/gartograph/internal/testutil"
 )
@@ -595,11 +596,89 @@ func TestSQLTableValuedFunctions(t *testing.T) {
 	}
 }
 
-// 함수 의존 공백은 소비자가 완전한 미사용 근거로 읽지 않도록 남긴다.
+// 함수 의존 공백의 생산자 문구는 원인을 설명하는 데 남는다 — isthmus는 이 문구가 아니라
+// scanLiteral이 내는 dynamic 사실을 직접 센다. 문구는 비리터럴 인자 수(dynamic)의 문구와 갈린다.
 func TestSQLFunctionLimitations(t *testing.T) {
 	scan := &schemaScan{sqlFunctions: 1}
 	limitations := scan.limitations()
-	if len(limitations) != 1 || !strings.HasPrefix(limitations[0], "unjoined-dynamic-relations: 1 ") {
+	if len(limitations) != 1 || !strings.HasPrefix(limitations[0],
+		"unjoined-dynamic-relations: 1 table-valued SQL function operand(s)") {
 		t.Fatalf("missing SQL coverage evidence: %v", limitations)
+	}
+}
+
+// TestSchemaFactsTableValuedOperandIsDynamic은 관계를 증명하지 못한 테이블 값 함수 피연산자가 든 SQL
+// 리터럴이 그 위치의 dynamic relation-use 사실 하나를 내는지 확인한다. isthmus는 생산자 limitation
+// 문구를 근거로 쓰지 않고 dynamic 사실을 직접 세어 미사용 진단을 판정 불가로 내린다 — 사실이 없으면
+// 함수를 거쳐서만 읽는 테이블이 dead-schema 후보처럼 보인다. 여러 줄 raw 문자열 SQL은 채널에서
+// 공백이 접혀야 한다 — isthmus는 제어 문자가 든 채널의 문서를 통째로 거부한다.
+func TestSchemaFactsTableValuedOperandIsDynamic(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport \"database/sql\"\n\nvar db *sql.DB\n\nfunc main() {\n" +
+			"\tdb.Query(\"SELECT * FROM get_active_orders($1)\")\n" +
+			"\tdb.Query(`\n\t\tSELECT o.id\n\t\tFROM pragma_table_info('t') AS p, orders o\n\t`)\n}\n",
+	})
+	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	if err != nil {
+		t.Fatalf("SchemaFacts: %v", err)
+	}
+	var dynamics []RelationFact
+	static := map[string]bool{}
+	for _, f := range doc.Facts {
+		if fact := f.(RelationFact); fact.Dynamic {
+			dynamics = append(dynamics, fact)
+		} else {
+			static[fact.Channel] = true
+		}
+	}
+	want := []struct {
+		channel string
+		line    int
+	}{
+		{"SELECT * FROM get_active_orders($1)", 8},
+		{"SELECT o.id FROM pragma_table_info('t') AS p, orders o", 9},
+	}
+	if len(dynamics) != len(want) {
+		t.Fatalf("want one dynamic fact per literal with an unresolved operand: %+v", doc.Facts)
+	}
+	for i, w := range want {
+		got := dynamics[i]
+		if got.Channel != w.channel || got.Location.Line != w.line ||
+			got.Symbol == nil || got.Symbol.Usr != "example.com/fixture.main" {
+			t.Errorf("dynamic fact %d = %+v (symbol %+v), want channel %q at line %d in main",
+				i, got, got.Symbol, w.channel, w.line)
+		}
+	}
+	// 뒤의 실제 테이블은 그대로 정적 사실이다.
+	if len(static) != 1 || !static["orders"] {
+		t.Fatalf("the real relation after the function must stay a static fact: %v", static)
+	}
+	// 생산자 문구는 남고, 비리터럴 SQL 인자 수(were not literals)에는 섞이지 않는다.
+	var functions, nonLiteral bool
+	for _, l := range doc.Limitations {
+		functions = functions || strings.HasPrefix(l, "unjoined-dynamic-relations: 2 table-valued")
+		nonLiteral = nonLiteral || strings.Contains(l, "were not literals")
+	}
+	if !functions || nonLiteral {
+		t.Fatalf("operand count must stay under its own phrase: %v", doc.Limitations)
+	}
+}
+
+// TestDynamicSQLChannel은 SQL 원문을 isthmus가 받는 채널로 다듬는지 확인한다 — 공백류는 한 칸으로
+// 접고, 제어 문자는 지우고, 120바이트를 넘으면 UTF-8 문자 경계에서 잘라 "..."를 붙이고, 남는 것이
+// 없으면 <dynamic>이다.
+func TestDynamicSQLChannel(t *testing.T) {
+	long := "a" + strings.Repeat("가", 50) // 117바이트 경계가 문자 한가운데다
+	for _, tc := range []struct{ in, want string }{
+		{"SELECT * FROM f($1)", "SELECT * FROM f($1)"},
+		{"\n\t\tSELECT a\r\n\t\tFROM f() x\u0085y  ", "SELECT a FROM f() x y"},
+		{"a\x00b\x1bc\x7fd\u009fe", "abcde"},
+		{"\x00\n\t", "<dynamic>"},
+		{long, "a" + strings.Repeat("가", 38) + "..."},
+	} {
+		got := dynamicSQLChannel(tc.in)
+		if got != tc.want || !utf8.ValidString(got) {
+			t.Errorf("dynamicSQLChannel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

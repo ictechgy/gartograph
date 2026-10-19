@@ -13,7 +13,8 @@
 //   - gorm Table("name")·Model(&T{}) 인자
 //
 // 리터럴이 아닌 SQL 인자는 버리지 않고 원문 표현식을 실은 dynamic 사실로
-// 보존한다 — 조인하지 못하는 이유를 소비자가 셀 수 있어야 한다.
+// 보존한다 — 조인하지 못하는 이유를 소비자가 셀 수 있어야 한다. 관계를 증명하지
+// 못한 피연산자(테이블 값 함수)가 든 SQL 리터럴도 같은 이유로 dynamic 사실 하나를 낸다.
 package source
 
 import (
@@ -29,6 +30,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ictechgy/gartograph/graph"
 	"golang.org/x/tools/go/packages"
@@ -611,6 +614,56 @@ func scanLiteral(scan *schemaScan, p *packages.Package, lit *ast.BasicLit) {
 			owner:    scan.owner,
 		})
 	}
+	// 관계를 증명하지 못한 피연산자(테이블 값 함수)가 있으면 그 리터럴을 dynamic 사실 하나로도 남긴다 —
+	// isthmus는 생산자 limitation 문구가 아니라 dynamic 사실을 직접 세어 미사용 진단을 판정 불가로
+	// 내린다(GRAPH-EXCHANGE). 문구만 남기면 함수를 거쳐서만 읽는 테이블이 dead-schema 후보로 보인다.
+	if unresolved > 0 {
+		scan.push(RelationFact{
+			Kind:     "relation-use",
+			Channel:  dynamicSQLChannel(text),
+			Dynamic:  true,
+			Location: scan.locate(p.Fset, lit.Pos()),
+			owner:    scan.owner,
+		})
+	}
+}
+
+// maxDynamicChannel은 dynamic 사실 채널의 최대 바이트 수다 — pushDynamic의 120바이트 절단과 같다.
+const maxDynamicChannel = 120
+
+// dynamicSQLChannel은 SQL 리터럴 원문을 dynamic 사실의 채널로 다듬는다. 공백류(줄바꿈·탭 포함)는
+// 한 칸으로 접고 C0·DEL·C1 제어 문자는 지운다 — isthmus는 제어 문자가 든 채널의 문서를 통째로
+// 거부하는데, 여러 줄 raw 문자열 SQL은 Go에서 흔하다. 길면 pushDynamic처럼 117바이트에 "..."를
+// 붙이되 UTF-8 문자 경계에서 자른다. 남는 것이 없으면 <dynamic>이다(채널은 비면 안 된다).
+func dynamicSQLChannel(text string) string {
+	var b strings.Builder
+	pendingSpace := false
+	for _, r := range text {
+		switch {
+		case unicode.IsSpace(r):
+			pendingSpace = b.Len() > 0
+		case unicode.IsControl(r):
+			// 제어 문자는 채널에 남기지 않는다.
+		default:
+			if pendingSpace {
+				b.WriteByte(' ')
+				pendingSpace = false
+			}
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if len(out) > maxDynamicChannel {
+		cut := maxDynamicChannel - len("...")
+		for cut > 0 && !utf8.RuneStart(out[cut]) {
+			cut--
+		}
+		out = out[:cut] + "..."
+	}
+	if out == "" {
+		return "<dynamic>"
+	}
+	return out
 }
 
 // sqlToken은 SQL 텍스트의 어휘 하나다 — 인용된 식별자는 키워드가 아니다.
@@ -842,19 +895,24 @@ func (s *schemaScan) pushDynamic(p *packages.Package, expr ast.Expr) {
 	if len(text) > 120 {
 		text = text[:117] + "..."
 	}
-	s.push(RelationFact{
+	// dynamic 수치는 비리터럴 인자만 센다 — 미해석 피연산자의 dynamic 사실(scanLiteral)은
+	// table-valued 문구가 따로 센다.
+	if s.push(RelationFact{
 		Kind:     "relation-use",
 		Channel:  text,
 		Dynamic:  true,
 		Location: s.locate(p.Fset, expr.Pos()),
 		owner:    s.owner,
-	})
+	}) {
+		s.dynamic++
+	}
 }
 
-// push는 위치가 있는 사실만 담고 같은 사실을 한 번만 남긴다.
-func (s *schemaScan) push(fact RelationFact) {
+// push는 위치가 있는 사실만 담고 같은 사실을 한 번만 남긴다. 새로 담았는지를 돌려준다 —
+// 호출자가 자기 종류의 수치를 담은 사실만큼만 센다.
+func (s *schemaScan) push(fact RelationFact) bool {
 	if fact.Location == nil {
-		return
+		return false
 	}
 	if s.seen == nil {
 		s.seen = map[string]bool{}
@@ -863,13 +921,11 @@ func (s *schemaScan) push(fact RelationFact) {
 		fact.Kind, fact.Channel, fact.Method, fact.Dynamic,
 		fact.Location.Path, fact.Location.Line, fact.Location.Column)
 	if s.seen[key] {
-		return
+		return false
 	}
 	s.seen[key] = true
-	if fact.Dynamic {
-		s.dynamic++
-	}
 	s.list = append(s.list, fact)
+	return true
 }
 
 // locate은 토큰 위치를 프로젝트 상대의 계약 위치로 바꾼다.
@@ -926,6 +982,8 @@ func (s *schemaScan) facts() []any {
 func (s *schemaScan) limitations() []string {
 	out := []string{}
 	if s.sqlFunctions > 0 {
+		// 원인을 설명하는 문구다 — isthmus는 생산자 문구를 근거로 쓰지 않고 dynamic 사실을 직접
+		// 센다. 그래서 그런 피연산자가 든 리터럴은 scanLiteral이 dynamic 사실로도 낸다.
 		out = append(out, fmt.Sprintf("unjoined-dynamic-relations: %d table-valued SQL function operand(s) have unmodeled relation dependencies", s.sqlFunctions))
 	}
 	if s.unparsed > 0 {
@@ -951,8 +1009,8 @@ func (s *schemaScan) limitations() []string {
 			s.missingUsrs))
 	}
 	if s.dynamic > 0 {
-		// isthmus가 미사용 진단을 unverified로 내리는 근거다 — 접두사를
-		// 바꾸면 조인기의 severity 계산이 새로 인식하지 못한다.
+		// 원인을 설명하는 문구다 — isthmus는 이 문구가 아니라 dynamic 사실을 직접 세어(origin
+		// consumer) 미사용 진단을 unverified로 내린다. 수치는 비리터럴 SQL 인자(pushDynamic)만 센다.
 		out = append(out, fmt.Sprintf(
 			"unjoined-dynamic-relations: %d SQL argument(s) were not literals; their relations are uncounted",
 			s.dynamic))
