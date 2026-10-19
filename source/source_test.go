@@ -261,6 +261,37 @@ func TestTestsCountsLoadErrorsOnce(t *testing.T) {
 	}
 }
 
+// TestLoadErrorsCountPackages는 로드 오류 limitation이 문구("N packages reported load errors")대로
+// 패키지 수를 세는지 확인한다 — 타입 오류가 둘인 패키지는 하나로 센다. 오류 문장을 세면 같은 문구의
+// unused-deps(PkgPath 수)와 다른 것을 센다.
+func TestLoadErrorsCountPackages(t *testing.T) {
+	twoErrors := "package a\n\nvar x int = \"x\"\nvar y string = 1\n"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  int
+	}{
+		{"one package with two errors",
+			map[string]string{"a/a.go": twoErrors, "c/c.go": "package c\n\nfunc C() {}\n"}, 1},
+		{"two broken packages",
+			map[string]string{"a/a.go": twoErrors, "b/b.go": "package b\n\nvar z int = \"z\"\n"}, 2},
+	} {
+		dir := testutil.WriteModule(t, tc.files)
+		for _, level := range []graph.Level{graph.LevelType, graph.LevelSymbol} {
+			for _, tests := range []bool{false, true} {
+				doc, err := Load(Options{Dir: dir, Level: level, Tests: tests})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n := limitationCount(t, doc, "packages reported load errors"); n != tc.want {
+					t.Errorf("%s level=%s tests=%v: %d packages counted, want %d: %v",
+						tc.name, level, tests, n, tc.want, doc.Limitations)
+				}
+			}
+		}
+	}
+}
+
 // TestLoadPackageGraphDeps는 --deps가 외부 패키지를 정점으로 담는지 확인한다.
 func TestLoadPackageGraphDeps(t *testing.T) {
 	doc, err := LoadPackageGraph(Options{Dir: fixture(t), IncludeDeps: true})

@@ -236,8 +236,9 @@ func buildDocument(root string, reachable []*packages.Package,
 	kept := make(map[string]*packages.Package)
 	// 생략 수는 (패키지, 대상) 집합으로 센다 — 테스트 변형("p [p.test]")은 원 패키지의 import와
 	// 오류를 다시 싣는다. 정점이 PkgPath로 합쳐지듯 수치도 합쳐야 --tests 문서가 실제의 두 배를
-	// 말하지 않는다.
-	extImports, exclImports, loadErrors := map[[2]string]bool{}, map[[2]string]bool{}, map[[2]string]bool{}
+	// 말하지 않는다. 로드 오류는 문구("N packages reported load errors")대로 패키지(PkgPath) 수다 —
+	// 오류 문장 수가 아니고, unused-deps의 같은 문구와도 같은 것을 센다.
+	extImports, exclImports, loadErrors := map[[2]string]bool{}, map[[2]string]bool{}, map[string]bool{}
 
 	// 먼저 정점을 확정한다 — 간선은 양쪽 정점이 살아 있어야 만든다.
 	// 끝이 없는 간선은 유령 정점이 되어 소비자를 헷갈리게 한다.
@@ -266,8 +267,8 @@ func buildDocument(root string, reachable []*packages.Package,
 		if kept[p.PkgPath] == nil {
 			continue
 		}
-		for _, e := range p.Errors {
-			loadErrors[[2]string{p.PkgPath, e.Error()}] = true
+		if len(p.Errors) > 0 {
+			loadErrors[p.PkgPath] = true
 		}
 		if p.ID != p.PkgPath {
 			// 테스트 변형("p [p.test]")은 PkgPath가 원 패키지와 같아
