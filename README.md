@@ -368,8 +368,11 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
   reasons, and limitations — C0/C1, DEL, U+2028/U+2029, and invalid UTF-8 —
   as `\xNN`/`\uNNNN`, so a crafted file name, rule `reason`, or saved
   document cannot start a new output line (a GitHub Actions `::` workflow
-  command) or send terminal escape sequences. Strings without them print
-  unchanged; JSON and SARIF keep the original strings, JSON-escaped.
+  command) or send terminal escape sequences. The two command forms the
+  Actions runner reads within a line are escaped the same way: a leading
+  `::` after any whitespace (NBSP included) becomes `\x3a:`, and every `##[`
+  becomes `\x23#[`. Other strings print unchanged; JSON and SARIF keep the
+  original strings, JSON-escaped.
 
 ## Graph document
 

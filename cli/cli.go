@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/ictechgy/gartograph/analysis"
@@ -355,26 +356,30 @@ func isPrintableASCII(s string) bool {
 	return true
 }
 
-// textLine은 텍스트 형식 한 줄을 쓴다. 형식을 채운 줄 전체를 textSafe로 거른 뒤 개행 하나를
-// 붙인다 — 인자마다 거르면 문자열 인자 하나만 빠뜨려도 주입 통로가 남는다. format에는 끝 개행을
-// 넣지 않는다(제어 문자가 없는 줄은 fmt.Fprintf(w, format+"\n", …)와 같은 바이트다).
+// textLine은 텍스트 형식 한 줄을 쓴다. 형식을 채운 줄 전체를 textSafe와
+// neutralizeWorkflowCommand로 거른 뒤 개행 하나를 붙인다 — 인자마다 거르면 문자열 인자 하나만
+// 빠뜨려도 주입 통로가 남는다. format에는 끝 개행을 넣지 않는다(제어 문자도 워크플로 명령 표지도
+// 없는 줄은 fmt.Fprintf(w, format+"\n", …)와 같은 바이트다).
 // 텍스트 형식은 사람이 읽는 출력이라 쓰기 결과를 기존 텍스트 출력처럼 따로 보지 않는다 —
 // 산출물(JSON·SARIF·문서)의 쓰기 오류는 emitBytes가 2로 낸다.
 func textLine(w io.Writer, format string, args ...any) {
 	fmt.Fprintln(w, neutralizeWorkflowCommand(textSafe(fmt.Sprintf(format, args...))))
 }
 
-// neutralizeWorkflowCommand는 앞 공백을 뺀 줄이 `::`로 시작하면 그 첫 `:`를 textSafe와 같은 표기
-// `\x3a`로 바꾼다. 설정의 컴포넌트 이름처럼 분석 대상이 고른 문자열이 줄 첫머리에 오면 GitHub Actions
-// 러너가 그 줄을 워크플로 명령으로 읽는다. 러너는 앞 공백을 지운 뒤 `::`를 보므로 공백을 덧붙여서는
-// 막히지 않는다. 그 밖의 줄은 바이트 그대로다.
+// neutralizeWorkflowCommand는 줄이 GitHub Actions 러너의 워크플로 명령으로 읽히지 않게 한다. 설정의
+// 컴포넌트 이름·reason, 저장 문서의 ID처럼 분석 대상이 고른 문자열은 제어 문자가 없어도 명령 형식을
+// 담을 수 있다. 러너(actions/runner의 ActionCommand)는 두 형식을 읽는다.
+//   - 앞 공백류를 지운 줄이 `::`로 시작하는 형식. 러너는 .NET TrimStart로 ASCII 공백만이 아니라 유니코드
+//     공백 전부(NBSP·U+3000 등)를 지운다 — unicode.IsSpace가 같은 집합이다. 그런 줄은 첫 `:`를 바꾼다.
+//   - 줄 어디에든 있는 옛 형식 `##[명령]`. 줄 중간의 reason·ID에서도 읽히므로 모든 `##[`의 첫 `#`를 바꾼다.
+//
+// 바꾼 문자는 textSafe와 같은 `\xNN` 표기다(`\x3a`, `\x23`). 그 밖의 줄은 바이트 그대로다.
 func neutralizeWorkflowCommand(line string) string {
-	trimmed := strings.TrimLeft(line, " ")
-	if !strings.HasPrefix(trimmed, "::") {
-		return line
+	if trimmed := strings.TrimLeftFunc(line, unicode.IsSpace); strings.HasPrefix(trimmed, "::") {
+		indent := len(line) - len(trimmed)
+		line = line[:indent] + `\x3a` + trimmed[1:]
 	}
-	indent := len(line) - len(trimmed)
-	return line[:indent] + `\x3a` + trimmed[1:]
+	return strings.ReplaceAll(line, "##[", `\x23#[`)
 }
 
 // cmdGraph는 그래프 산출물 자체를보낸다.

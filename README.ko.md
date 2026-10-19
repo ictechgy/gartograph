@@ -295,8 +295,10 @@ gartograph dead   --baseline .dead-baseline.json --strict
   `dead --explain`)은 ID·경로·reason·limitation의 제어 문자(C0·C1, DEL,
   U+2028/U+2029)와 잘못된 UTF-8을 `\xNN`·`\uNNNN`으로 이스케이프합니다 — 조작된
   파일 이름·규칙 `reason`·저장 문서가 새 출력 줄(GitHub Actions `::` 워크플로 명령)을
-  열거나 터미널 제어 시퀀스를 보내지 못합니다. 그런 문자가 없는 문자열은 그대로
-  찍고, JSON·SARIF는 원래 문자열을 JSON 이스케이프로 싣습니다.
+  열거나 터미널 제어 시퀀스를 보내지 못합니다. Actions 러너가 한 줄 안에서 읽는 두
+  명령 형식도 같은 표기로 바꿉니다 — 공백류(NBSP 포함) 뒤 줄 첫머리의 `::`는 `\x3a:`,
+  모든 `##[`는 `\x23#[`가 됩니다. 그 밖의 문자열은 그대로 찍고, JSON·SARIF는 원래
+  문자열을 JSON 이스케이프로 싣습니다.
 
 ## 그래프 문서
 

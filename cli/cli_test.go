@@ -1580,7 +1580,7 @@ func assertTextSafe(t *testing.T, label, out string) {
 		if forbiddenChars.MatchString(line) || !utf8.ValidString(line) {
 			t.Errorf("%s: raw control character in text output line %q", label, line)
 		}
-		if strings.HasPrefix(strings.TrimSpace(line), "::") {
+		if strings.HasPrefix(strings.TrimSpace(line), "::") || strings.Contains(line, "##[") {
 			t.Errorf("%s: text output line reads as a workflow command: %q", label, line)
 		}
 	}
@@ -1653,14 +1653,21 @@ deny:
 
 // TestComponentNameLinesDoNotStartWorkflowCommands는 설정의 컴포넌트 이름이 줄 첫머리에 오는
 // mapping·metrics 텍스트 출력이 `::`로 시작해 GitHub Actions 워크플로 명령으로 읽히지 않는지 본다.
-// 러너는 앞 공백을 지운 뒤 `::`를 보므로 제어 문자 이스케이프만으로는 막히지 않는다.
+// 러너는 앞 공백류(NBSP·U+3000 포함)를 지운 뒤 `::`를 보므로 제어 문자 이스케이프만으로는 막히지
+// 않는다. 줄 어디에든 있는 옛 형식 `##[명령]`도 러너가 읽으므로 함께 막는다.
 func TestComponentNameLinesDoNotStartWorkflowCommands(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
-		"web/web.go": "package web\n\nimport _ \"example.com/fixture/db\"\n",
-		"db/db.go":   "package db\n",
+		"web/web.go":   "package web\n\nimport _ \"example.com/fixture/db\"\n",
+		"db/db.go":     "package db\n",
+		"nbsp/nbsp.go": "package nbsp\n",
+		"wide/wide.go": "package wide\n",
+		"old/old.go":   "package old\n",
 		".gartograph.yml": `components:
   "::error::injected": ["web"]
   "  ::warning::spaced": ["db"]
+  "\u00a0::error::nbsp": ["nbsp"]
+  "\u3000::error::wide": ["wide"]
+  "legacy ##[error]old": ["old"]
 deps: {}
 `,
 	})
@@ -1670,26 +1677,60 @@ deps: {}
 			t.Fatalf("%s failed: %d %s", command, code, errb)
 		}
 		assertTextSafe(t, command, out)
-		if !strings.Contains(out, `\x3a:error::injected`) {
-			t.Errorf("%s text must keep the component name with only the leading ':' escaped:\n%s", command, out)
+		for _, want := range []string{`\x3a:error::injected`, "\u00a0\\x3a:error::nbsp", "\u3000\\x3a:error::wide",
+			`legacy \x23#[error]old`} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s text must keep the component name with only the command marker escaped (%q):\n%s",
+					command, want, out)
+			}
+		}
+	}
+}
+
+// TestNeutralizeWorkflowCommand는 러너가 읽는 두 명령 형식만 바꾸고 나머지 줄은 바이트 그대로 두는지
+// 본다 — 앞 공백류 뒤의 `::`(유니코드 공백 포함)와 줄 어디에든 있는 `##[`.
+func TestNeutralizeWorkflowCommand(t *testing.T) {
+	for in, want := range map[string]string{
+		"::error::x":               `\x3a:error::x`,
+		"   ::warning::x":          `   \x3a:warning::x`,
+		"\u00a0::error::x":         "\u00a0" + `\x3a:error::x`,
+		"\u2003\u3000 ::notice::x": "\u2003\u3000 " + `\x3a:notice::x`,
+		"see ##[error]x":           `see \x23#[error]x`,
+		"###[a] ##[b]":             `#\x23#[a] \x23#[b]`,
+		"::a ##[b]":                `\x3a:a \x23#[b]`,
+		"a::b":                     "a::b",
+		"x ::y":                    "x ::y",
+		":single":                  ":single",
+		"## [x] #[y]":              "## [x] #[y]",
+		`C:\work\m\x.go`:           `C:\work\m\x.go`,
+		"cycle: [m.A m.B]":         "cycle: [m.A m.B]",
+		"":                         "",
+	} {
+		if got := neutralizeWorkflowCommand(in); got != want {
+			t.Errorf("neutralizeWorkflowCommand(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
 
 // controlCharDocuments는 정점 ID·limitation에 제어 문자를 담은 저장 문서 두 개(old·new)를
-// 쓰고 경로를 돌려준다 — --graph 문서는 분석 대상이 고를 수 있는 입력이다.
+// 쓰고 경로를 돌려준다 — --graph 문서는 분석 대상이 고를 수 있는 입력이다. 제어 문자가 없어도
+// 워크플로 명령으로 읽히는 ID(앞 NBSP 뒤 `::` — 설정 없는 metrics에서 줄 첫머리에 온다 — 와 옛
+// 형식 `##[`)도 담는다.
 func controlCharDocuments(t *testing.T) (string, string) {
 	t.Helper()
 	const (
-		pkg  = "example.com/m"
-		evil = "example.com/m/x\n::error::pkg"
-		a    = "example.com/m.A\x1b[2J"
-		b    = "example.com/m.B\u2028::error::b"
+		pkg    = "example.com/m"
+		evil   = "example.com/m/x\n::error::pkg"
+		lead   = "\u00a0::error::lead"
+		legacy = "example.com/m/y##[error]legacy"
+		a      = "example.com/m.A\x1b[2J"
+		b      = "example.com/m.B\u2028::error::b"
 	)
 	newDoc := &graph.Document{Version: graph.Version, Tool: graph.Tool, Level: graph.LevelSymbol,
 		Module: pkg, Limitations: []string{"note\n::warning::lim \x1b[31m"},
 		Vertices: []graph.Vertex{
 			{ID: pkg, Kind: graph.KindPackage}, {ID: evil, Kind: graph.KindPackage},
+			{ID: lead, Kind: graph.KindPackage}, {ID: legacy, Kind: graph.KindPackage},
 			{ID: a, Kind: graph.KindFunc, Exported: true}, {ID: b, Kind: graph.KindFunc, Exported: true},
 		},
 		Edges: []graph.Edge{
@@ -1734,6 +1775,10 @@ func TestTextOutputsEscapeDocumentStrings(t *testing.T) {
 		assertTextSafe(t, args[0], out)
 		if !strings.Contains(out, `\x0a::`) && !strings.Contains(out, `\x1b[2J`) {
 			t.Errorf("%v: text output must keep the escaped strings:\n%s", args, out)
+		}
+		// 설정 없는 metrics는 패키지 ID가 줄 첫머리다 — 앞 공백류 뒤 `::`가 그대로면 명령 줄이다.
+		if args[0] == "metrics" && !strings.Contains(out, "\u00a0\\x3a:error::lead: 1 pkgs") {
+			t.Errorf("%v: a package ID line must not start a workflow command after leading whitespace:\n%s", args, out)
 		}
 	}
 }
