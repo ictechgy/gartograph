@@ -119,8 +119,9 @@ gartograph shared example.com/a example.com/b
 
 # go.mod hygiene: requirements no package imports (test imports count)
 # like go mod tidy, imports in files excluded by build constraints (not //go:build ignore)
-# and imports that failed to load count too; limitations count both. A package with no
-# file for this platform is not loaded: check it with --goos
+# and imports that failed to load count too; limitations count the load errors and the
+# excluded files importing packages this run did not load (std-only files are silent).
+# A package with no file for this platform is not loaded: check it with --goos
 gartograph unused-deps --strict
 
 # Compare two saved documents: structure drift and breaking signals

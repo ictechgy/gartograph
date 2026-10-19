@@ -2634,7 +2634,8 @@ func runUnusedDepsJSON(t *testing.T, dir string) unusedDepsReport {
 // TestUnusedDepsCountsConstraintExcludedFiles는 빌드 제약으로 빠진 파일의 import도 "사용"으로
 // 세는지 확인한다 — go mod tidy는 ignore 외의 모든 태그·플랫폼 파일을 보므로, 다른 OS 전용 파일과
 // //go:build integration 파일에서만 쓰는 require는 tidy가 지킨다. //go:build ignore 파일만 쓰는
-// require는 tidy가 지우므로 미사용이다. 읽은 제외 파일 수는 limitation으로 남는다.
+// require는 tidy가 지우므로 미사용이다. 로드하지 않은 패키지(other·integ)를 import하는 제외 파일
+// 수는 limitation으로 남는다.
 func TestUnusedDepsCountsConstraintExcludedFiles(t *testing.T) {
 	otherOS := "windows"
 	if runtime.GOOS == "windows" {
@@ -2673,11 +2674,45 @@ replace (
 		t.Fatalf("excluded-file imports must count as used, ignore-tagged ones must not: %+v", rep)
 	}
 	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
-		"2 source files excluded by build constraints were read for their imports only;") {
+		"2 source files excluded by build constraints import packages that were not loaded;") {
 		t.Fatalf("the two read excluded files must be counted: %v", rep.Limitations)
 	}
 	if code, _, _ := run(t, "unused-deps", "--dir", dir, "--strict"); code != 1 {
 		t.Fatalf("the ignore-only require is still a direct unused require, strict must exit 1: %d", code)
+	}
+}
+
+// TestUnusedDepsExcludedFileLimitationCountsUnseenImports는 제외 파일 limitation이 실제 공백만 세는지
+// 확인한다 — 제외 파일이 std나 이미 로드된 패키지만 import하면 그 패키지의 의존은 이미 셌거나(로드됨)
+// require에 기대지 않는다(std). 대부분 저장소의 OS별 파일이 그렇다 — 알릴 것이 없으면 조용해야 한다.
+// 이 플랫폼 파일이 없어 로드되지 않은 주 모듈 패키지를 import하는 제외 파일은 공백이다.
+func TestUnusedDepsExcludedFileLimitationCountsUnseenImports(t *testing.T) {
+	otherOS := "windows"
+	if runtime.GOOS == "windows" {
+		otherOS = "linux"
+	}
+	files := map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\n" +
+			"replace example.com/dep => ./dep\n",
+		"dep/go.mod": "module example.com/dep\n\ngo 1.27\n",
+		"dep/dep.go": "package dep\n\nfunc F() {}\n",
+		"lib/lib.go": "package lib\n\nfunc G() {}\n",
+		"main.go": "package main\n\nimport (\n\t\"example.com/dep\"\n\t\"example.com/fixture/lib\"\n)\n\n" +
+			"func main() { dep.F(); lib.G() }\n",
+		"run_" + otherOS + ".go": "package main\n\nimport (\n\t\"os\"\n\t\"syscall\"\n\n\t\"example.com/dep\"\n" +
+			"\t\"example.com/fixture/lib\"\n)\n\nfunc init() { _, _ = os.Getpid(), syscall.Getpid(); dep.F(); lib.G() }\n",
+		"stub.go": "//go:build js || wasip1\n\npackage main\n\nimport \"os\"\n\nvar _ = os.O_RDONLY\n",
+	}
+	rep := runUnusedDepsJSON(t, testutil.WriteModule(t, files))
+	if len(rep.Unused) != 0 || rep.UsedRequires != 1 || len(rep.Limitations) != 0 {
+		t.Fatalf("excluded files importing only std and loaded packages leave no gap: %+v", rep)
+	}
+	files["winonly/w_"+otherOS+".go"] = "package winonly\n\nfunc W() {}\n"
+	files["svc_"+otherOS+".go"] = "package main\n\nimport \"example.com/fixture/winonly\"\n\nfunc init() { winonly.W() }\n"
+	rep = runUnusedDepsJSON(t, testutil.WriteModule(t, files))
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
+		"1 source files excluded by build constraints import packages that were not loaded;") {
+		t.Fatalf("an excluded file importing an unloaded module package must be counted: %v", rep.Limitations)
 	}
 }
 

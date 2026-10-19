@@ -91,7 +91,9 @@ gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 �
 gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트별 고유분
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
                                                # (tidy처럼 빌드 제약 제외 파일·로드 실패 import도 셈,
-                                               #  //go:build ignore 제외 — 두 공백은 limitations에 셈.
+                                               #  //go:build ignore 제외 — limitations는 로드 오류와,
+                                               #  이번에 로드하지 않은 패키지를 import하는 제외 파일을 셈.
+                                               #  std만 쓰는 제외 파일은 조용하다.
                                                #  이 플랫폼 파일이 없는 패키지는 로드되지 않아 --goos로 확인)
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 # (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·

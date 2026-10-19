@@ -27,8 +27,9 @@ import (
 // 보고다. Unused는 직접 require, UnusedIndirect는 // indirect 표시된
 // 미사용 require다 — 둘은 다른 사실이다: indirect는 다른 의존이 끌어오는
 // 핀이라 직접 require처럼 "지워도 되는 표명"이 아닐 수 있다.
-// Limitations는 이 실행에서 실제로 센 판정 공백(로드 오류 패키지, 빌드 제약으로 빠진
-// 파일)이다 — 없으면 키가 빠진다. 공백을 숨기면 쓰는 require가 미사용으로 보인다.
+// Limitations는 이 실행에서 실제로 센 판정 공백(로드 오류 패키지, 로드하지 않은 패키지를
+// import하는 빌드 제약 제외 파일, 읽지 못한 제외 파일)이다 — 없으면 키가 빠진다. 공백을 숨기면
+// 쓰는 require가 미사용으로 보인다.
 type UnusedReport struct {
 	Module         string   `json:"module"`
 	Unused         []string `json:"unused"`
@@ -67,7 +68,10 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 	reachable := walkImports(pkgs)
 	modules := requireModules(requires)
 	used := usedModules(reachable, modules)
-	excluded := scanExcludedFiles(reachable)
+	loaded := loadedPackagePaths(reachable)
+	excluded := scanExcludedFiles(reachable, func(path string) bool {
+		return unseenImport(path, loaded, modPath, modules)
+	})
 	for _, path := range excluded.imports {
 		if m, ok := owningRequire(path, modules); ok {
 			used[m] = true
@@ -173,10 +177,10 @@ func unusedLimitations(reachable []*packages.Package, excluded excludedScan) []s
 			"%d packages reported load errors; requires needed only through them may be reported as unused",
 			len(broken)))
 	}
-	if excluded.files > 0 {
+	if excluded.unseenFiles > 0 {
 		out = append(out, fmt.Sprintf(
-			"%d source files excluded by build constraints were read for their imports only; requires needed only by the imported packages' dependencies may be reported as unused (load them with --goos or --tags)",
-			excluded.files))
+			"%d source files excluded by build constraints import packages that were not loaded; requires needed only by those packages' dependencies may be reported as unused (load them with --goos or --tags)",
+			excluded.unseenFiles))
 	}
 	if excluded.unreadable > 0 {
 		out = append(out, fmt.Sprintf(
@@ -188,14 +192,18 @@ func unusedLimitations(reachable []*packages.Package, excluded excludedScan) []s
 
 // excludedScan은 주 모듈 패키지에서 빌드 제약으로 빠진 Go 파일을 tidy처럼 읽은 결과다.
 type excludedScan struct {
-	imports    []string // 읽은 파일들의 import 경로
-	files      int      // import를 읽은 파일 수 — tidy도 세지 않는 ignore 태그 파일은 공백이 아니라 빠진다
-	unreadable int      // 정규 파일이 아니거나 읽기·파싱에 실패해 import를 모르는 파일 수
+	imports []string // 읽은 파일들의 import 경로
+	// unseenFiles는 이번 로드가 보지 못한 패키지(unseenImport)를 import하는 읽은 파일 수다 — 그
+	// 패키지 자신의 import가 공백이다. import가 모두 std거나 로드된 패키지인 파일은 공백이 없어 세지
+	// 않는다(대부분 저장소의 OS별 파일은 std만 쓴다). ignore 태그 파일은 tidy도 세지 않아 빠진다.
+	unseenFiles int
+	unreadable  int // 정규 파일이 아니거나 읽기·파싱에 실패해 import를 모르는 파일 수
 }
 
 // scanExcludedFiles는 주 모듈 패키지(테스트 변형 포함)의 IgnoredFiles 중 Go 파일의 import를
 // 모은다. 변형은 원 패키지와 같은 디렉터리라 같은 파일을 다시 싣는다 — 경로로 한 번만 읽는다.
-func scanExcludedFiles(reachable []*packages.Package) excludedScan {
+// unseen은 import 하나가 이번 로드가 보지 못한 패키지인지다(unseenImport).
+func scanExcludedFiles(reachable []*packages.Package, unseen func(string) bool) excludedScan {
 	var scan excludedScan
 	seen := map[string]bool{}
 	for _, p := range reachable {
@@ -207,14 +215,14 @@ func scanExcludedFiles(reachable []*packages.Package) excludedScan {
 				continue
 			}
 			seen[file] = true
-			scan.read(file)
+			scan.read(file, unseen)
 		}
 	}
 	return scan
 }
 
 // read는 제외 파일 하나의 import를 모은다. tidy가 세지 않는 ignore 태그 파일은 건너뛴다.
-func (s *excludedScan) read(path string) {
+func (s *excludedScan) read(path string, unseen func(string) bool) {
 	f, err := parseImportHeader(path)
 	if err != nil {
 		s.unreadable++
@@ -223,12 +231,44 @@ func (s *excludedScan) read(path string) {
 	if !tidyBuildsFile(f) {
 		return
 	}
-	s.files++
+	blind := false
 	for _, spec := range f.Imports {
 		if imp, err := strconv.Unquote(spec.Path.Value); err == nil {
 			s.imports = append(s.imports, imp)
+			blind = blind || unseen(imp)
 		}
 	}
+	if blind {
+		s.unseenFiles++
+	}
+}
+
+// loadedPackagePaths는 이번 로드에 든 패키지 경로 집합이다(테스트 변형은 원 패키지와 같은 경로).
+// 로드에 실패한 패키지도 든다 — 그 공백은 로드 오류 limitation이 따로 센다.
+func loadedPackagePaths(reachable []*packages.Package) map[string]bool {
+	out := make(map[string]bool, len(reachable))
+	for _, p := range reachable {
+		out[p.PkgPath] = true
+	}
+	return out
+}
+
+// unseenImport는 제외 파일의 import가 판정 공백을 남기는지 본다 — 이번 로드에 없는 비 std 패키지는
+// 자기 import(다른 require가 필요할 수 있다)를 보지 못했다. 로드된 패키지의 import는 이번 로드가 이미
+// 따라갔고, std는 require에 기대지 않는다. std는 go 명령의 규칙대로 첫 경로 요소에 점이 없는 경로다.
+// 다만 점 없는 주 모듈 경로(module myapp)와 require 경로(로컬 replace)는 std가 아니다.
+func unseenImport(path string, loaded map[string]bool, modPath string, requires map[string]bool) bool {
+	if loaded[path] {
+		return false
+	}
+	if path == modPath || strings.HasPrefix(path, modPath+"/") {
+		return true
+	}
+	if _, ok := owningRequire(path, requires); ok {
+		return true
+	}
+	first, _, _ := strings.Cut(path, "/")
+	return strings.Contains(first, ".")
 }
 
 // maxImportHeader는 제외 파일에서 빌드 제약과 import를 찾으며 읽는 앞부분의 상한(바이트)이다.

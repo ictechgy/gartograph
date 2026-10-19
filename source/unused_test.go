@@ -64,8 +64,11 @@ func TestScanExcludedFilesReadsOnlyRegularFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	var scan excludedScan
-	testutil.FinishWithin(t, testutil.BlockDeadline, func() { scan = scanExcludedFiles(walkImports(pkgs)) })
-	if scan.files != 1 || scan.unreadable != 1 || len(scan.imports) != 1 || scan.imports[0] != "example.com/dep" {
+	reachable := walkImports(pkgs)
+	loaded := loadedPackagePaths(reachable)
+	unseen := func(path string) bool { return unseenImport(path, loaded, "example.com/fixture", nil) }
+	testutil.FinishWithin(t, testutil.BlockDeadline, func() { scan = scanExcludedFiles(reachable, unseen) })
+	if scan.unseenFiles != 1 || scan.unreadable != 1 || len(scan.imports) != 1 || scan.imports[0] != "example.com/dep" {
 		t.Fatalf("want the regular file read and the FIFO counted unreadable: %+v", scan)
 	}
 	lims := unusedLimitations(nil, scan)
@@ -88,6 +91,31 @@ func TestParseImportHeaderLimit(t *testing.T) {
 	}
 	if f, err := parseImportHeader(deep); err == nil && len(f.Imports) > 0 {
 		t.Fatalf("imports after the first %d bytes must not be read: %v", maxImportHeader, f.Imports)
+	}
+}
+
+// TestUnseenImport는 제외 파일의 import 중 판정 공백을 남기는 것만 고르는지 확인한다 — 이번 로드가
+// 보지 못한 비 std 패키지다. 로드된 패키지는 의존까지 셌고 std는 require에 기대지 않는다. std는 첫 경로
+// 요소에 점이 없는 경로지만, 점 없는 주 모듈 경로와 require 경로는 std가 아니다.
+func TestUnseenImport(t *testing.T) {
+	loaded := map[string]bool{"os": true, "fixture/lib": true, "example.com/dep": true}
+	requires := map[string]bool{"example.com/dep": true, "localdep": true}
+	for path, want := range map[string]bool{
+		"os":                       false, // 로드된 std
+		"syscall/js":               false, // 로드되지 않은 std
+		"C":                        false, // cgo 의사 패키지
+		"fixture/lib":              false, // 로드된 주 모듈 패키지
+		"example.com/dep":          false, // 로드된 require 패키지
+		"fixture":                  true,  // 점 없는 주 모듈 경로 자체
+		"fixture/winonly":          true,  // 이 플랫폼 파일이 없어 로드되지 않은 주 모듈 패키지
+		"fixtures/x":               false, // 주 모듈과 경로 요소 경계가 다르다 — std 모양
+		"localdep/sub":             true,  // 점 없는 require(로컬 replace)
+		"example.com/x/y":          true,  // 로드되지 않은 비 std
+		"golang.org/x/sys/windows": true,  // require 목록 밖이어도 점 있는 경로는 비 std
+	} {
+		if got := unseenImport(path, loaded, "fixture", requires); got != want {
+			t.Errorf("unseenImport(%q) = %v, want %v", path, got, want)
+		}
 	}
 }
 
