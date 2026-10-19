@@ -6,6 +6,7 @@ package analysis
 
 import (
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/ictechgy/gartograph/config"
@@ -53,8 +54,10 @@ type MetricsReport struct {
 func Metrics(d *graph.Document, cfg *config.File) *MetricsReport {
 	unit := map[string]string{} // 패키지 정점 ID → 단위(컴포넌트 또는 패키지 자신)
 	var unmapped []string
+	var mapped map[string][]string // 컴포넌트 → 정렬된 패키지 정점 ID(MapComponents 결과)
 	if cfg != nil {
 		m := MapComponents(d, cfg)
+		mapped = m.Components
 		for name, pkgs := range m.Components {
 			for _, p := range pkgs {
 				unit[p] = name
@@ -144,12 +147,10 @@ func Metrics(d *graph.Document, cfg *config.File) *MetricsReport {
 	for _, n := range sorted {
 		var pkgs []string
 		if cfg != nil {
-			for p, u := range unit {
-				if u == n {
-					pkgs = append(pkgs, p)
-				}
-			}
-			sort.Strings(pkgs)
+			// 매핑 결과는 이미 정렬된 목록이다 — 컴포넌트마다 unit 전체를 다시 훑으면 init이
+			// 만든 패키지당 컴포넌트 설정에서 비용이 컴포넌트 수 × 패키지 수가 된다.
+			// 겹친 정점 ID(손으로 합친 문서)는 unit 키처럼 한 번만 싣는다.
+			pkgs = slices.Compact(mapped[n])
 		} else {
 			pkgs = []string{n}
 		}

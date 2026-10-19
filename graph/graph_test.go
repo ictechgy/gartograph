@@ -268,3 +268,51 @@ func TestValidatePattern(t *testing.T) {
 		}
 	}
 }
+
+// TestMatchPathRecursivePrefix는 `x/**` 판정이 접두사 비교를 할당 없이 하면서 예전 판정
+// (path == x 또는 x+"/" 접두사)과 같은 답을 내는지 확인한다. 컴포넌트 해석은 패키지마다
+// 패턴을 맞추므로, 판정마다 x+"/"를 만들면 init이 만든 설정(패키지당 `rel/**`)에서 패키지 수
+// × 컴포넌트 수만큼 문자열을 만든다 — 32바이트를 넘는 접두사는 힙에 잡힌다.
+func TestMatchPathRecursivePrefix(t *testing.T) {
+	const prefix = "github.com/example/project/internal/service"
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{prefix, true},
+		{prefix + "/api", true},
+		{prefix + "/api/v1", true},
+		{prefix + "/**", true},
+		{prefix + "/", true},
+		{prefix + "s", false}, // 접두사가 같은 이웃 디렉터리
+		{prefix + "s/api", false},
+		{prefix[:len(prefix)-1], false},
+		{"other/" + prefix, false},
+	}
+	for _, c := range cases {
+		if got := MatchPath(prefix+"/**", c.path); got != c.want {
+			t.Errorf("MatchPath(%q, %q) = %v, want %v", prefix+"/**", c.path, got, c.want)
+		}
+	}
+	pattern := prefix + "/**"
+	allocs := testing.AllocsPerRun(100, func() {
+		for _, c := range cases {
+			if MatchPath(pattern, c.path) != c.want {
+				panic("MatchPath answer changed inside AllocsPerRun")
+			}
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("a \"dir/**\" match must not allocate, got %v allocations per run", allocs)
+	}
+	// 짧은 알파벳의 모든 접두사·경로 쌍에서 예전 판정과 같아야 한다.
+	words := []string{"", "a", "b", "a/", "/a", "a/b", "ab", "a/a", "b/a/b", "/"}
+	for _, x := range words {
+		for _, p := range words {
+			want := p == x || strings.HasPrefix(p, x+"/")
+			if got := MatchPath(x+"/**", p); got != want {
+				t.Errorf("MatchPath(%q, %q) = %v, want %v", x+"/**", p, got, want)
+			}
+		}
+	}
+}

@@ -3,6 +3,8 @@ package analysis
 import (
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -188,6 +190,71 @@ func BenchmarkMetrics(b *testing.B) {
 	for b.Loop() {
 		if rep := Metrics(d, nil); len(rep.Components) != 300 {
 			b.Fatalf("metrics: %d components", len(rep.Components))
+		}
+	}
+}
+
+// TestMetricsPackagesFollowMapping은 컴포넌트별 Packages가 MapComponents의 해석과 같은 정렬된
+// 목록이고, 겹친 정점 ID(손으로 합친 문서)는 한 번만 싣는지 확인한다 — Metrics는 매핑 결과를
+// 그대로 쓰고 컴포넌트마다 패키지 전체를 다시 훑지 않는다. 매칭이 없는 컴포넌트는 예전처럼
+// 빈 목록이 아니라 nil(JSON null)이다.
+func TestMetricsPackagesFollowMapping(t *testing.T) {
+	d := metricsDoc()
+	d.Vertices = append(d.Vertices,
+		graph.Vertex{ID: "example.com/m/web/api", Kind: graph.KindPackage, Name: "api"},
+		graph.Vertex{ID: "example.com/m/svc", Kind: graph.KindPackage, Name: "svc"},
+	)
+	cfg := &config.File{Components: map[string][]string{
+		"web": {"web/**"}, "svc": {"svc"}, "db": {"db"}, "util": {"util"}, "ghost": {"nowhere"},
+	}}
+	want := map[string][]string{
+		"web":   {"example.com/m/web", "example.com/m/web/api"},
+		"svc":   {"example.com/m/svc"},
+		"db":    {"example.com/m/db"},
+		"util":  {"example.com/m/util"},
+		"ghost": nil,
+	}
+	rep := Metrics(d, cfg)
+	if len(rep.Components) != len(want) {
+		t.Fatalf("expected %d components, got %+v", len(want), rep.Components)
+	}
+	for _, m := range rep.Components {
+		if !reflect.DeepEqual(m.Packages, want[m.Name]) {
+			t.Errorf("%s packages = %q, want %q", m.Name, m.Packages, want[m.Name])
+		}
+	}
+}
+
+// BenchmarkMetricsScaffold는 init이 만든 설정(패키지당 컴포넌트 하나, 2만 개)을 읽어 2만 패키지
+// 문서의 결합도를 계산한다 — 패키지마다 모든 패턴을 맞추고 컴포넌트마다 패키지 전체를 다시
+// 훑으면 둘 다 패키지 수 × 컴포넌트 수가 되어 호출당 초 단위였다.
+func BenchmarkMetricsScaffold(b *testing.B) {
+	const n = 20000
+	d := &graph.Document{Module: "example.com/big"}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("p%05d", i)
+		d.Vertices = append(d.Vertices, graph.Vertex{ID: d.Module + "/" + name, Kind: graph.KindPackage, Name: name})
+		if i > 0 {
+			d.Edges = append(d.Edges, graph.Edge{
+				From: d.Module + "/" + name, To: fmt.Sprintf("%s/p%05d", d.Module, i-1), Kind: graph.EdgeImport,
+			})
+		}
+	}
+	data, err := config.Render(ScaffoldConfig(d))
+	if err != nil {
+		b.Fatal(err)
+	}
+	path := filepath.Join(b.TempDir(), ".gartograph.yml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		b.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		if rep := Metrics(d, cfg); len(rep.Components) != n || len(rep.Unmapped) != 0 {
+			b.Fatalf("metrics: %d components, %d unmapped", len(rep.Components), len(rep.Unmapped))
 		}
 	}
 }

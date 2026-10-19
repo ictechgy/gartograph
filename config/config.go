@@ -83,6 +83,10 @@ type File struct {
 	Limits      []LimitRule            `yaml:"limits"`
 	Exclude     []string               `yaml:"exclude"`
 	Stability   bool                   `yaml:"stability"`
+
+	// components는 Load가 만든 컴포넌트 패턴 색인이다(yaml이 채우지 않는 비공개 필드).
+	// 설정은 읽은 뒤 바뀌지 않는다는 전제다 — Load 뒤에 Components를 고치면 색인이 낡는다.
+	components *componentIndex
 }
 
 // DenyEntry는 deny 목록의 한 항목이다.
@@ -170,6 +174,7 @@ func Load(path string) (*File, error) {
 	if err := f.checkRefs(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	f.components = newComponentIndex(f.Components)
 	return &f, nil
 }
 
@@ -391,19 +396,94 @@ func Render(f *File) ([]byte, error) {
 // 여러 컴포넌트가 맞으면 더 긴 패턴이 이긴다 — 구체적 규칙이 우선한다.
 // 길이까지 같으면 이름이 작은 쪽이 이긴다 — 맵 순회 순서에 맡기면
 // 같은 설정이 실행마다 다른 컴포넌트를 골라 baseline이 흔들린다.
+// Load가 만든 색인으로 찾는다. Load를 거치지 않은 File(테스트가 직접 만든 값, init 초안)은
+// 색인이 없어 호출마다 만든다 — 그런 값은 작고, 만든 뒤 Components를 고쳐도 답이 맞는다.
 func (f *File) ComponentOf(relPath string) (string, bool) {
-	best, bestLen := "", -1
-	for name, pats := range f.Components {
+	index := f.components
+	if index == nil {
+		index = newComponentIndex(f.Components)
+	}
+	return index.lookup(relPath)
+}
+
+// componentIndex는 컴포넌트 패턴을 graph.MatchPath의 분기별로 나눈 색인이다.
+// 정확 일치와 `x/**`는 경로와 그 상위 디렉터리로 바로 찾고 글롭만 하나씩 맞춘다 — init이 만든
+// "패키지당 `rel/**`" 설정에서 경로마다 모든 패턴을 비교하면 비용이 패키지 수 × 컴포넌트 수가
+// 되어, 2만 패키지 저장소의 rules·metrics·mapping이 각각 10~16초 걸렸다.
+// 같은 키의 패턴은 길이가 같으므로 키마다 이름이 가장 작은 컴포넌트만 남겨도 답이 같다.
+type componentIndex struct {
+	exact     map[string]string  // 패턴 → 컴포넌트명(`*`·`?`가 없고 `/**`로 끝나지 않는 패턴)
+	recursive map[string]string  // `x/**`의 x → 컴포넌트명
+	globs     []componentPattern // 나머지 — graph.MatchPath로 하나씩 맞춘다
+}
+
+// componentPattern은 색인 키로 찾을 수 없는 패턴 하나와 그 컴포넌트다.
+type componentPattern struct{ name, pattern string }
+
+// newComponentIndex는 components를 MatchPath의 분기와 같은 기준으로 나눠 담는다.
+// 검증 전 패턴(Load를 거치지 않은 File)도 MatchPath와 같은 답을 내도록 분류만 하고 고치지 않는다.
+func newComponentIndex(components map[string][]string) *componentIndex {
+	index := &componentIndex{exact: map[string]string{}, recursive: map[string]string{}}
+	for name, pats := range components {
 		for _, pat := range pats {
-			if !matchPath(pat, relPath) {
-				continue
-			}
-			if len(pat) > bestLen || (len(pat) == bestLen && name < best) {
-				best, bestLen = name, len(pat)
+			switch {
+			case strings.HasSuffix(pat, "/**"):
+				keepSmallestName(index.recursive, strings.TrimSuffix(pat, "/**"), name)
+			case strings.ContainsAny(pat, "*?"):
+				index.globs = append(index.globs, componentPattern{name: name, pattern: pat})
+			default:
+				keepSmallestName(index.exact, pat, name)
 			}
 		}
 	}
-	return best, best != ""
+	return index
+}
+
+// keepSmallestName은 key에 이름이 가장 작은 컴포넌트를 남긴다 — 길이가 같은 후보의 tie-break다.
+func keepSmallestName(names map[string]string, key, name string) {
+	if current, ok := names[key]; !ok || name < current {
+		names[key] = name
+	}
+}
+
+// lookup은 relPath에 맞는 패턴 중 가장 긴 것(같으면 이름이 작은 것)의 컴포넌트를 고른다.
+// `x/**`는 x 자신과 그 아래를 맞추므로 relPath 자신과 `/` 앞에서 끊은 모든 접두사가 후보 키다.
+func (index *componentIndex) lookup(relPath string) (string, bool) {
+	best := componentMatch{length: -1}
+	if name, ok := index.exact[relPath]; ok {
+		best.consider(name, len(relPath))
+	}
+	if name, ok := index.recursive[relPath]; ok {
+		best.consider(name, len(relPath)+len("/**"))
+	}
+	for i := 0; i < len(relPath); i++ {
+		if relPath[i] != '/' {
+			continue
+		}
+		if name, ok := index.recursive[relPath[:i]]; ok {
+			best.consider(name, i+len("/**"))
+		}
+	}
+	for _, g := range index.globs {
+		if matchPath(g.pattern, relPath) {
+			best.consider(g.name, len(g.pattern))
+		}
+	}
+	return best.name, best.name != ""
+}
+
+// componentMatch는 지금까지 이긴 후보다 — 더 긴 패턴이 이기고, 길이가 같으면 이름이 작은 쪽이
+// 이긴다. 후보를 보는 순서와 무관한 답이라 색인 출처·맵 순회 순서가 결과를 흔들지 않는다.
+type componentMatch struct {
+	name   string
+	length int
+}
+
+// consider는 길이 length인 패턴으로 맞은 컴포넌트 name을 후보로 본다.
+func (m *componentMatch) consider(name string, length int) {
+	if length > m.length || (length == m.length && name < m.name) {
+		m.name, m.length = name, length
+	}
 }
 
 // Allowed는 from 컴포넌트가 to 컴포넌트에 의존할 수 있는지 본다.

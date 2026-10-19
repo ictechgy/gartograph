@@ -1,11 +1,14 @@
 package config
 
 import (
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
 )
 
@@ -107,6 +110,181 @@ func TestComponentOfGlob(t *testing.T) {
 	}
 	if _, ok := f.ComponentOf("gen/ax"); ok {
 		t.Fatal("mid-glob must not match a shorter name")
+	}
+}
+
+// linearComponentOf는 색인 전의 ComponentOf다 — 모든 컴포넌트의 모든 패턴을 graph.MatchPath로
+// 맞추고 더 긴 패턴, 길이가 같으면 더 작은 이름을 고른다. 느려도 대조 기준으로 그대로 둔다.
+func linearComponentOf(components map[string][]string, relPath string) (string, bool) {
+	best, bestLen := "", -1
+	for name, pats := range components {
+		for _, pat := range pats {
+			if !graph.MatchPath(pat, relPath) {
+				continue
+			}
+			if len(pat) > bestLen || (len(pat) == bestLen && name < best) {
+				best, bestLen = name, len(pat)
+			}
+		}
+	}
+	return best, best != ""
+}
+
+// tiedNames는 경로에 맞는 가장 긴 패턴을 가진 서로 다른 컴포넌트 수다 — 2 이상이면
+// 이름 순 tie-break가 답을 정한다.
+func tiedNames(components map[string][]string, relPath string) int {
+	bestLen, names := -1, map[string]bool{}
+	for name, pats := range components {
+		for _, pat := range pats {
+			switch {
+			case !graph.MatchPath(pat, relPath) || len(pat) < bestLen:
+			case len(pat) > bestLen:
+				bestLen, names = len(pat), map[string]bool{name: true}
+			default:
+				names[name] = true
+			}
+		}
+	}
+	return len(names)
+}
+
+// TestComponentOfMatchesLinearScan은 색인한 해석이 모든 패턴을 훑던 선형 해석과 같은 컴포넌트를
+// 고르는지 무작위 설정으로 확인한다 — 정확 일치·`x/**`·글롭이 한 경로에 함께 맞고, 같은 길이
+// 패턴이 여러 이름에 걸리는 tie-break(빈 이름 포함)까지 같아야 한다. Load를 거치지 않은 File은
+// 검증 전 패턴(`?`, 중간 `**`, `/**`, 빈 세그먼트)도 담을 수 있어 그것도 섞는다.
+func TestComponentOfMatchesLinearScan(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	segments := []string{"a", "b", "ab", "*", "a*", "*b", "**", "?", "", "."}
+	randomPath := func(maxSegments int) string {
+		parts := make([]string, 1+rng.Intn(maxSegments))
+		for i := range parts {
+			parts[i] = segments[rng.Intn(len(segments))]
+		}
+		return strings.Join(parts, "/")
+	}
+	// pathNear는 패턴에서 경로를 만든다 — `*`를 채우고 `/**` 아래로 내려가야 무작위 경로보다
+	// 훨씬 자주 맞고, 여러 패턴이 한 경로에 겹친다.
+	pathNear := func(pattern string) string {
+		path, recursive := strings.CutSuffix(pattern, "/**")
+		path = strings.ReplaceAll(path, "*", []string{"", "a", "ab"}[rng.Intn(3)])
+		if recursive && rng.Intn(2) == 0 {
+			path += "/" + randomPath(2)
+		}
+		return path
+	}
+	names := []string{"", "a", "b", "c", "ab"}
+	var matched, unmatched, ties int
+	for round := 0; round < 400; round++ {
+		components := map[string][]string{}
+		var patterns []string
+		for n := rng.Intn(6); n >= 0; n-- {
+			name := names[rng.Intn(len(names))]
+			for k := rng.Intn(3); k >= 0; k-- {
+				pattern := randomPath(3)
+				if rng.Intn(3) == 0 {
+					pattern += "/**"
+				}
+				// 다른 이름이 같은 패턴을 갖게 해 같은 길이 후보(tie)를 자주 만든다.
+				if len(patterns) > 0 && rng.Intn(4) == 0 {
+					pattern = patterns[rng.Intn(len(patterns))]
+				}
+				components[name] = append(components[name], pattern)
+				patterns = append(patterns, pattern)
+			}
+		}
+		literal := &File{Components: components}
+		for q := 0; q < 50; q++ {
+			path := randomPath(4)
+			if q%2 == 0 {
+				path = pathNear(patterns[rng.Intn(len(patterns))])
+			}
+			wantName, wantOK := linearComponentOf(components, path)
+			if gotName, gotOK := literal.ComponentOf(path); gotName != wantName || gotOK != wantOK {
+				t.Fatalf("components %q, path %q: ComponentOf = (%q, %v), linear scan = (%q, %v)",
+					components, path, gotName, gotOK, wantName, wantOK)
+			}
+			if wantOK {
+				matched++
+			} else {
+				unmatched++
+			}
+			if tiedNames(components, path) > 1 {
+				ties++
+			}
+		}
+	}
+	t.Logf("matched %d, unmatched %d, ties %d", matched, unmatched, ties)
+	if matched < 5000 || unmatched < 5000 || ties < 1000 {
+		t.Fatalf("random configs must exercise matches, misses and ties: %d matched, %d unmatched, %d ties",
+			matched, unmatched, ties)
+	}
+}
+
+// TestLoadIndexesComponentPatterns는 Load가 정확 일치·`x/**` 패턴을 경로로 바로 찾는 색인에
+// 담고 글롭만 하나씩 맞추게 남기는지 확인한다 — init이 만든 "패키지당 `rel/**`" 설정에서 경로
+// 하나를 해석할 때 모든 패턴을 훑으면 비용이 컴포넌트 수에 비례해, 2만 패키지 문서의
+// rules·metrics·mapping이 각각 10~16초 걸렸다. 답은 선형 해석과 같아야 한다.
+func TestLoadIndexesComponentPatterns(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("components:\n  root: [\".\"]\n  gen: [\"gen/*\"]\n  p007x: [\"p007/xyz\"]\n")
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&b, "  p%03d: [\"p%03d/**\"]\n", i, i)
+	}
+	f, err := Load(writeRules(t, b.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := f.components
+	if idx == nil {
+		t.Fatal("Load must build the component index")
+	}
+	if len(idx.exact) != 2 || len(idx.recursive) != 300 || len(idx.globs) != 1 {
+		t.Fatalf("Load must index exact and \"dir/**\" patterns and leave only the glob to scan, "+
+			"got %d exact, %d recursive, %d globs", len(idx.exact), len(idx.recursive), len(idx.globs))
+	}
+	// 더 긴 패턴이 이긴다 — "p007/xyz"(8자)는 "p007/**"(7자)를 이기지만 그 아래 경로는 못 맞춘다.
+	for path, want := range map[string]string{
+		".": "root", "gen/x": "gen", "p007": "p007", "p007/xyz": "p007x", "p007/xyz/q": "p007",
+		"p123/a/b": "p123", "p299": "p299", "p300": "", "p1234/x": "", "gen/x/y": "",
+	} {
+		got, ok := f.ComponentOf(path)
+		if got != want || ok != (want != "") {
+			t.Errorf("ComponentOf(%q) = (%q, %v), want %q", path, got, ok, want)
+		}
+		if linear, linearOK := linearComponentOf(f.Components, path); got != linear || ok != linearOK {
+			t.Errorf("ComponentOf(%q) = (%q, %v), linear scan = (%q, %v)", path, got, ok, linear, linearOK)
+		}
+	}
+}
+
+// BenchmarkComponentOfScaffold는 init이 만든 모양(패키지당 `rel/**` 하나)의 2만 컴포넌트 설정을
+// 읽고 2만 경로를 모두 해석한다 — 경로마다 모든 패턴을 훑으면 한 번에 4억 번 비교다.
+func BenchmarkComponentOfScaffold(b *testing.B) {
+	const n = 20000
+	components := make(map[string][]string, n)
+	paths := make([]string, n)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("p%05d", i)
+		components[paths[i]] = []string{paths[i] + "/**"}
+	}
+	data, err := Render(&File{Components: components})
+	if err != nil {
+		b.Fatal(err)
+	}
+	rules := filepath.Join(b.TempDir(), ".gartograph.yml")
+	if err := os.WriteFile(rules, data, 0o644); err != nil {
+		b.Fatal(err)
+	}
+	f, err := Load(rules)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		for _, p := range paths {
+			if name, ok := f.ComponentOf(p + "/sub"); !ok || name != p {
+				b.Fatalf("%s/sub resolved to %q", p, name)
+			}
+		}
 	}
 }
 

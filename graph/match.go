@@ -19,8 +19,11 @@ func MatchPath(pattern, path string) bool {
 	case pattern == path:
 		return true
 	case strings.HasSuffix(pattern, "/**"):
+		// prefix+"/"를 만들지 않고 바로 뒤 바이트를 본다 — 컴포넌트 해석은 패키지마다
+		// 패턴을 맞추므로 판정마다 문자열을 만들면 패키지 수 × 패턴 수만큼 할당한다.
 		prefix := strings.TrimSuffix(pattern, "/**")
-		return path == prefix || strings.HasPrefix(path, prefix+"/")
+		return path == prefix || (len(path) > len(prefix) && path[len(prefix)] == '/' &&
+			strings.HasPrefix(path, prefix))
 	case strings.ContainsAny(pattern, "*?"):
 		return matchGlob(pattern, path)
 	default:
