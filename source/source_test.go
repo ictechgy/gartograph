@@ -1,6 +1,7 @@
 package source
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,6 +137,127 @@ func Shout() {}
 	}
 	if !noted {
 		t.Fatalf("variant merge must be noted: %v", doc.Limitations)
+	}
+}
+
+// testsCountFixture는 --tests 수치 비교용 모듈이다. lib은 reflect를 import하고 //go:linkname과
+// 모듈 밖 참조를 가지며, 빌드 제약으로 빠진 파일 하나와 _test.go 하나를 둔다. extra가 있으면
+// lib에 그 내용의 extra.go를 더한다.
+func testsCountFixture(t *testing.T, extra string) string {
+	t.Helper()
+	files := map[string]string{
+		"lib/lib.go": `package lib
+
+import (
+	"fmt"
+	"reflect"
+	_ "unsafe"
+)
+
+//go:linkname runtimeNano runtime.nanotime
+func runtimeNano() int64
+
+// Describe는 값을 찍고 타입 이름을 돌려준다.
+func Describe(v any) string {
+	fmt.Println(v)
+	return reflect.TypeOf(v).String()
+}
+`,
+		"lib/lib_other.go": "//go:build never\n\npackage lib\n\nfunc Other() {}\n",
+		"lib/lib_test.go":  "package lib\n\nimport \"testing\"\n\nfunc TestDescribe(t *testing.T) { t.Log(Describe(1)) }\n",
+	}
+	if extra != "" {
+		files["lib/extra.go"] = extra
+	}
+	return testutil.WriteModule(t, files)
+}
+
+// extraLibFile은 testsCountFixture의 lib에 더하는 파일이다 — 모듈 밖 import 하나(strings), 모듈
+// 밖 참조 둘, //go:linkname 하나를 더한다.
+const extraLibFile = `package lib
+
+import (
+	"strings"
+	_ "unsafe"
+)
+
+//go:linkname runtimeFastrand runtime.fastrand
+func runtimeFastrand() uint32
+
+// Shout은 앞뒤 공백을 지우고 대문자로 바꾼다.
+func Shout(s string) string { return strings.ToUpper(strings.TrimSpace(s)) }
+`
+
+// limitationCount는 phrase를 담은 limitation의 앞 숫자다. 없으면 0이다 — 알릴 것이 없으면
+// 문장도 없다.
+func limitationCount(t *testing.T, doc *graph.Document, phrase string) int {
+	t.Helper()
+	for _, l := range doc.Limitations {
+		if !strings.Contains(l, phrase) {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(l, "%d ", &n); err != nil {
+			t.Fatalf("limitation %q has no leading count: %v", l, err)
+		}
+		return n
+	}
+	return 0
+}
+
+// TestTestsCountsEachFileOnce는 --tests 수확의 limitation 수치가 테스트 변형("p [p.test]")이 다시
+// 담은 원 패키지 파일을 두 번 세지 않는지 확인한다 — 정점은 PkgPath로 합쳐지는데 수치만 변형마다
+// 더하면 실제의 두세 배가 된다. 합성 test main의 기여는 go 버전마다 달라 값으로 박지 않고, 원
+// 패키지에 파일 하나를 더했을 때의 증가분이 --tests 유무와 같은지로 본다.
+func TestTestsCountsEachFileOnce(t *testing.T) {
+	harvest := func(dir string, tests bool) *graph.Document {
+		doc, err := Load(Options{Dir: dir, Level: graph.LevelSymbol, Tests: tests})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doc
+	}
+	base, more := testsCountFixture(t, ""), testsCountFixture(t, extraLibFile)
+	plainBase, plainMore := harvest(base, false), harvest(more, false)
+	testsBase, testsMore := harvest(base, true), harvest(more, true)
+	for _, phrase := range []string{
+		"imports of packages outside the module were omitted",
+		"references to symbols outside the module were omitted",
+		"//go:linkname directives found",
+	} {
+		plain := limitationCount(t, plainMore, phrase) - limitationCount(t, plainBase, phrase)
+		tests := limitationCount(t, testsMore, phrase) - limitationCount(t, testsBase, phrase)
+		if plain == 0 || tests != plain {
+			t.Errorf("%q: one base file adds %d without --tests but %d with it", phrase, plain, tests)
+		}
+	}
+	// 제외 파일과 reflect를 쓰는 패키지는 테스트가 늘리지 않는다 — 합성 test main이 import하는
+	// reflect는 go 도구의 코드라 세지 않는다.
+	for _, phrase := range []string{
+		"source files were excluded by build constraints",
+		"packages import reflect",
+	} {
+		if plain, tests := limitationCount(t, plainBase, phrase), limitationCount(t, testsBase, phrase); plain != 1 || tests != 1 {
+			t.Errorf("%q: %d without --tests and %d with it, want 1 and 1", phrase, plain, tests)
+		}
+	}
+}
+
+// TestTestsCountsLoadErrorsOnce는 원 패키지의 타입 오류를 테스트 변형이 다시 싣더라도 한 번만
+// 세는지 확인한다 — 같은 패키지의 같은 오류다.
+func TestTestsCountsLoadErrorsOnce(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"lib/lib.go":      "package lib\n\nfunc broken() int { return undefinedName }\n",
+		"lib/lib_test.go": "package lib\n\nimport \"testing\"\n\nfunc TestBroken(t *testing.T) { _ = broken() }\n",
+	})
+	for _, tests := range []bool{false, true} {
+		doc, err := Load(Options{Dir: dir, Level: graph.LevelType, Tests: tests})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := limitationCount(t, doc, "packages reported load errors"); n != 1 {
+			t.Errorf("tests=%v: %d load errors counted, want 1: %v", tests, n, doc.Limitations)
+		}
 	}
 }
 

@@ -29,8 +29,15 @@ type harvester struct {
 	fieldIDs map[types.Object]string // struct 필드 객체 → 정점 ID — 참조 간선 해석용
 	extRefs  int                     // 모듈 밖 심볼 참조 수
 	noTypes  int                     // 타입 정보 없는 패키지 수
-	reflectN int                     // reflect를 import하는 패키지 수
 	linkname int                     // //go:linkname 지시문 수
+	// reflectPkgs는 reflect를 import하는 패키지의 PkgPath다 — 테스트 변형이 원 패키지와 같은
+	// 패키지를 다시 싣으므로 수가 아니라 집합으로 센다.
+	reflectPkgs map[string]bool
+	// baseFiles는 테스트 변형이 아닌 패키지가 파싱한 파일이다. 테스트 변형("p [p.test]")은 원
+	// 패키지 파일을 _test.go와 함께 다시 담아 같은 생략 참조·지시문을 한 번 더 만난다 — 간선은
+	// key로 합쳐지지만 limitation 수치는 두 번 세게 된다. revisit은 지금 훑는 파일이 그런 재방문인지다.
+	baseFiles map[string]bool
+	revisit   bool
 	// packageIDs는 수확 전부터 있던 패키지 정점 ID다 — 심볼 ID가 이와 겹치면
 	// disambiguate가 접미사를 붙인다(h.id).
 	packageIDs map[string]bool
@@ -66,6 +73,8 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		initRoots:      make(map[string]int),
 		generatedFiles: make(map[string]bool),
 		loadedFiles:    loadedFileSet(internal),
+		reflectPkgs:    make(map[string]bool),
+		baseFiles:      baseSyntaxFiles(internal),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -95,9 +104,9 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		doc.Limitation(fmt.Sprintf(
 			"%d references to symbols outside the module were omitted", h.extRefs))
 	}
-	if h.reflectN > 0 {
+	if len(h.reflectPkgs) > 0 {
 		doc.Limitation(fmt.Sprintf(
-			"%d packages import reflect; reflection-based dispatch is not resolved", h.reflectN))
+			"%d packages import reflect; reflection-based dispatch is not resolved", len(h.reflectPkgs)))
 	}
 	if h.linkname > 0 {
 		doc.Limitation(fmt.Sprintf(
@@ -114,8 +123,8 @@ func (h *harvester) addSymbolVertices(internal []*packages.Package, wantSymbols 
 			h.noTypes++
 			continue
 		}
-		if p.Imports["reflect"] != nil {
-			h.reflectN++
+		if p.Imports["reflect"] != nil && !isTestMain(p) {
+			h.reflectPkgs[p.PkgPath] = true
 		}
 		scope := p.Types.Scope()
 		for _, name := range scope.Names() {
@@ -423,9 +432,11 @@ func (h *harvester) addStructuralEdges(internal []*packages.Package) {
 			} else {
 				concrete = append(concrete, concreteType{named: named})
 			}
+			h.revisit = h.revisits(p, tn.Pos())
 			h.embedEdges(tn, named, p.Fset)
 		}
 	}
+	h.revisit = false
 	for i := range concrete {
 		concrete[i].mset = types.NewMethodSet(types.NewPointer(concrete[i].named))
 	}
@@ -565,17 +576,74 @@ func (h *harvester) recordImpls(tset *types.MethodSet, iface *types.Interface, r
 
 // addBodyEdges는 선언 몸체를 순회해 call·references 간선을 긋는다.
 // 간선의 출발점은 감싸는 선언이다 — 몸체가 없는 선언(타입 등)은 시그니처만 본다.
+// 테스트 변형이 다시 담은 원 패키지 파일도 간선은 그대로 긋고 수치만 세지 않는다(revisit).
 func (h *harvester) addBodyEdges(internal []*packages.Package, wantSymbols bool) {
 	for _, p := range internal {
 		if p.TypesInfo == nil {
 			continue
 		}
 		for _, file := range p.Syntax {
-			h.linkname += countLinknames(file)
+			h.revisit = h.revisits(p, file.Pos())
+			if !h.revisit {
+				h.linkname += countLinknames(file)
+			}
 			for _, decl := range file.Decls {
 				h.declEdges(p, decl, wantSymbols)
 			}
 		}
+	}
+	h.revisit = false
+}
+
+// revisits는 테스트 변형("p [p.test]")이 원 패키지가 이미 훑은 파일을 다시 훑는 중인지 본다.
+// 변형이 아닌 패키지와, 원 패키지가 없는 변형의 파일(_test.go, 외부 테스트 패키지)은 늘 센다.
+func (h *harvester) revisits(p *packages.Package, pos token.Pos) bool {
+	if p.ID == p.PkgPath || p.Fset == nil {
+		return false
+	}
+	f := p.Fset.File(pos)
+	return f != nil && h.baseFiles[f.Name()]
+}
+
+// baseSyntaxFiles는 테스트 변형이 아닌 패키지(ID가 PkgPath와 같은 것)가 파싱한 파일 이름 집합이다 —
+// revisits가 변형이 다시 담은 원 패키지 파일을 가려내는 기준이다. //line 지시문이 바꾼 위치가
+// 아니라 실제 파일 이름(token.File.Name)을 쓴다.
+func baseSyntaxFiles(internal []*packages.Package) map[string]bool {
+	out := make(map[string]bool)
+	for _, p := range internal {
+		if p.ID != p.PkgPath || p.Fset == nil {
+			continue
+		}
+		for _, file := range p.Syntax {
+			if f := p.Fset.File(file.Pos()); f != nil {
+				out[f.Name()] = true
+			}
+		}
+	}
+	return out
+}
+
+// isTestMain은 go test가 합성한 test main 패키지("p.test")인지 본다 — 자기 ID가 붙은 테스트
+// 변형("p [p.test]"·"p_test [p.test]")을 import하는 main 패키지다. go 도구가 쓴 코드라 그
+// import(reflect 등)를 사용자 코드의 사실로 세지 않는다.
+func isTestMain(p *packages.Package) bool {
+	if p.Name != "main" || !strings.HasSuffix(p.ID, ".test") {
+		return false
+	}
+	suffix := " [" + p.ID + "]"
+	for _, imp := range p.Imports {
+		if strings.HasSuffix(imp.ID, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// omitRef는 모듈 밖 참조 하나를 limitation 수치에 센다 — 테스트 변형이 원 패키지가 이미 센
+// 파일을 다시 훑는 중이면(revisit) 세지 않는다.
+func (h *harvester) omitRef() {
+	if !h.revisit {
+		h.extRefs++
 	}
 }
 
@@ -1200,7 +1268,7 @@ func (h *harvester) refObject(obj types.Object, from string, pos *graph.Position
 	}
 	id := h.id(obj)
 	if !h.vertices[id] {
-		h.extRefs++
+		h.omitRef()
 		return
 	}
 	h.edge(from, id, graph.EdgeReferences, pos)
@@ -1263,7 +1331,7 @@ func (h *harvester) candidateEdge(from, to string, kind graph.EdgeKind, pos *gra
 func (h *harvester) addEdge(from, to string, kind graph.EdgeKind, pos *graph.Position, candidate bool) {
 	if !h.vertices[from] || !h.vertices[to] {
 		if h.vertices[from] && kind != graph.EdgeContains {
-			h.extRefs++
+			h.omitRef()
 		}
 		return
 	}
