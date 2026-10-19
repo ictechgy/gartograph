@@ -83,8 +83,8 @@ gartograph query <정점ID> --depth 2            # 이웃 되묻기(에이전트
 gartograph query 'github.com/ictechgy/gartograph/graph.(Document).Sort'
 gartograph impact <정점ID> --depth 2           # 역방향 전이 — 바꾸면 뭐가 깨지나
 gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분석
-                                              # (--files cli/cli.go도 가능. '-'로 시작하거나 제어
-                                              #  문자가 든 값은 사용법 오류. git 호출은 fsmonitor 훅을
+                                              # (git 2.24 이상. --files cli/cli.go도 가능. '-'로 시작하거나
+                                              #  제어 문자가 든 값은 사용법 오류. git 호출은 fsmonitor 훅을
                                               #  끄지만 작업 트리의 .git/config(필터 등)는 신뢰한다 —
                                               #  출처를 모르는 트리에서는 --files를 쓴다)
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나

@@ -579,6 +579,47 @@ func TestImpactSinceGuardsGit(t *testing.T) {
 	}
 }
 
+// TestChangedFilesSinceExplainsUsageErrors는 git diff가 인자를 사용법 오류(종료 코드 129)로 거부하면
+// 원인과 해결 방향을 담은 한 줄 오류를 내는지 본다. git 2.24보다 오래된 git은 --end-of-options를 모르는
+// 옵션으로 보고 수십 줄 사용법만 찍는다 — 그대로 옮기면 왜 실패했는지 보이지 않는다. 그런 git을
+// 흉내 내는 가짜 git을 PATH에 둔다. 다른 실패(종료 코드 128의 bad revision)는 git의 말을 그대로 옮긴다.
+func TestChangedFilesSinceExplainsUsageErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake git is a POSIX shell script")
+	}
+	fake := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = nope ]; then echo \"fatal: bad revision 'nope'\" >&2; exit 128; fi\n" +
+		"done\n" +
+		"echo 'usage: git diff [<options>] [<commit> [<commit>]] [--] [<path>...]' >&2\n" +
+		"echo '   or: git diff [<options>] --cached [<commit>] [--] [<path>...]' >&2\n" +
+		"exit 129\n"
+	if err := os.WriteFile(filepath.Join(fake, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fake)
+
+	_, err := changedFilesSince(t.TempDir(), "origin/main...HEAD")
+	if err == nil {
+		t.Fatal("a usage error from git must fail")
+	}
+	msg := err.Error()
+	for _, want := range []string{"(usage: git diff [<options>]", "git 2.24 or later", "--end-of-options", "--files"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("usage error must say %q: %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "\n") {
+		t.Errorf("usage error must keep only git's first usage line: %q", msg)
+	}
+
+	_, err = changedFilesSince(t.TempDir(), "nope")
+	if err == nil || err.Error() != "git diff nope: fatal: bad revision 'nope'" {
+		t.Fatalf("other git failures must keep git's own message: %v", err)
+	}
+}
+
 // TestRulesSarif는 SARIF 출력이 스키마를 갖춘 JSON인지 확인한다.
 func TestRulesSarif(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
