@@ -225,6 +225,30 @@ func TestMetricsPackagesFollowMapping(t *testing.T) {
 	}
 }
 
+// TestMetricsPackagesSortedForUnsortedDocument는 정점이 정렬되지 않았고 같은 ID가 떨어져 있는 문서에서도
+// 컴포넌트별 Packages가 정렬·중복 없는 목록인지 확인한다. Metrics는 MapComponents가 컴포넌트마다 목록을
+// 정렬해 돌려준다는 계약에 기대어 인접 중복만 지운다(slices.Compact) — 정렬이 빠지면 떨어진 중복이
+// 보고에 남는다. 그래서 MapComponents의 정렬 계약과 Metrics의 결과를 함께 고정한다.
+func TestMetricsPackagesSortedForUnsortedDocument(t *testing.T) {
+	d := &graph.Document{Module: "example.com/m", Vertices: []graph.Vertex{
+		{ID: "example.com/m/web/z", Kind: graph.KindPackage, Name: "z"},
+		{ID: "example.com/m/web", Kind: graph.KindPackage, Name: "web"},
+		{ID: "example.com/m/web/a", Kind: graph.KindPackage, Name: "a"},
+		// 손으로 합친 문서처럼 같은 ID가 떨어진 자리에 다시 나온다.
+		{ID: "example.com/m/web/z", Kind: graph.KindPackage, Name: "z"},
+	}}
+	cfg := &config.File{Components: map[string][]string{"web": {"web/**"}}}
+	mapped := []string{"example.com/m/web", "example.com/m/web/a", "example.com/m/web/z", "example.com/m/web/z"}
+	if got := MapComponents(d, cfg).Components["web"]; !reflect.DeepEqual(got, mapped) {
+		t.Fatalf("MapComponents must return each component's packages sorted: got %q, want %q", got, mapped)
+	}
+	rep := Metrics(d, cfg)
+	want := []string{"example.com/m/web", "example.com/m/web/a", "example.com/m/web/z"}
+	if len(rep.Components) != 1 || !reflect.DeepEqual(rep.Components[0].Packages, want) {
+		t.Fatalf("metrics packages must be sorted and listed once: got %+v, want %q", rep.Components, want)
+	}
+}
+
 // BenchmarkMetricsScaffold는 init이 만든 설정(패키지당 컴포넌트 하나, 2만 개)을 읽어 2만 패키지
 // 문서의 결합도를 계산한다 — 패키지마다 모든 패턴을 맞추고 컴포넌트마다 패키지 전체를 다시
 // 훑으면 둘 다 패키지 수 × 컴포넌트 수가 되어 호출당 초 단위였다.
