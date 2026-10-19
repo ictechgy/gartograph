@@ -507,6 +507,78 @@ func TestImpactSince(t *testing.T) {
 	}
 }
 
+// TestImpactSinceGuardsGit은 --since 값이 git 옵션으로 읽히지 않고(git을 실행하기 전에 사용법
+// 오류), 분석 대상 .git/config의 core.fsmonitor 훅이 돌지 않으며, 범위 표기는 계속 동작하는지
+// 확인한다 — `--since=--output=FILE`은 git이 임의 파일을 덮어쓰고도 빈 변경 목록으로 성공했다.
+func TestImpactSinceGuardsGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("the fsmonitor hook fixture is a POSIX shell script")
+	}
+	dir := deadFixture(t)
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("add", "-A")
+	git("commit", "-qm", "init")
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+	appendTo := func(rel, text string) {
+		t.Helper()
+		path := filepath.Join(dir, rel)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(src, text...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendTo("lib/lib.go", "func Changed() {}\n")
+	git("commit", "-qam", "change lib")
+
+	tmp := t.TempDir()
+	victim := filepath.Join(tmp, "victim")
+	if err := os.WriteFile(victim, []byte("ORIGINAL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, rev := range []string{"--output=" + victim, "-p", "HEAD\n--output=" + victim, "HEAD\x1b[2J"} {
+		code, out, errb := run(t, "impact", "--dir", dir, "--since="+rev)
+		if code != 2 || out != "" || !strings.Contains(errb, "HEAD~1") {
+			t.Fatalf("--since %q must be a usage error before git runs: %d %q %q", rev, code, out, errb)
+		}
+	}
+	if got, err := os.ReadFile(victim); err != nil || string(got) != "ORIGINAL\n" {
+		t.Fatalf("an option-like --since must not reach git: victim is %q (%v)", got, err)
+	}
+
+	code, out, errb := run(t, "impact", "--dir", dir, "--since", "origin/main...HEAD")
+	if code != 0 || !strings.Contains(out, `"lib/lib.go"`) {
+		t.Fatalf("range revisions must keep working: %d %s %s", code, out, errb)
+	}
+
+	marker := filepath.Join(tmp, "fsmonitor-ran")
+	hook := filepath.Join(tmp, "fsmonitor.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho ran >> '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("config", "core.fsmonitor", hook)
+	appendTo("main.go", "func extra() {}\n")
+	code, out, errb = run(t, "impact", "--dir", dir, "--since", "HEAD")
+	if code != 0 || !strings.Contains(out, `"main.go"`) {
+		t.Fatalf("impact --since HEAD on a dirty tree failed: %d %s %s", code, out, errb)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the work tree's core.fsmonitor hook must not run (stat err %v)", err)
+	}
+}
+
 // TestRulesSarif는 SARIF 출력이 스키마를 갖춘 JSON인지 확인한다.
 func TestRulesSarif(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{

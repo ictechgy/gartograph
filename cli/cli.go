@@ -1077,6 +1077,12 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 		}
 		*level = string(graph.LevelSymbol)
 	}
+	// --since는 수확 전에 검증한다 — 옵션처럼 읽히는 값은 git에 닿기 전에 사용법 오류다.
+	if *since != "" {
+		if err := checkSinceRevision(*since); err != nil {
+			return fail(stderr, err)
+		}
+	}
 	doc, err := loadIDDoc(opts, *graphPath, *level)
 	if err != nil {
 		return fail(stderr, err)

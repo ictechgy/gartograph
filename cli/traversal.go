@@ -454,13 +454,22 @@ func gitRevision(dir string) string {
 	return head
 }
 
-// runGit은 git 명령 하나를 실행한다. git이 없거나 실패하면 false다 — revision이 없다는
-// 것 자체가 소비자에게 가는 신호라 오류로 올리지 않는다.
-func runGit(dir string, args ...string) (string, bool) {
+// gitCommand는 분석 대상 작업 트리에서 실행할 git 명령 하나를 만든다. 저장소 index를 고치지
+// 않도록 선택 잠금·fsmonitor·untracked cache를 끄고(isthmus capture와 같은 설정), 그 결과
+// .git/config의 core.fsmonitor 훅도 실행하지 않는다. 프롬프트를 막고 메시지를 C 로캘로 고정한다.
+// 모든 git 호출(runGit·changedFilesSince)이 이 설정을 공유한다 — 호출마다 따로 쓰면 한쪽만
+// 훅을 실행하는 어긋남이 생긴다.
+func gitCommand(dir string, args ...string) *exec.Cmd {
 	full := append([]string{"-C", dir, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"}, args...)
 	cmd := exec.Command("git", full...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
-	out, err := cmd.Output()
+	return cmd
+}
+
+// runGit은 git 명령 하나를 실행한다. git이 없거나 실패하면 false다 — revision이 없다는
+// 것 자체가 소비자에게 가는 신호라 오류로 올리지 않는다.
+func runGit(dir string, args ...string) (string, bool) {
+	out, err := gitCommand(dir, args...).Output()
 	if err != nil {
 		return "", false
 	}

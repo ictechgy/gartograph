@@ -106,6 +106,9 @@ gartograph query 'github.com/ictechgy/gartograph/graph.(Document).Sort'
 gartograph impact github.com/ictechgy/gartograph/graph --depth 2
 
 # Diff-aware impact: what breaks given the files changed since a revision
+# (a value that starts with '-' or holds control characters is a usage error).
+# git runs with fsmonitor hooks off but trusts the rest of the work tree's
+# .git/config (filters etc.); in a tree of unknown origin pass --files instead.
 gartograph impact --since origin/main...HEAD          # or --files cli/cli.go
 
 # Shortest dependency path: why does 'from' reach 'to'
