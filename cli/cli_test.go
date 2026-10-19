@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -720,6 +721,77 @@ func TestUnknownFormat(t *testing.T) {
 	} {
 		if code, _, _ := run(t, args...); code != 2 {
 			t.Fatalf("%v: expected 2, got %d", args, code)
+		}
+	}
+}
+
+// TestBadFormatLeavesArtifactsUntouched는 거부될 --format 호출이 기존 baseline·저장 문서를
+// 덮어쓰지 않는지 확인한다 — 형식 오타 한 번이 커밋된 baseline을 지우면 다음 --baseline
+// 실행에서 알려진 항목이 전부 새 항목이 된다. rules처럼 형식 검증이 부수 효과보다 먼저다.
+func TestBadFormatLeavesArtifactsUntouched(t *testing.T) {
+	dir := cycleFixture(t)
+	tmp := t.TempDir()
+	cases := []struct {
+		path string
+		args []string
+	}{
+		{filepath.Join(tmp, "cycles.json"), []string{"cycles", "--dir", dir, "--write-baseline"}},
+		{filepath.Join(tmp, "dead.json"), []string{"dead", "--dir", dir, "--write-baseline"}},
+		{filepath.Join(tmp, "graph.json"), []string{"graph", "--dir", dir, "--out"}},
+	}
+	const sentinel = "existing artifact\n"
+	for _, c := range cases {
+		t.Run(c.args[0], func(t *testing.T) {
+			if err := os.WriteFile(c.path, []byte(sentinel), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			args := append(append([]string(nil), c.args...), c.path, "--format", "bogus")
+			code, out, errb := run(t, args...)
+			if code != 2 || out != "" || !strings.Contains(errb, `unknown format "bogus"`) {
+				t.Fatalf("%v: bad format must be a usage error before any output: %d %q %q", args, code, out, errb)
+			}
+			if got, err := os.ReadFile(c.path); err != nil || string(got) != sentinel {
+				t.Fatalf("%v: rejected invocation rewrote %s: %q %v", args, c.path, got, err)
+			}
+			// 같은 호출이 올바른 형식이면 실제로 쓴다 — 경로가 틀려 위 검사가 헛도는 것을 막는다.
+			if code, _, errb := run(t, append(c.args, c.path)...); code != 0 {
+				t.Fatalf("%v: valid invocation failed: %d %s", c.args, code, errb)
+			}
+			if got, err := os.ReadFile(c.path); err != nil || string(got) == sentinel {
+				t.Fatalf("%v: valid invocation must write %s: %v", c.args, c.path, err)
+			}
+		})
+	}
+}
+
+// failingWriter는 모든 쓰기를 실패시킨다 — 디스크가 가득 찬 표준 출력을 흉내 낸다.
+type failingWriter struct{}
+
+// Write는 io.Writer 계약이다.
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("no space left on device")
+}
+
+// TestStdoutWriteErrorsFail은 산출물을 표준 출력에 쓰다 실패하면 2로 끝나는지 확인한다 —
+// 잘린 그래프·SARIF·사실 문서가 성공(0)으로 끝나면 소비자가 그것을 완전한 산출물로 읽는다.
+func TestStdoutWriteErrorsFail(t *testing.T) {
+	dead, rules := deadFixture(t), rulesFixture(t)
+	for _, args := range [][]string{
+		{"graph", "--dir", dead},
+		{"graph", "--dir", dead, "--format", "dot"},
+		{"cycles", "--dir", dead, "--format", "sarif"},
+		{"dead", "--dir", dead, "--format", "sarif"},
+		{"rules", "--dir", rules, "--format", "sarif"},
+		{"rules", "--dir", rules, "--format", "json"},
+		{"bridges", "--dir", dead},
+		{"schema", "--dir", dead},
+		{"routes", "--dir", dead},
+		{"reach", "example.com/fixture/lib.Run", "--dir", dead},
+	} {
+		var errb bytes.Buffer
+		code := Run(args, failingWriter{}, &errb)
+		if code != 2 || !strings.Contains(errb.String(), "no space left on device") {
+			t.Errorf("%v: a failed write must exit 2 with its cause, got %d %q", args, code, errb.String())
 		}
 	}
 }

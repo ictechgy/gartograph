@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -291,6 +292,29 @@ func fail(stderr io.Writer, err error) int {
 	return 2
 }
 
+// checkFormat은 --format 값이 allowed 중 하나인지 본다. 아니면 사용법 오류를 알리고 false다.
+// 플래그 파싱 직후, 수확·--write-baseline·--out 저장 같은 부수 효과보다 먼저 부른다 —
+// 거부될 호출이 커밋된 baseline이나 저장 문서를 덮어쓰면, 형식 오타 한 번이 다음 --baseline
+// 실행의 알려진 항목을 전부 새 항목으로 만든다.
+func checkFormat(stderr io.Writer, format string, allowed ...string) bool {
+	if slices.Contains(allowed, format) {
+		return true
+	}
+	fmt.Fprintf(stderr, "unknown format %q\n", format)
+	return false
+}
+
+// emitBytes는 산출물 바이트를 그대로 쓴다. 쓰기 실패는 분석 성공과 다른 사실이라 오류로
+// 돌려준다 — 디스크가 가득 차 잘린 문서가 성공(0)으로 끝나면 소비자가 잘린 JSON을 완전한
+// 산출물로 읽는다. 표준 출력에 산출물(graph·JSON 리포트·SARIF·bridges·schema·routes·순회
+// 문서)을 쓰는 길은 모두 이 함수를 지나고, 호출자는 오류를 fail로 2에 옮긴다.
+func emitBytes(w io.Writer, data []byte) error {
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("writing output: %w (the output is incomplete; check free space and file size limits at the destination)", err)
+	}
+	return nil
+}
+
 // cmdGraph는 그래프 산출물 자체를보낸다.
 func cmdGraph(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("graph", stderr)
@@ -298,6 +322,10 @@ func cmdGraph(args []string, stdout, stderr io.Writer) int {
 	level := fs.String("level", string(graph.LevelPackage), "harvest level: package|type|symbol")
 	out := fs.String("out", "", "also write the document to FILE")
 	if fs.Parse(args) != nil {
+		return 2
+	}
+	// 형식 검증은 수확과 --out 저장보다 먼저다(checkFormat).
+	if !checkFormat(stderr, *format, "json", "mermaid", "dot") {
 		return 2
 	}
 	if *graphPath != "" {
@@ -342,7 +370,9 @@ func emit(doc *graph.Document, format string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	_, _ = stdout.Write(out)
+	if err := emitBytes(stdout, out); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }
 
@@ -370,6 +400,10 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 	baselinePath := fs.String("baseline", "", "baseline file of known cycles")
 	writeBaseline := fs.String("write-baseline", "", "write all current cycles to FILE")
 	if fs.Parse(args) != nil {
+		return 2
+	}
+	// 형식 검증은 수확과 --write-baseline 쓰기보다 먼저다(checkFormat).
+	if !checkFormat(stderr, *format, "text", "json", "sarif") {
 		return 2
 	}
 	lvl, err := graph.ParseLevel(*level)
@@ -428,7 +462,9 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintln(stdout, string(out))
+		if err := emitBytes(stdout, append(out, '\n')); err != nil {
+			return fail(stderr, err)
+		}
 	case "text":
 		for _, c := range cycles {
 			fmt.Fprintf(stdout, "cycle: %v\n", c.Members)
@@ -481,6 +517,10 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 	baselinePath := fs.String("baseline", "", "baseline file of known unreachable findings")
 	writeBaseline := fs.String("write-baseline", "", "write all current findings to FILE")
 	if fs.Parse(args) != nil {
+		return 2
+	}
+	// 형식 검증은 수확과 --write-baseline 쓰기보다 먼저다(checkFormat).
+	if !checkFormat(stderr, *format, "text", "json", "sarif") {
 		return 2
 	}
 	if *algo != "cha" && *algo != "rta" {
@@ -582,7 +622,9 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintln(stdout, string(out))
+		if err := emitBytes(stdout, append(out, '\n')); err != nil {
+			return fail(stderr, err)
+		}
 	case "text":
 		for _, f := range findings {
 			exported := ""
@@ -768,10 +810,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	}
 	// 형식 검증은 부수 효과(--write-baseline 쓰기)보다 먼저다 —
 	// 거부될 호출이 기존 baseline을 덮어쓰면 안 된다.
-	switch *format {
-	case "text", "json", "sarif":
-	default:
-		fmt.Fprintf(stderr, "unknown format %q\n", *format)
+	if !checkFormat(stderr, *format, "text", "json", "sarif") {
 		return 2
 	}
 	cfgPath := *configPath
@@ -863,7 +902,9 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintln(stdout, string(out))
+		if err := emitBytes(stdout, append(out, '\n')); err != nil {
+			return fail(stderr, err)
+		}
 	case "text":
 		for _, v := range violations {
 			label := v.Rule
@@ -1190,8 +1231,7 @@ func emitJSON(w io.Writer, v any) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(w, string(out))
-	return err
+	return emitBytes(w, append(out, '\n'))
 }
 
 // sortNeighborsJSON은 질의 결과를 결정적으로 정렬한다.
@@ -1493,7 +1533,9 @@ func cmdBridges(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintln(stdout, string(data))
+	if err := emitBytes(stdout, append(data, '\n')); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }
 
@@ -1527,6 +1569,8 @@ func cmdSchema(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintln(stdout, string(data))
+	if err := emitBytes(stdout, append(data, '\n')); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }

@@ -150,7 +150,9 @@ func runTraversal(in traversalRun, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintln(stdout, string(data))
+	if err := emitBytes(stdout, append(data, '\n')); err != nil {
+		return fail(stderr, err)
+	}
 	if missing > 0 {
 		fmt.Fprintf(stderr, "error: %d root id(s) are not graph vertices (root-not-found); "+
 			"the document lists them without symbol\n", missing)

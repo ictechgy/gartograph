@@ -104,6 +104,8 @@ func writeDocument(doc any, out string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintln(stdout, string(data))
+	if err := emitBytes(stdout, append(data, '\n')); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }
