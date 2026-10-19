@@ -478,6 +478,7 @@ func (h *harvester) embedEdges(tn *types.TypeName, named *types.Named,
 // go/types가 이름과 무관하게 참을 주는 타입이다(implementsAnything).
 func (h *harvester) implementsEdges(concrete []concreteType, ifaces []*types.Named) {
 	targets := implTargets(ifaces)
+	recorded := make(map[implPair]bool)
 	for _, t := range concrete {
 		have := methodNameSet(t.mset)
 		anything := implementsAnything(t.named)
@@ -491,7 +492,7 @@ func (h *harvester) implementsEdges(concrete []concreteType, ifaces []*types.Nam
 			// implements는 선언 위치가 아니라 타입 집합 계산의 산물이다 —
 			// 지어낸 위치를 싣지 않는다.
 			h.edge(h.id(t.named.Obj()), h.id(i.named.Obj()), graph.EdgeImplements, nil)
-			h.recordImpls(t.mset, i.iface)
+			h.recordImpls(t.mset, i.iface, recorded)
 		}
 	}
 }
@@ -530,8 +531,15 @@ func implementsAnything(t *types.Named) bool {
 	return u == types.Typ[types.Invalid]
 }
 
-// recordImpls는 인터페이스 메서드마다 구체 타입의 구현 메서드를 impls에 넣는다.
-func (h *harvester) recordImpls(tset *types.MethodSet, iface *types.Interface) {
+// implPair는 (인터페이스 메서드 ID, 구현 메서드 ID) 한 쌍이다 — impls 중복 방지 키.
+type implPair struct{ iface, impl string }
+
+// recordImpls는 인터페이스 메서드마다 구체 타입의 구현 메서드를 impls에 한 번만 넣는다. 같은 구현이
+// 여러 경로로 다시 잡힌다 — 같은 임베드 구조체를 품은 여러 타입(승격 메서드), 같은 메서드를 담은
+// 여러 인터페이스(J를 임베드한 I). 중복을 넣으면 호출 지점마다 같은 팬아웃을 되풀이하고, 모듈 밖
+// 구현이면 외부 참조 수(limitation)를 부풀린다. 목록은 첫 등장 순서이고, 그 순서는 출력에 드러나지
+// 않는다 — 팬아웃 간선과 위치는 문서 Sort가 정규화한다.
+func (h *harvester) recordImpls(tset *types.MethodSet, iface *types.Interface, recorded map[implPair]bool) {
 	for j := 0; j < iface.NumMethods(); j++ {
 		// universe error.Error(임베드된 error에서 온 메서드)는 패키지가 없어 정점 ID를
 		// 만들 수 없다 — 구현 메서드는 satisfies error로 살아난다.
@@ -543,8 +551,14 @@ func (h *harvester) recordImpls(tset *types.MethodSet, iface *types.Interface) {
 		if sel == nil {
 			continue
 		}
-		if fn, ok := sel.Obj().(*types.Func); ok && fn.Pkg() != nil {
-			h.impls[h.id(m)] = append(h.impls[h.id(m)], h.id(fn))
+		fn, ok := sel.Obj().(*types.Func)
+		if !ok || fn.Pkg() == nil {
+			continue
+		}
+		pair := implPair{iface: h.id(m), impl: h.id(fn)}
+		if !recorded[pair] {
+			recorded[pair] = true
+			h.impls[pair.iface] = append(h.impls[pair.iface], pair.impl)
 		}
 	}
 }

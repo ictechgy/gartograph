@@ -1151,6 +1151,79 @@ func TestImplementsNameFilterKeepsEveryMatch(t *testing.T) {
 	}
 }
 
+// TestImplsListEachImplementationOnce는 impls가 인터페이스 메서드마다 구현 메서드를 한 번만 담는지
+// 확인한다. 같은 구현이 여러 경로로 다시 잡힌다 — J를 임베드한 I와 J를 함께 만족하는 T, 같은 Base를
+// 임베드한 여러 타입(승격 메서드). 중복은 호출 지점마다 같은 팬아웃을 되풀이하고, 모듈 밖 구현이면
+// 외부 참조 수(limitation)를 부풀린다.
+func TestImplsListEachImplementationOnce(t *testing.T) {
+	p := checkedPackage(t, "example.com/x", `package x
+
+type J interface{ M() }
+type I interface{ J }
+
+type T struct{}
+
+func (T) M() {}
+
+type Lener interface{ Len() int }
+
+type Base struct{}
+
+func (Base) Len() int { return 0 }
+
+type A struct{ Base }
+type B struct{ *Base }
+`)
+	h := structuralHarvester(p)
+	h.addStructuralEdges([]*packages.Package{p})
+	for iface, want := range map[string][]string{
+		"example.com/x.(J).M":       {"example.com/x.(T).M"},
+		"example.com/x.(Lener).Len": {"example.com/x.(Base).Len"},
+	} {
+		if got := h.impls[iface]; !slices.Equal(got, want) {
+			t.Errorf("impls[%s] = %v, want %v", iface, got, want)
+		}
+	}
+}
+
+// TestSharedPromotedImplementationCountedOnce는 여러 모듈 타입이 같은 모듈 밖 구현(bytes.Buffer의
+// Len)을 승격해 인터페이스를 만족해도, 인터페이스 호출 하나가 그 외부 참조를 한 번만 세는지 확인한다.
+// 호출식은 call(callEdge)과 references(selectorEdge) 두 팬아웃을 내므로 호출 하나가 2를 더해야 한다 —
+// 구현 목록이 타입 수만큼 중복되면 6을 더해 limitation이 실제 참조 수를 부풀렸다.
+func TestSharedPromotedImplementationCountedOnce(t *testing.T) {
+	extRefs := func(body string) int {
+		doc := loadSymbol(t, testutil.WriteModule(t, map[string]string{"main.go": `package main
+
+import "bytes"
+
+type Sizer interface{ Len() int }
+
+type A struct{ bytes.Buffer }
+type B struct{ bytes.Buffer }
+type C struct{ bytes.Buffer }
+
+func size(s Sizer) int { ` + body + ` }
+
+func main() {
+	_ = size(&A{})
+	_ = size(&B{})
+	_ = size(&C{})
+}
+`}))
+		for _, l := range doc.Limitations {
+			var n int
+			if _, err := fmt.Sscanf(l, "%d references to symbols outside the module were omitted", &n); err == nil {
+				return n
+			}
+		}
+		t.Fatalf("expected an external-references limitation: %v", doc.Limitations)
+		return 0
+	}
+	if added := extRefs("return s.Len()") - extRefs("_ = s; return 0"); added != 2 {
+		t.Fatalf("one interface call must count its external implementation once per fan-out: +%d, want +2", added)
+	}
+}
+
 // BenchmarkImplementsEdges는 희소 합성 패키지(타입 2,000·인터페이스 200, 인터페이스마다 고유 메서드
 // 어휘라 만족이 드묾)의 구조 간선 단계를 잰다. 모든 쌍을 판정하던 구현은 쌍 수(40만)에 비례했다.
 func BenchmarkImplementsEdges(b *testing.B) {
