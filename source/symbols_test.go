@@ -1,6 +1,12 @@
 package source
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +15,7 @@ import (
 
 	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
+	"golang.org/x/tools/go/packages"
 )
 
 // symbolFixture는 인터페이스 구현·임베딩·호출·init·미사용 심볼이 있는 모듈이다.
@@ -870,6 +877,300 @@ func main() {
 		}
 		if _, ok := doc.VertexByID("example.com/fixture.E"); !ok {
 			t.Fatalf("%s: interface embedding error must still be a vertex", level)
+		}
+	}
+}
+
+// depImporter는 테스트가 먼저 검사한 패키지만 내어 주는 importer다 — go/packages 없이 여러
+// 패키지 fixture를 go/types로 검사할 때 쓴다.
+type depImporter map[string]*types.Package
+
+// Import는 먼저 검사한 패키지를 돌려준다. 없는 경로는 fixture 구성 오류다.
+func (d depImporter) Import(path string) (*types.Package, error) {
+	if p, ok := d[path]; ok {
+		return p, nil
+	}
+	return nil, fmt.Errorf("fixture imports %q before checking it: pass it in deps", path)
+}
+
+// checkSource는 소스 한 파일을 go/types로 직접 검사한 패키지와 타입 오류를 돌려준다. implements
+// 판정만 보는 테스트가 패키지 로드(go list) 없이 수확과 같은 go/types 객체를 얻는다. deps는
+// import로 내어 줄, 먼저 검사한 패키지다.
+func checkSource(t testing.TB, path, src string, deps ...*packages.Package) (*packages.Package, []error) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path+"/x.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	imports := depImporter{}
+	for _, d := range deps {
+		imports[d.PkgPath] = d.Types
+	}
+	var typeErrs []error
+	conf := types.Config{Importer: imports, Error: func(err error) { typeErrs = append(typeErrs, err) }}
+	pkg, err := conf.Check(path, fset, []*ast.File{file}, nil)
+	if err != nil && len(typeErrs) == 0 {
+		t.Fatalf("check %s: %v", path, err)
+	}
+	return &packages.Package{PkgPath: path, Types: pkg, Fset: fset}, typeErrs
+}
+
+// checkedPackage는 타입 오류가 없어야 하는 fixture를 검사한다.
+func checkedPackage(t testing.TB, path, src string, deps ...*packages.Package) *packages.Package {
+	t.Helper()
+	p, typeErrs := checkSource(t, path, src, deps...)
+	if len(typeErrs) > 0 {
+		t.Fatalf("fixture %s must type-check: %v", path, typeErrs)
+	}
+	return p
+}
+
+// structuralHarvester는 구조 간선 단계(addStructuralEdges)만 돌릴 harvester다. 패키지 스코프 타입을
+// 정점으로 등록해 implements가 실제 수확처럼 문서에 그어진다.
+func structuralHarvester(pkgs ...*packages.Package) *harvester {
+	h := &harvester{
+		doc:           &graph.Document{},
+		vertices:      map[string]bool{},
+		edgeIdx:       map[string]int{},
+		impls:         map[string][]string{},
+		instanceImpls: map[string][]string{},
+	}
+	for _, p := range pkgs {
+		scope := p.Types.Scope()
+		for _, name := range scope.Names() {
+			if tn, ok := scope.Lookup(name).(*types.TypeName); ok {
+				h.vertices[objectID(tn)] = true
+			}
+		}
+	}
+	return h
+}
+
+// implementsPairs는 문서의 implements 간선을 (from, to) 집합으로 모은다.
+func implementsPairs(doc *graph.Document) map[[2]string]bool {
+	out := map[[2]string]bool{}
+	for _, e := range doc.Edges {
+		if e.Kind == graph.EdgeImplements {
+			out[[2]string{e.From, e.To}] = true
+		}
+	}
+	return out
+}
+
+// sparseInterfaces는 타입 n개와 인터페이스 n개의 패키지 소스다. 타입 Tk는 메서드 Mk 하나만, 인터페이스
+// Ik는 Mk 하나만 가져 만족 쌍은 대각선 n개뿐이다 — 나머지 n×(n-1) 쌍은 메서드 이름부터 맞지 않는다.
+func sparseInterfaces(n int) string {
+	var src strings.Builder
+	src.WriteString("package x\n")
+	for k := range n {
+		fmt.Fprintf(&src, "\ntype I%[1]d interface{ M%[1]d() }\n\ntype T%[1]d struct{}\n\nfunc (T%[1]d) M%[1]d() {}\n", k)
+	}
+	return src.String()
+}
+
+// TestImplementsEdgesSkipsPairsWithoutMethodNames는 메서드 이름이 모자란 (타입, 인터페이스) 쌍에
+// go/types 판정을 부르지 않는지 할당 횟수로 본다. 이름 보유는 엄격·느슨 판정 모두의 필요조건인데,
+// 모든 쌍을 판정하면 비용이 타입 수 × 인터페이스 수로 커져 큰 모노레포에서는 이 단계만 1분을 넘겼다.
+// 판정은 쌍마다 포인터 타입(*T)을 할당하므로, 타입과 인터페이스를 두 배로 늘려 쌍이 네 배가 될 때
+// 할당도 네 배 가까이 늘면 전수 대조다(수정 전 100→200에서 약 3.6배). 시간 대신 할당 횟수를 세므로
+// 바쁜 머신에서도 흔들리지 않는다.
+func TestImplementsEdgesSkipsPairsWithoutMethodNames(t *testing.T) {
+	allocations := func(n int) float64 {
+		p := checkedPackage(t, "example.com/x", sparseInterfaces(n))
+		var h *harvester
+		allocs := testing.AllocsPerRun(3, func() {
+			h = structuralHarvester(p)
+			h.addStructuralEdges([]*packages.Package{p})
+		})
+		if got := len(implementsPairs(h.doc)); got != n {
+			t.Fatalf("each Tk must implement exactly its own Ik: %d implements edges for n=%d", got, n)
+		}
+		return allocs
+	}
+	small, large := allocations(100), allocations(200)
+	if large > 3*small {
+		t.Fatalf("implements harvest must skip type×interface pairs whose method names do not match: "+
+			"%.0f allocations for 100 types and interfaces, %.0f for 200", small, large)
+	}
+}
+
+// implementsCasesDep와 implementsCasesMain은 이름 사전 필터가 바꾸면 안 되는 판정 사례다.
+const implementsCasesDep = `package dep
+
+type Base struct{}
+
+func (Base) Exported() {}
+func (Base) hidden()   {}
+
+// DI는 dep의 비공개 메서드를 요구한다 — dep.Base를 임베드한 모듈 타입이 승격으로 만족한다.
+type DI interface{ hidden() }
+`
+
+const implementsCasesMain = `package m
+
+import "example.com/m/dep"
+
+type I interface{ M() }
+
+// J는 I를 임베드하고, 포인터 리시버 메서드 N을 더 요구한다.
+type J interface {
+	I
+	N()
+}
+
+// K의 hidden은 이 패키지의 비공개 메서드다 — dep.Base의 hidden과 이름만 같다.
+type K interface{ hidden() }
+
+type E interface{ Exported() }
+
+// Gen은 제네릭 원형이라 느슨한 판정(이름·모양)을 쓴다.
+type Gen[X any] interface{ Get() X }
+
+type Pair interface{ Pair() (int, int) }
+
+type T struct{}
+
+func (T) M()  {}
+func (*T) N() {}
+
+// Promo는 dep.Base의 Exported·hidden을 값 임베드로, PromoPtr은 포인터 임베드로 승격한다.
+type Promo struct{ dep.Base }
+type PromoPtr struct{ *dep.Base }
+
+type Own struct{}
+
+func (Own) hidden() {}
+
+type Box[X any] struct{ x X }
+
+func (b Box[X]) Get() X { return b.x }
+
+type IntGet struct{}
+
+func (IntGet) Get() int { return 0 }
+
+// Shape의 Pair는 이름은 같고 모양(결과 개수)이 다르다.
+type Shape[X any] struct{}
+
+func (Shape[X]) Pair() int { return 0 }
+
+// NamedPtr는 명명 포인터라 메서드 집합이 비었다.
+type NamedPtr *T
+
+// Bad·PBad의 밑 타입은 타입 오류로 invalid다 — go/types는 이런 타입이 모든 인터페이스를
+// 만족한다고 답한다.
+type Bad undefinedType
+type PBad *undefinedType
+`
+
+// referenceImplements는 이름 사전 필터 없이 모든 (구체 타입, 인터페이스) 쌍을 판정한 implements
+// 간선 집합과 (인터페이스 메서드, 구현 메서드) 집합이다 — 필터가 바꿔서는 안 되는 기준이다.
+func referenceImplements(h *harvester, pkgs []*packages.Package) (edges, impls map[[2]string]bool) {
+	edges, impls = map[[2]string]bool{}, map[[2]string]bool{}
+	var concrete, ifaces []*types.Named
+	for _, p := range pkgs {
+		scope := p.Types.Scope()
+		for _, name := range scope.Names() {
+			tn, ok := scope.Lookup(name).(*types.TypeName)
+			if !ok {
+				continue
+			}
+			if named, ok := tn.Type().(*types.Named); ok && isInterface(named) {
+				ifaces = append(ifaces, named)
+			} else if ok {
+				concrete = append(concrete, named)
+			}
+		}
+	}
+	for _, t := range concrete {
+		tset := types.NewMethodSet(types.NewPointer(t))
+		for _, i := range ifaces {
+			it := i.Underlying().(*types.Interface)
+			if it.NumMethods() == 0 || !implementsLoosely(t, tset, it, i) {
+				continue
+			}
+			edges[[2]string{h.id(t.Obj()), h.id(i.Obj())}] = true
+			for j := range it.NumMethods() {
+				m := it.Method(j)
+				if m.Pkg() == nil {
+					continue
+				}
+				if sel := tset.Lookup(m.Pkg(), m.Name()); sel != nil {
+					if fn, ok := sel.Obj().(*types.Func); ok && fn.Pkg() != nil {
+						impls[[2]string{h.id(m), h.id(fn)}] = true
+					}
+				}
+			}
+		}
+	}
+	return edges, impls
+}
+
+// TestImplementsNameFilterKeepsEveryMatch는 이름 사전 필터가 판정이 받아들이는 쌍을 하나도 빼지
+// 않는지, 필터 없이 모든 쌍을 판정한 결과와 implements·impls가 같은지 확인한다. 사례: 승격 메서드
+// (값·포인터 임베드), 다른 패키지의 비공개 메서드(이름만 같은 것과 실제로 승격된 것), 임베드
+// 인터페이스, 포인터 리시버, 제네릭 원형 인터페이스·구체 타입(느슨한 판정), 명명 포인터, invalid
+// 타입(go/types가 이름과 무관하게 참을 준다 — 필터로 거르면 지금까지 긋던 간선이 사라진다).
+func TestImplementsNameFilterKeepsEveryMatch(t *testing.T) {
+	dep := checkedPackage(t, "example.com/m/dep", implementsCasesDep)
+	mainPkg, typeErrs := checkSource(t, "example.com/m", implementsCasesMain, dep)
+	if len(typeErrs) != 2 {
+		t.Fatalf("the fixture's only type errors must be Bad's and PBad's undefined type: %v", typeErrs)
+	}
+	pkgs := []*packages.Package{dep, mainPkg}
+	h := structuralHarvester(pkgs...)
+	h.addStructuralEdges(pkgs)
+	wantEdges, wantImpls := referenceImplements(h, pkgs)
+	if got := implementsPairs(h.doc); !maps.Equal(got, wantEdges) {
+		t.Fatalf("implements edges differ from checking every pair:\ngot  %v\nwant %v", got, wantEdges)
+	}
+	gotImpls := map[[2]string]bool{}
+	for iface, list := range h.impls {
+		for _, impl := range list {
+			gotImpls[[2]string{iface, impl}] = true
+		}
+	}
+	if !maps.Equal(gotImpls, wantImpls) {
+		t.Fatalf("impls differ from checking every pair:\ngot  %v\nwant %v", gotImpls, wantImpls)
+	}
+	const m, d = "example.com/m.", "example.com/m/dep."
+	for _, c := range []struct {
+		from, to string
+		want     bool
+	}{
+		{m + "T", m + "I", true}, {m + "T", m + "J", true}, {d + "Base", d + "DI", true},
+		{m + "Promo", d + "DI", true}, {m + "PromoPtr", m + "E", true}, {m + "Own", m + "K", true},
+		{m + "Box", m + "Gen", true}, {m + "IntGet", m + "Gen", true}, {m + "Bad", m + "I", true},
+		{m + "PBad", m + "J", true}, {m + "Promo", m + "K", false}, {m + "Own", d + "DI", false},
+		{m + "Shape", m + "Pair", false}, {m + "NamedPtr", m + "I", false}, {m + "Bad", m + "Gen", false},
+	} {
+		if wantEdges[[2]string{c.from, c.to}] != c.want {
+			t.Errorf("%s implements %s = %v, want %v", c.from, c.to, !c.want, c.want)
+		}
+	}
+}
+
+// BenchmarkImplementsEdges는 희소 합성 패키지(타입 2,000·인터페이스 200, 인터페이스마다 고유 메서드
+// 어휘라 만족이 드묾)의 구조 간선 단계를 잰다. 모든 쌍을 판정하던 구현은 쌍 수(40만)에 비례했다.
+func BenchmarkImplementsEdges(b *testing.B) {
+	var src strings.Builder
+	src.WriteString("package x\n")
+	for g := range 200 {
+		fmt.Fprintf(&src, "\ntype I%[1]d interface {\n\tG%[1]dM0()\n\tG%[1]dM1()\n}\n", g)
+		for k := range 10 {
+			fmt.Fprintf(&src, "\ntype T%d_%d struct{}\n", g, k)
+			for j := range 3 {
+				fmt.Fprintf(&src, "\nfunc (T%d_%d) G%dM%d() {}\n", g, k, g, (k+j)%8)
+			}
+		}
+	}
+	p := checkedPackage(b, "example.com/x", src.String())
+	for b.Loop() {
+		h := structuralHarvester(p)
+		h.addStructuralEdges([]*packages.Package{p})
+		if len(h.doc.Edges) == 0 {
+			b.Fatal("the synthetic package must have implements edges")
 		}
 	}
 }
