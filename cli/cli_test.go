@@ -1651,6 +1651,31 @@ deny:
 	}
 }
 
+// TestComponentNameLinesDoNotStartWorkflowCommands는 설정의 컴포넌트 이름이 줄 첫머리에 오는
+// mapping·metrics 텍스트 출력이 `::`로 시작해 GitHub Actions 워크플로 명령으로 읽히지 않는지 본다.
+// 러너는 앞 공백을 지운 뒤 `::`를 보므로 제어 문자 이스케이프만으로는 막히지 않는다.
+func TestComponentNameLinesDoNotStartWorkflowCommands(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"web/web.go": "package web\n\nimport _ \"example.com/fixture/db\"\n",
+		"db/db.go":   "package db\n",
+		".gartograph.yml": `components:
+  "::error::injected": ["web"]
+  "  ::warning::spaced": ["db"]
+deps: {}
+`,
+	})
+	for _, command := range []string{"mapping", "metrics"} {
+		code, out, errb := run(t, command, "--dir", dir)
+		if code != 0 {
+			t.Fatalf("%s failed: %d %s", command, code, errb)
+		}
+		assertTextSafe(t, command, out)
+		if !strings.Contains(out, `\x3a:error::injected`) {
+			t.Errorf("%s text must keep the component name with only the leading ':' escaped:\n%s", command, out)
+		}
+	}
+}
+
 // controlCharDocuments는 정점 ID·limitation에 제어 문자를 담은 저장 문서 두 개(old·new)를
 // 쓰고 경로를 돌려준다 — --graph 문서는 분석 대상이 고를 수 있는 입력이다.
 func controlCharDocuments(t *testing.T) (string, string) {
