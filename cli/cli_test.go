@@ -13,8 +13,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ictechgy/gartograph/export"
+	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
 )
 
@@ -1494,6 +1496,169 @@ func TestGraphLevel(t *testing.T) {
 	}
 	if !hasFunc {
 		t.Fatal("symbol level missing func vertices")
+	}
+}
+
+// assertTextSafe는 텍스트 출력의 줄에 원시 제어 문자(forbiddenChars, 잘못된 UTF-8)가 없고
+// "::"로 시작하는 줄이 없는지 본다 — GitHub Actions는 줄 앞 공백을 지운 뒤 "::"로 시작하는
+// 줄을 워크플로 명령으로 읽고, ESC 시퀀스는 터미널 화면을 지우거나 가짜 줄을 그린다.
+func assertTextSafe(t *testing.T, label, out string) {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if forbiddenChars.MatchString(line) || !utf8.ValidString(line) {
+			t.Errorf("%s: raw control character in text output line %q", label, line)
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "::") {
+			t.Errorf("%s: text output line reads as a workflow command: %q", label, line)
+		}
+	}
+}
+
+// TestRulesTextEscapesControlCharacters는 분석 대상이 고른 파일 이름과 설정의 reason에 든
+// 개행·ESC가 rules 텍스트 출력에서 이스케이프되는지 본다. JSON은 encoding/json이 이미
+// 이스케이프하므로 원문 그대로여야 한다.
+func TestRulesTextEscapesControlCharacters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file names with control characters are not valid on windows")
+	}
+	newlineFile := "web/w\n::error title=gartograph::injected\nx.go"
+	dir := testutil.WriteModule(t, map[string]string{
+		newlineFile:                   "package web\n\nimport _ \"example.com/fixture/db\"\n",
+		"api/a\x1b[2J\x1b[31mFAKE.go": "package api\n\nimport _ \"example.com/fixture/db\"\n",
+		"db/db.go":                    "package db\n",
+		".gartograph.yml": `components:
+  web: ["web"]
+  api: ["api"]
+  db: ["db"]
+deps: {}
+deny:
+  api:
+    - {to: db, reason: "line one\n::warning::fake \e[31mred"}
+`,
+	})
+	code, out, errb := run(t, "rules", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("rules failed: %d %s", code, errb)
+	}
+	assertTextSafe(t, "rules", out)
+	for _, want := range []string{
+		`w\x0a::error title=gartograph::injected\x0ax.go:3:8`,
+		`a\x1b[2J\x1b[31mFAKE.go:3:8`,
+		`reason: line one\x0a::warning::fake \x1b[31mred`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rules text must keep the escaped text %q:\n%s", want, out)
+		}
+	}
+	code, out, errb = run(t, "rules", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("rules json failed: %d %s", code, errb)
+	}
+	var rep struct {
+		Violations []struct {
+			Reason   string `json:"reason"`
+			Position *struct {
+				File string `json:"file"`
+			} `json:"position"`
+		} `json:"violations"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("rules json: %v\n%s", err, out)
+	}
+	var raw []string
+	for _, v := range rep.Violations {
+		raw = append(raw, v.Reason)
+		if v.Position != nil {
+			raw = append(raw, v.Position.File)
+		}
+	}
+	joined := strings.Join(raw, "|")
+	if !strings.Contains(joined, "line one\n::warning::fake \x1b[31mred") ||
+		!strings.Contains(joined, filepath.FromSlash(newlineFile)) {
+		t.Fatalf("JSON must keep the original strings (encoding/json escapes them): %q", joined)
+	}
+}
+
+// controlCharDocuments는 정점 ID·limitation에 제어 문자를 담은 저장 문서 두 개(old·new)를
+// 쓰고 경로를 돌려준다 — --graph 문서는 분석 대상이 고를 수 있는 입력이다.
+func controlCharDocuments(t *testing.T) (string, string) {
+	t.Helper()
+	const (
+		pkg  = "example.com/m"
+		evil = "example.com/m/x\n::error::pkg"
+		a    = "example.com/m.A\x1b[2J"
+		b    = "example.com/m.B\u2028::error::b"
+	)
+	newDoc := &graph.Document{Version: graph.Version, Tool: graph.Tool, Level: graph.LevelSymbol,
+		Module: pkg, Limitations: []string{"note\n::warning::lim \x1b[31m"},
+		Vertices: []graph.Vertex{
+			{ID: pkg, Kind: graph.KindPackage}, {ID: evil, Kind: graph.KindPackage},
+			{ID: a, Kind: graph.KindFunc, Exported: true}, {ID: b, Kind: graph.KindFunc, Exported: true},
+		},
+		Edges: []graph.Edge{
+			{From: evil, To: pkg, Kind: graph.EdgeImport},
+			{From: a, To: b, Kind: graph.EdgeCall}, {From: b, To: a, Kind: graph.EdgeCall},
+		}}
+	oldDoc := &graph.Document{Version: graph.Version, Tool: graph.Tool, Level: graph.LevelSymbol,
+		Module: pkg, Limitations: []string{"old\n::notice::lim"},
+		Vertices: []graph.Vertex{{ID: pkg, Kind: graph.KindPackage}, {ID: a, Kind: graph.KindFunc, Exported: true}}}
+	tmp := t.TempDir()
+	oldPath, newPath := filepath.Join(tmp, "old.json"), filepath.Join(tmp, "new.json")
+	for path, doc := range map[string]*graph.Document{oldPath: oldDoc, newPath: newDoc} {
+		if err := export.SaveFile(doc, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return oldPath, newPath
+}
+
+// TestTextOutputsEscapeDocumentStrings는 --graph 문서의 ID·limitation에 든 제어 문자가
+// cycles·dead·explain·diff·metrics·mapping 텍스트 출력에서 이스케이프되는지 본다.
+func TestTextOutputsEscapeDocumentStrings(t *testing.T) {
+	oldPath, newPath := controlCharDocuments(t)
+	empty := t.TempDir()
+	cfg := filepath.Join(empty, "rules.yml")
+	if err := os.WriteFile(cfg, []byte("components:\n  other: [\"nothing\"]\ndeps: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"cycles", "--graph", newPath, "--level", "symbol"},
+		{"dead", "--graph", newPath},
+		{"dead", "--graph", newPath, "--root", "example.com/m.A\x1b[2J", "--explain", "example.com/m.B\u2028::error::b"},
+		{"dead", "--graph", newPath, "--explain", "example.com/m.A\x1b[2J"},
+		{"diff", oldPath, newPath},
+		{"metrics", "--graph", newPath, "--dir", empty},
+		{"mapping", "--graph", newPath, "--config", cfg},
+	} {
+		code, out, errb := run(t, args...)
+		if code != 0 {
+			t.Fatalf("%v: %d %s", args, code, errb)
+		}
+		assertTextSafe(t, args[0], out)
+		if !strings.Contains(out, `\x0a::`) && !strings.Contains(out, `\x1b[2J`) {
+			t.Errorf("%v: text output must keep the escaped strings:\n%s", args, out)
+		}
+	}
+}
+
+// TestTextSafe는 이스케이프 규칙을 직접 확인한다 — 제어 문자가 없는 문자열은 같은 값이고
+// (일반 출력 바이트 보존), 백슬래시는 그대로다(windows 경로).
+func TestTextSafe(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                       "",
+		"example.com/m.(T).Run":  "example.com/m.(T).Run",
+		`C:\work\m\x.go`:         `C:\work\m\x.go`,
+		"한글/경로.go":               "한글/경로.go",
+		"a\nb\tc\rd":             `a\x0ab\x09c\x0dd`,
+		"\x00\x1b[2J\x7f":        `\x00\x1b[2J\x7f`,
+		"c1\u0085\u009b":         `c1\u0085\u009b`,
+		"ls\u2028ps\u2029":       `ls\u2028ps\u2029`,
+		"bad\xffutf8\xc3":        `bad\xffutf8\xc3`,
+		"mixed 한\x1b글 \u2028end": `mixed 한\x1b글 \u2028end`,
+	} {
+		if got := textSafe(in); got != want {
+			t.Errorf("textSafe(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

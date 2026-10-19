@@ -359,6 +359,13 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
   limitation instead. Dispatch through reflection or generic interfaces is
   still invisible and the report says so.
 - Optional fields are omitted when empty (`omitempty`).
+- Text output (`--format text` reports, `diff`, `metrics`, `mapping`,
+  `unused-deps`, `dead --explain`) escapes control characters in IDs, paths,
+  reasons, and limitations — C0/C1, DEL, U+2028/U+2029, and invalid UTF-8 —
+  as `\xNN`/`\uNNNN`, so a crafted file name, rule `reason`, or saved
+  document cannot start a new output line (a GitHub Actions `::` workflow
+  command) or send terminal escape sequences. Strings without them print
+  unchanged; JSON and SARIF keep the original strings, JSON-escaped.
 
 ## Graph document
 

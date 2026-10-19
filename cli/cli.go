@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ictechgy/gartograph/analysis"
 	"github.com/ictechgy/gartograph/config"
@@ -315,6 +316,54 @@ func emitBytes(w io.Writer, data []byte) error {
 	return nil
 }
 
+// textSafe는 텍스트 형식에 찍는 문자열의 제어 문자(C0·C1, DEL, U+2028/2029 — forbiddenChars와
+// 같은 집합)와 잘못된 UTF-8 바이트를 \xNN(0x80 미만·잘못된 바이트)·\uNNNN(그 밖)으로 바꾼다.
+// 파일 이름·설정의 reason·저장 문서(--graph)의 ID와 limitation은 분석 대상이 고를 수 있다 —
+// 개행 뒤 "::error …" 줄은 GitHub Actions가 워크플로 명령으로 읽고, ESC 시퀀스는 터미널 화면을
+// 지우거나 가짜 줄을 그린다. 그런 문자가 없으면 원문을 그대로 돌려줘 일반 출력은 바이트 단위로
+// 같다(백슬래시도 그대로 — windows 경로). JSON·SARIF는 encoding/json이 이미 이스케이프한다.
+func textSafe(s string) string {
+	if isPrintableASCII(s) || (utf8.ValidString(s) && !forbiddenChars.MatchString(s)) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		case !forbiddenChars.MatchString(s[i : i+size]):
+			b.WriteString(s[i : i+size])
+		case r < utf8.RuneSelf:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+		i += size
+	}
+	return b.String()
+}
+
+// isPrintableASCII는 s가 출력 가능한 ASCII(0x20~0x7e)로만 이뤄졌는지 본다. 텍스트 출력의
+// 거의 모든 줄(ID·경로·개수)이 여기서 끝나 줄마다 정규식을 돌리지 않는다.
+func isPrintableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// textLine은 텍스트 형식 한 줄을 쓴다. 형식을 채운 줄 전체를 textSafe로 거른 뒤 개행 하나를
+// 붙인다 — 인자마다 거르면 문자열 인자 하나만 빠뜨려도 주입 통로가 남는다. format에는 끝 개행을
+// 넣지 않는다(제어 문자가 없는 줄은 fmt.Fprintf(w, format+"\n", …)와 같은 바이트다).
+// 텍스트 형식은 사람이 읽는 출력이라 쓰기 결과를 기존 텍스트 출력처럼 따로 보지 않는다 —
+// 산출물(JSON·SARIF·문서)의 쓰기 오류는 emitBytes가 2로 낸다.
+func textLine(w io.Writer, format string, args ...any) {
+	fmt.Fprintln(w, textSafe(fmt.Sprintf(format, args...)))
+}
+
 // cmdGraph는 그래프 산출물 자체를보낸다.
 func cmdGraph(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("graph", stderr)
@@ -467,13 +516,13 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 		}
 	case "text":
 		for _, c := range cycles {
-			fmt.Fprintf(stdout, "cycle: %v\n", c.Members)
+			textLine(stdout, "cycle: %v", c.Members)
 		}
 		fmt.Fprintf(stdout, "%d cycles (%d baselined)\n", len(cycles), len(baselined))
 		if len(limitations) > 0 {
 			fmt.Fprintln(stdout, "limitations:")
 			for _, l := range limitations {
-				fmt.Fprintf(stdout, "  - %s\n", l)
+				textLine(stdout, "  - %s", l)
 			}
 		}
 	default:
@@ -631,14 +680,14 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 			if f.Exported {
 				exported = " (exported)"
 			}
-			fmt.Fprintf(stdout, "unreachable %s: %s%s\n", f.Kind, f.ID, exported)
+			textLine(stdout, "unreachable %s: %s%s", f.Kind, f.ID, exported)
 		}
 		fmt.Fprintf(stdout, "%d unreachable symbols (%d baselined, %d retention roots)\n",
 			len(findings), len(baselined), len(roots))
 		if len(limitations) > 0 {
 			fmt.Fprintln(stdout, "limitations:")
 			for _, l := range limitations {
-				fmt.Fprintf(stdout, "  - %s\n", l)
+				textLine(stdout, "  - %s", l)
 			}
 		}
 	default:
@@ -738,21 +787,20 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 		adj = analysis.WithAbstractCalls(doc, adj, analysis.Reachable(doc, roots), rtaReach)
 		path, found := analysis.ExplainAdjacency(adj, id, source.ExplainRoots(doc, roots))
 		if !found {
-			fmt.Fprintf(stdout,
-				"no path from %d retention roots to %s (rta call graph)\n", len(roots), id)
+			textLine(stdout, "no path from %d retention roots to %s (rta call graph)", len(roots), id)
 			return 0
 		}
 		for i, p := range path {
 			switch {
 			case i == 0 && strings.HasSuffix(p, source.PackageInitSuffix):
-				fmt.Fprintf(stdout, "root: %s (package initializer; not a graph vertex)\n", p)
+				textLine(stdout, "root: %s (package initializer; not a graph vertex)", p)
 			case i == 0:
-				fmt.Fprintf(stdout, "root: %s\n", p)
+				textLine(stdout, "root: %s", p)
 			case strings.HasSuffix(p, source.PackageInitSuffix):
 				// 문서 정점이 아니다 — 표시하지 않으면 소비자가 없는 정점을 찾는다.
-				fmt.Fprintf(stdout, "  -> %s (package initializer; not a graph vertex)\n", p)
+				textLine(stdout, "  -> %s (package initializer; not a graph vertex)", p)
 			default:
-				fmt.Fprintf(stdout, "  -> %s\n", p)
+				textLine(stdout, "  -> %s", p)
 			}
 		}
 		return 0
@@ -762,19 +810,19 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 		return fail(stderr, err)
 	}
 	if !found {
-		fmt.Fprintf(stdout, "no path from %d retention roots to %s\n", len(roots), id)
+		textLine(stdout, "no path from %d retention roots to %s", len(roots), id)
 		return 0
 	}
 	for i, p := range path {
 		if i == 0 {
-			fmt.Fprintf(stdout, "root: %s\n", p)
+			textLine(stdout, "root: %s", p)
 			continue
 		}
 		// 합성 걸음은 문서 간선이 없다 — 표시하지 않으면 소비자가 간선을 찾다 실패한다.
 		if ifaces, ok := analysis.IsExternalDispatch(doc, path[i-1], p); ok {
-			fmt.Fprintf(stdout, "  -> %s (external dispatch: %s)\n", p, strings.Join(ifaces, " | "))
+			textLine(stdout, "  -> %s (external dispatch: %s)", p, strings.Join(ifaces, " | "))
 		} else {
-			fmt.Fprintf(stdout, "  -> %s\n", p)
+			textLine(stdout, "  -> %s", p)
 		}
 	}
 	return 0
@@ -911,17 +959,17 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 			if v.Name != "" {
 				label = v.Rule + ":" + v.Name
 			}
-			fmt.Fprintf(stdout, "violation[%s]: %s (%s) -> %s (%s)\n",
+			textLine(stdout, "violation[%s]: %s (%s) -> %s (%s)",
 				label, v.From, v.FromComponent, v.To, v.ToComponent)
 			if v.Position != nil {
-				fmt.Fprintf(stdout, "  at: %s:%d:%d\n",
+				textLine(stdout, "  at: %s:%d:%d",
 					v.Position.File, v.Position.Line, v.Position.Column)
 			}
 			if v.Reason != "" {
-				fmt.Fprintf(stdout, "  reason: %s\n", v.Reason)
+				textLine(stdout, "  reason: %s", v.Reason)
 			}
 			if len(v.Path) > 0 {
-				fmt.Fprintf(stdout, "  path: %s\n", strings.Join(v.Path, " -> "))
+				textLine(stdout, "  path: %s", strings.Join(v.Path, " -> "))
 			}
 		}
 		fmt.Fprintf(stdout, "%d violations (%d baselined, %d packages unmapped, %d external unmapped)\n",
@@ -929,7 +977,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 		if len(limitations) > 0 {
 			fmt.Fprintln(stdout, "limitations:")
 			for _, l := range limitations {
-				fmt.Fprintf(stdout, "  - %s\n", l)
+				textLine(stdout, "  - %s", l)
 			}
 		}
 	default:
@@ -1185,36 +1233,37 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 }
 
 // printDiffText는 diff를 유니파이드 스타일의 한 줄 레코드로 출력한다.
+// 두 문서의 문자열은 저장 문서에서 오므로 textLine으로 제어 문자를 거른다.
 func printDiffText(d *analysis.Diff, w io.Writer) error {
 	for _, v := range d.AddedVertices {
-		fmt.Fprintf(w, "+ vertex %s\n", v)
+		textLine(w, "+ vertex %s", v)
 	}
 	for _, v := range d.RemovedVertices {
-		fmt.Fprintf(w, "- vertex %s\n", v)
+		textLine(w, "- vertex %s", v)
 	}
 	for _, e := range d.AddedEdges {
-		fmt.Fprintf(w, "+ edge %s -> %s (%s)\n", e.From, e.To, e.Kind)
+		textLine(w, "+ edge %s -> %s (%s)", e.From, e.To, e.Kind)
 	}
 	for _, e := range d.RemovedEdges {
-		fmt.Fprintf(w, "- edge %s -> %s (%s)\n", e.From, e.To, e.Kind)
+		textLine(w, "- edge %s -> %s (%s)", e.From, e.To, e.Kind)
 	}
 	for _, c := range d.ChangedVertices {
-		fmt.Fprintf(w, "~ vertex %s: %s %s -> %s\n", c.ID, c.Field, c.From, c.To)
+		textLine(w, "~ vertex %s: %s %s -> %s", c.ID, c.Field, c.From, c.To)
 	}
 	for _, s := range d.SignatureChanges {
-		fmt.Fprintf(w, "~ signature %s: +%v -%v\n", s.ID, s.Added, s.Removed)
+		textLine(w, "~ signature %s: +%v -%v", s.ID, s.Added, s.Removed)
 	}
 	for _, b := range d.Breaking {
-		fmt.Fprintf(w, "breaking: %s\n", b)
+		textLine(w, "breaking: %s", b)
 	}
 	for _, n := range d.Notes {
-		fmt.Fprintf(w, "note: %s\n", n)
+		textLine(w, "note: %s", n)
 	}
 	for _, l := range d.OldLimitations {
-		fmt.Fprintf(w, "limitation(old): %s\n", l)
+		textLine(w, "limitation(old): %s", l)
 	}
 	for _, l := range d.NewLimitations {
-		fmt.Fprintf(w, "limitation(new): %s\n", l)
+		textLine(w, "limitation(new): %s", l)
 	}
 	_, err := fmt.Fprintf(w,
 		"diff: +%d/-%d vertices, +%d/-%d edges, %d signature changes, %d breaking\n",
@@ -1299,17 +1348,17 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 			if m.Distance != nil {
 				dist = fmt.Sprintf("%.3g", *m.Distance)
 			}
-			fmt.Fprintf(stdout, "%s: %d pkgs, Ca=%d Ce=%d I=%s A=%s D=%s\n",
+			textLine(stdout, "%s: %d pkgs, Ca=%d Ce=%d I=%s A=%s D=%s",
 				m.Name, len(m.Packages), m.Afferent, m.Efferent, inst, abs, dist)
 		}
 		for _, o := range rep.Orphans {
-			fmt.Fprintf(stdout, "orphan: %s\n", o)
+			textLine(stdout, "orphan: %s", o)
 		}
 		for _, u := range rep.Unmapped {
-			fmt.Fprintf(stdout, "unmapped: %s\n", u)
+			textLine(stdout, "unmapped: %s", u)
 		}
 		for _, l := range limitations {
-			fmt.Fprintf(stdout, "limitation: %s\n", l)
+			textLine(stdout, "limitation: %s", l)
 		}
 	default:
 		fmt.Fprintf(stderr, "unknown format %q\n", *format)
@@ -1388,22 +1437,22 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 		}
 		sort.Strings(names)
 		for _, n := range names {
-			fmt.Fprintf(stdout, "%s:\n", n)
+			textLine(stdout, "%s:", n)
 			for _, p := range m.Components[n] {
-				fmt.Fprintf(stdout, "  %s\n", p)
+				textLine(stdout, "  %s", p)
 			}
 		}
 		for _, u := range m.Unmapped {
-			fmt.Fprintf(stdout, "unmapped: %s\n", u)
+			textLine(stdout, "unmapped: %s", u)
 		}
 		for _, u := range m.UnmappedExternal {
-			fmt.Fprintf(stdout, "unmapped external: %s\n", u)
+			textLine(stdout, "unmapped external: %s", u)
 		}
 		for _, u := range m.UnmatchedComponents {
-			fmt.Fprintf(stdout, "unmatched component: %s\n", u)
+			textLine(stdout, "unmatched component: %s", u)
 		}
 		for _, l := range doc.Limitations {
-			fmt.Fprintf(stdout, "limitation: %s\n", l)
+			textLine(stdout, "limitation: %s", l)
 		}
 	default:
 		fmt.Fprintf(stderr, "unknown format %q\n", *format)
@@ -1486,15 +1535,15 @@ func cmdUnusedDeps(args []string, stdout, stderr io.Writer) int {
 		}
 	case "text":
 		for _, m := range rep.Unused {
-			fmt.Fprintf(stdout, "unused require: %s\n", m)
+			textLine(stdout, "unused require: %s", m)
 		}
 		for _, m := range rep.UnusedIndirect {
-			fmt.Fprintf(stdout, "unused indirect require: %s\n", m)
+			textLine(stdout, "unused indirect require: %s", m)
 		}
 		fmt.Fprintf(stdout, "%d unused requires (%d indirect, %d used)\n",
 			len(rep.Unused), len(rep.UnusedIndirect), rep.UsedRequires)
 		for _, l := range rep.Limitations {
-			fmt.Fprintf(stdout, "limitation: %s\n", l)
+			textLine(stdout, "limitation: %s", l)
 		}
 	default:
 		fmt.Fprintf(stderr, "unknown format %q\n", *format)

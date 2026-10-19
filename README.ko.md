@@ -286,6 +286,12 @@ gartograph dead   --baseline .dead-baseline.json --strict
   수확한 문서는 `anonymousDispatch: true`를 싣고, 표시 없는 옛 저장 문서에는
   재수확 권고가 붙습니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히
   안 보이고 보고가 그 사실을 밝힙니다.
+- 텍스트 출력(`--format text` 리포트, `diff`·`metrics`·`mapping`·`unused-deps`·
+  `dead --explain`)은 ID·경로·reason·limitation의 제어 문자(C0·C1, DEL,
+  U+2028/U+2029)와 잘못된 UTF-8을 `\xNN`·`\uNNNN`으로 이스케이프합니다 — 조작된
+  파일 이름·규칙 `reason`·저장 문서가 새 출력 줄(GitHub Actions `::` 워크플로 명령)을
+  열거나 터미널 제어 시퀀스를 보내지 못합니다. 그런 문자가 없는 문자열은 그대로
+  찍고, JSON·SARIF는 원래 문자열을 JSON 이스케이프로 싣습니다.
 
 ## 그래프 문서
 
