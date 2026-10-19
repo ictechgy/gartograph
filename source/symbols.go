@@ -29,18 +29,30 @@ type harvester struct {
 	fieldIDs map[types.Object]string // struct 필드 객체 → 정점 ID — 참조 간선 해석용
 	extRefs  int                     // 모듈 밖 심볼 참조 수
 	noTypes  int                     // 타입 정보 없는 패키지 수
-	reflectN int                     // reflect를 import하는 패키지 수
 	linkname int                     // //go:linkname 지시문 수
+	// reflectPkgs는 reflect를 import하는 패키지의 PkgPath다 — 테스트 변형이 원 패키지와 같은
+	// 패키지를 다시 싣으므로 수가 아니라 집합으로 센다.
+	reflectPkgs map[string]bool
+	// baseFiles는 테스트 변형이 아닌 패키지가 파싱한 파일이다. 테스트 변형("p [p.test]")은 원
+	// 패키지 파일을 _test.go와 함께 다시 담아 같은 생략 참조·지시문을 한 번 더 만난다 — 간선은
+	// key로 합쳐지지만 limitation 수치는 두 번 세게 된다. revisit은 지금 훑는 파일이 그런 재방문인지다.
+	baseFiles map[string]bool
+	revisit   bool
 	// packageIDs는 수확 전부터 있던 패키지 정점 ID다 — 심볼 ID가 이와 겹치면
 	// disambiguate가 접미사를 붙인다(h.id).
 	packageIDs map[string]bool
-	// concrete는 모듈의 구체 명명 타입이다 — 제네릭 인터페이스 인스턴스 호출의 구현자를
-	// 호출 지점에서 찾는 재료. instanceImpls는 그 결과 캐시(인스턴스 타입·메서드 → 구현 ID들).
-	concrete      []*types.Named
+	// concrete는 모듈의 구체 명명 타입과 그 포인터 메서드 집합이다 — 제네릭 인터페이스 인스턴스
+	// 호출의 구현자를 호출 지점에서 찾는 재료. instanceImpls는 그 결과 캐시(인스턴스 타입·메서드 →
+	// 구현 ID들).
+	concrete      []concreteType
 	instanceImpls map[string][]string
 	// initRoots는 초기화 루트 정점 ID → doc.Vertices 인덱스다(위치 갱신용).
 	initRoots      map[string]int
 	generatedFiles map[string]bool // 파일 → 생성 파일 여부 캐시
+	// loadedFiles는 수확하는 패키지가 실제로 로드한 파일이다 — isGenerated는 이 파일만 연다.
+	// 위치의 파일 이름은 //line 지시문이 아무 경로로나 바꿀 수 있어, 그대로 열면 분석 대상이
+	// FIFO(무한 대기)·장치·루트 밖 파일을 읽게 만들 수 있다.
+	loadedFiles map[string]bool
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -60,6 +72,9 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 
 		initRoots:      make(map[string]int),
 		generatedFiles: make(map[string]bool),
+		loadedFiles:    loadedFileSet(internal),
+		reflectPkgs:    make(map[string]bool),
+		baseFiles:      baseSyntaxFiles(internal),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -89,9 +104,9 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		doc.Limitation(fmt.Sprintf(
 			"%d references to symbols outside the module were omitted", h.extRefs))
 	}
-	if h.reflectN > 0 {
+	if len(h.reflectPkgs) > 0 {
 		doc.Limitation(fmt.Sprintf(
-			"%d packages import reflect; reflection-based dispatch is not resolved", h.reflectN))
+			"%d packages import reflect; reflection-based dispatch is not resolved", len(h.reflectPkgs)))
 	}
 	if h.linkname > 0 {
 		doc.Limitation(fmt.Sprintf(
@@ -108,8 +123,8 @@ func (h *harvester) addSymbolVertices(internal []*packages.Package, wantSymbols 
 			h.noTypes++
 			continue
 		}
-		if p.Imports["reflect"] != nil {
-			h.reflectN++
+		if p.Imports["reflect"] != nil && !isTestMain(p) {
+			h.reflectPkgs[p.PkgPath] = true
 		}
 		scope := p.Types.Scope()
 		for _, name := range scope.Names() {
@@ -396,7 +411,8 @@ func fieldID(tn *types.TypeName, f *types.Var) string {
 // implements는 in-module 명명 타입 × 인터페이스의 전체 조합을 검사한다 —
 // 누락된 만족 관계가 인터페이스 디스패치의 도달성을 끊기 때문이다.
 func (h *harvester) addStructuralEdges(internal []*packages.Package) {
-	var concrete, ifaces []*types.Named
+	var concrete []concreteType
+	var ifaces []*types.Named
 	for _, p := range internal {
 		if p.Types == nil {
 			continue
@@ -414,13 +430,27 @@ func (h *harvester) addStructuralEdges(internal []*packages.Package) {
 			if _, isIface := named.Underlying().(*types.Interface); isIface {
 				ifaces = append(ifaces, named)
 			} else {
-				concrete = append(concrete, named)
+				concrete = append(concrete, concreteType{named: named})
 			}
+			h.revisit = h.revisits(p, tn.Pos())
 			h.embedEdges(tn, named, p.Fset)
 		}
 	}
+	h.revisit = false
+	for i := range concrete {
+		concrete[i].mset = types.NewMethodSet(types.NewPointer(concrete[i].named))
+	}
 	h.concrete = concrete
 	h.implementsEdges(concrete, ifaces)
+}
+
+// concreteType은 모듈의 구체 명명 타입과 그 포인터 메서드 집합이다. 메서드 집합은 타입마다 한 번만
+// 만든다 — implementsEdges(이름 사전 필터·느슨한 판정·구현 메서드 조회)와 instanceImplementers(호출
+// 지점의 인스턴스 판정)가 같은 집합을 다시 쓴다. 포인터 메서드 집합은 값 메서드 집합을 품으므로
+// T·*T 어느 쪽 판정의 이름 사전 필터로도 쓸 수 있다.
+type concreteType struct {
+	named *types.Named
+	mset  *types.MethodSet
 }
 
 // embedEdges는 구조체 임베드 필드와 인터페이스 임베드에서 embeds 간선을 긋는다.
@@ -453,52 +483,167 @@ func (h *harvester) embedEdges(tn *types.TypeName, named *types.Named,
 // implementsEdges는 구체 타입이 인터페이스를 만족하면 implements 간선을 긋고,
 // 인터페이스 메서드별 구현 메서드 목록을 impls에 쌓는다.
 // 포인터 메서드 집합으로 검사해 리시버 종류와 무관한 만족을 잡는다.
-func (h *harvester) implementsEdges(concrete, ifaces []*types.Named) {
+// 인터페이스 메서드 이름을 포인터 메서드 집합이 다 갖는 것은 엄격(Implements)·느슨(이름·모양)
+// 판정 모두의 필요조건이라, 이름이 모자란 쌍은 판정하지 않는다 — 모든 쌍을 go/types로 판정하면
+// 비용이 타입 수 × 인터페이스 수로 커져 큰 모노레포에서는 이 단계만 분 단위가 된다. 예외는
+// go/types가 이름과 무관하게 참을 주는 타입이다(implementsAnything).
+func (h *harvester) implementsEdges(concrete []concreteType, ifaces []*types.Named) {
+	targets := implTargets(ifaces)
+	recorded := make(map[implPair]bool)
 	for _, t := range concrete {
-		tset := types.NewMethodSet(types.NewPointer(t))
-		for _, i := range ifaces {
-			iface, ok := i.Underlying().(*types.Interface)
-			if !ok || iface.NumMethods() == 0 {
+		have := methodNameSet(t.mset)
+		anything := implementsAnything(t.named)
+		for _, i := range targets {
+			if !anything && !hasAllNames(have, i.names) {
 				continue
 			}
-			if !implementsLoosely(t, iface, i) {
+			if !implementsLoosely(t.named, t.mset, i.iface, i.named) {
 				continue
 			}
 			// implements는 선언 위치가 아니라 타입 집합 계산의 산물이다 —
 			// 지어낸 위치를 싣지 않는다.
-			h.edge(h.id(t.Obj()), h.id(i.Obj()), graph.EdgeImplements, nil)
-			for j := 0; j < iface.NumMethods(); j++ {
-				// universe error.Error(임베드된 error에서 온 메서드)는 패키지가 없어 정점 ID를
-				// 만들 수 없다 — 구현 메서드는 satisfies error로 살아난다.
-				m := iface.Method(j)
-				if m.Pkg() == nil {
-					continue
-				}
-				sel := tset.Lookup(m.Pkg(), m.Name())
-				if sel == nil {
-					continue
-				}
-				if fn, ok := sel.Obj().(*types.Func); ok && fn.Pkg() != nil {
-					h.impls[h.id(m)] = append(h.impls[h.id(m)], h.id(fn))
-				}
-			}
+			h.edge(h.id(t.named.Obj()), h.id(i.named.Obj()), graph.EdgeImplements, nil)
+			h.recordImpls(t.mset, i.iface, recorded)
+		}
+	}
+}
+
+// implTarget은 implements 판정 대상인 모듈 인터페이스와 사전 필터용 메서드 이름이다 — 이름은
+// 구체 타입마다 다시 만들지 않도록 루프 밖에서 한 번 만든다.
+type implTarget struct {
+	named *types.Named
+	iface *types.Interface
+	names []string
+}
+
+// implTargets는 메서드가 있는 모듈 인터페이스를 판정 대상으로 모은다. 메서드가 없는 인터페이스는
+// 디스패치할 구현 메서드가 없어 implements를 긋지 않는다.
+func implTargets(ifaces []*types.Named) []implTarget {
+	out := make([]implTarget, 0, len(ifaces))
+	for _, i := range ifaces {
+		iface, ok := i.Underlying().(*types.Interface)
+		if !ok || iface.NumMethods() == 0 {
+			continue
+		}
+		out = append(out, implTarget{named: i, iface: iface, names: methodNames(iface)})
+	}
+	return out
+}
+
+// implementsAnything은 go/types가 메서드와 무관하게 모든 인터페이스를 만족한다고 답하는 타입인지
+// 본다. 밑 타입이 invalid(타입 오류 — type Bad undefined)이거나 invalid를 가리키는 포인터면
+// Implements는 후속 오류를 막으려고 참을 준다. 이름 사전 필터는 이런 타입을 거르지 않는다 — 거르면
+// 지금까지 긋던 implements·impls가 바뀐다. 그 간선을 없앨지는 출력 계약의 별도 결정이다.
+func implementsAnything(t *types.Named) bool {
+	u := t.Underlying()
+	if p, ok := u.(*types.Pointer); ok {
+		u = p.Elem().Underlying()
+	}
+	return u == types.Typ[types.Invalid]
+}
+
+// implPair는 (인터페이스 메서드 ID, 구현 메서드 ID) 한 쌍이다 — impls 중복 방지 키.
+type implPair struct{ iface, impl string }
+
+// recordImpls는 인터페이스 메서드마다 구체 타입의 구현 메서드를 impls에 한 번만 넣는다. 같은 구현이
+// 여러 경로로 다시 잡힌다 — 같은 임베드 구조체를 품은 여러 타입(승격 메서드), 같은 메서드를 담은
+// 여러 인터페이스(J를 임베드한 I). 중복을 넣으면 호출 지점마다 같은 팬아웃을 되풀이하고, 모듈 밖
+// 구현이면 외부 참조 수(limitation)를 부풀린다. 목록은 첫 등장 순서이고, 그 순서는 출력에 드러나지
+// 않는다 — 팬아웃 간선과 위치는 문서 Sort가 정규화한다.
+func (h *harvester) recordImpls(tset *types.MethodSet, iface *types.Interface, recorded map[implPair]bool) {
+	for j := 0; j < iface.NumMethods(); j++ {
+		// universe error.Error(임베드된 error에서 온 메서드)는 패키지가 없어 정점 ID를
+		// 만들 수 없다 — 구현 메서드는 satisfies error로 살아난다.
+		m := iface.Method(j)
+		if m.Pkg() == nil {
+			continue
+		}
+		sel := tset.Lookup(m.Pkg(), m.Name())
+		if sel == nil {
+			continue
+		}
+		fn, ok := sel.Obj().(*types.Func)
+		if !ok || fn.Pkg() == nil {
+			continue
+		}
+		pair := implPair{iface: h.id(m), impl: h.id(fn)}
+		if !recorded[pair] {
+			recorded[pair] = true
+			h.impls[pair.iface] = append(h.impls[pair.iface], pair.impl)
 		}
 	}
 }
 
 // addBodyEdges는 선언 몸체를 순회해 call·references 간선을 긋는다.
 // 간선의 출발점은 감싸는 선언이다 — 몸체가 없는 선언(타입 등)은 시그니처만 본다.
+// 테스트 변형이 다시 담은 원 패키지 파일도 간선은 그대로 긋고 수치만 세지 않는다(revisit).
 func (h *harvester) addBodyEdges(internal []*packages.Package, wantSymbols bool) {
 	for _, p := range internal {
 		if p.TypesInfo == nil {
 			continue
 		}
 		for _, file := range p.Syntax {
-			h.linkname += countLinknames(file)
+			h.revisit = h.revisits(p, file.Pos())
+			if !h.revisit {
+				h.linkname += countLinknames(file)
+			}
 			for _, decl := range file.Decls {
 				h.declEdges(p, decl, wantSymbols)
 			}
 		}
+	}
+	h.revisit = false
+}
+
+// revisits는 테스트 변형("p [p.test]")이 원 패키지가 이미 훑은 파일을 다시 훑는 중인지 본다.
+// 변형이 아닌 패키지와, 원 패키지가 없는 변형의 파일(_test.go, 외부 테스트 패키지)은 늘 센다.
+func (h *harvester) revisits(p *packages.Package, pos token.Pos) bool {
+	if p.ID == p.PkgPath || p.Fset == nil {
+		return false
+	}
+	f := p.Fset.File(pos)
+	return f != nil && h.baseFiles[f.Name()]
+}
+
+// baseSyntaxFiles는 테스트 변형이 아닌 패키지(ID가 PkgPath와 같은 것)가 파싱한 파일 이름 집합이다 —
+// revisits가 변형이 다시 담은 원 패키지 파일을 가려내는 기준이다. //line 지시문이 바꾼 위치가
+// 아니라 실제 파일 이름(token.File.Name)을 쓴다.
+func baseSyntaxFiles(internal []*packages.Package) map[string]bool {
+	out := make(map[string]bool)
+	for _, p := range internal {
+		if p.ID != p.PkgPath || p.Fset == nil {
+			continue
+		}
+		for _, file := range p.Syntax {
+			if f := p.Fset.File(file.Pos()); f != nil {
+				out[f.Name()] = true
+			}
+		}
+	}
+	return out
+}
+
+// isTestMain은 go test가 합성한 test main 패키지("p.test")인지 본다 — 자기 ID가 붙은 테스트
+// 변형("p [p.test]"·"p_test [p.test]")을 import하는 main 패키지다. go 도구가 쓴 코드라 그
+// import(reflect 등)를 사용자 코드의 사실로 세지 않는다.
+func isTestMain(p *packages.Package) bool {
+	if p.Name != "main" || !strings.HasSuffix(p.ID, ".test") {
+		return false
+	}
+	suffix := " [" + p.ID + "]"
+	for _, imp := range p.Imports {
+		if strings.HasSuffix(imp.ID, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// omitRef는 모듈 밖 참조 하나를 limitation 수치에 센다 — 테스트 변형이 원 패키지가 이미 센
+// 파일을 다시 훑는 중이면(revisit) 세지 않는다.
+func (h *harvester) omitRef() {
+	if !h.revisit {
+		h.extRefs++
 	}
 }
 
@@ -580,13 +725,34 @@ func (h *harvester) preferHandWritten(v *graph.Vertex, pos *graph.Position) {
 }
 
 // isGenerated는 파일이 생성 파일인지 캐시해 본다(markGenerated와 같은 판정).
+// 로드한 파일이 아니면 열지 않고 false다 — //line이 가리킨 경로는 markGenerated도 판정하지
+// 않아 그 위치의 정점은 어차피 generated가 아니므로, 두 판정이 같은 파일만 보게 된다.
 func (h *harvester) isGenerated(file string) bool {
+	if !h.loadedFiles[file] {
+		return false
+	}
 	gen, ok := h.generatedFiles[file]
 	if !ok {
 		gen = isGeneratedFile(file)
 		h.generatedFiles[file] = gen
 	}
 	return gen
+}
+
+// loadedFileSet은 패키지들이 로드한 Go 파일 경로 집합이다. 고르는 기준(CompiledGoFiles, 비면
+// GoFiles)이 markGenerated와 같다 — 생성 판정의 키가 두 곳에서 갈라지지 않게 한다.
+func loadedFileSet(pkgs []*packages.Package) map[string]bool {
+	out := make(map[string]bool)
+	for _, p := range pkgs {
+		files := p.CompiledGoFiles
+		if len(files) == 0 {
+			files = p.GoFiles
+		}
+		for _, f := range files {
+			out[f] = true
+		}
+	}
+	return out
 }
 
 // keepMarked는 주석 그룹에 keep 표지가 있는지 본다.
@@ -949,10 +1115,10 @@ func (h *harvester) instanceImplementers(iface types.Type, fn *types.Func) []str
 	it, _ := iface.Underlying().(*types.Interface)
 	var out []string
 	for _, t := range h.concrete {
-		if it == nil || !implementsLoosely(t, it, iface) {
+		if it == nil || !implementsLoosely(t.named, t.mset, it, iface) {
 			continue
 		}
-		sel := types.NewMethodSet(types.NewPointer(t)).Lookup(fn.Pkg(), fn.Name())
+		sel := t.mset.Lookup(fn.Pkg(), fn.Name())
 		if sel == nil {
 			continue
 		}
@@ -968,15 +1134,15 @@ func (h *harvester) instanceImplementers(iface types.Type, fn *types.Func) []str
 // 파라미터가 남아 있으면(제네릭 원형 Box[X], 제네릭 함수 안의 G[X]) Implements로 판정할 수
 // 없어, 인터페이스 메서드마다 같은 이름·패키지의 메서드가 있고 모양(파라미터·결과 개수,
 // 가변 여부)이 맞는지로 과대 근사한다 — "살아 있다" 쪽이되 이름만 같은 메서드는 거른다.
-// implementsEdges(미리 계산)와 instanceImplementers(호출 지점)가 같은 판정을 쓴다.
-func implementsLoosely(t *types.Named, it *types.Interface, iface types.Type) bool {
+// implementsEdges(미리 계산)와 instanceImplementers(호출 지점)가 같은 판정을 쓴다. tset은 t의
+// 포인터 메서드 집합이다 — 쌍마다 다시 만들지 않도록 타입마다 한 번 만든 것(concreteType)을 받는다.
+func implementsLoosely(t *types.Named, tset *types.MethodSet, it *types.Interface, iface types.Type) bool {
 	if t.TypeParams().Len() == 0 && !mentionsUnnameable(iface) && !isGenericOrigin(iface) {
 		return types.Implements(t, it) || types.Implements(types.NewPointer(t), it)
 	}
-	mset := types.NewMethodSet(types.NewPointer(t))
 	for i := 0; i < it.NumMethods(); i++ {
 		want := it.Method(i)
-		sel := mset.Lookup(want.Pkg(), want.Name())
+		sel := tset.Lookup(want.Pkg(), want.Name())
 		if sel == nil {
 			return false
 		}
@@ -1102,7 +1268,7 @@ func (h *harvester) refObject(obj types.Object, from string, pos *graph.Position
 	}
 	id := h.id(obj)
 	if !h.vertices[id] {
-		h.extRefs++
+		h.omitRef()
 		return
 	}
 	h.edge(from, id, graph.EdgeReferences, pos)
@@ -1165,7 +1331,7 @@ func (h *harvester) candidateEdge(from, to string, kind graph.EdgeKind, pos *gra
 func (h *harvester) addEdge(from, to string, kind graph.EdgeKind, pos *graph.Position, candidate bool) {
 	if !h.vertices[from] || !h.vertices[to] {
 		if h.vertices[from] && kind != graph.EdgeContains {
-			h.extRefs++
+			h.omitRef()
 		}
 		return
 	}

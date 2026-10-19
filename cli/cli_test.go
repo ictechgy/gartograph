@@ -3,14 +3,20 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
+	"github.com/ictechgy/gartograph/export"
+	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
 )
 
@@ -501,6 +507,119 @@ func TestImpactSince(t *testing.T) {
 	}
 }
 
+// TestImpactSinceGuardsGit은 --since 값이 git 옵션으로 읽히지 않고(git을 실행하기 전에 사용법
+// 오류), 분석 대상 .git/config의 core.fsmonitor 훅이 돌지 않으며, 범위 표기는 계속 동작하는지
+// 확인한다 — `--since=--output=FILE`은 git이 임의 파일을 덮어쓰고도 빈 변경 목록으로 성공했다.
+func TestImpactSinceGuardsGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("the fsmonitor hook fixture is a POSIX shell script")
+	}
+	dir := deadFixture(t)
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("add", "-A")
+	git("commit", "-qm", "init")
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+	appendTo := func(rel, text string) {
+		t.Helper()
+		path := filepath.Join(dir, rel)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(src, text...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendTo("lib/lib.go", "func Changed() {}\n")
+	git("commit", "-qam", "change lib")
+
+	tmp := t.TempDir()
+	victim := filepath.Join(tmp, "victim")
+	if err := os.WriteFile(victim, []byte("ORIGINAL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, rev := range []string{"--output=" + victim, "-p", "HEAD\n--output=" + victim, "HEAD\x1b[2J"} {
+		code, out, errb := run(t, "impact", "--dir", dir, "--since="+rev)
+		if code != 2 || out != "" || !strings.Contains(errb, "HEAD~1") {
+			t.Fatalf("--since %q must be a usage error before git runs: %d %q %q", rev, code, out, errb)
+		}
+	}
+	if got, err := os.ReadFile(victim); err != nil || string(got) != "ORIGINAL\n" {
+		t.Fatalf("an option-like --since must not reach git: victim is %q (%v)", got, err)
+	}
+
+	code, out, errb := run(t, "impact", "--dir", dir, "--since", "origin/main...HEAD")
+	if code != 0 || !strings.Contains(out, `"lib/lib.go"`) {
+		t.Fatalf("range revisions must keep working: %d %s %s", code, out, errb)
+	}
+
+	marker := filepath.Join(tmp, "fsmonitor-ran")
+	hook := filepath.Join(tmp, "fsmonitor.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho ran >> '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("config", "core.fsmonitor", hook)
+	appendTo("main.go", "func extra() {}\n")
+	code, out, errb = run(t, "impact", "--dir", dir, "--since", "HEAD")
+	if code != 0 || !strings.Contains(out, `"main.go"`) {
+		t.Fatalf("impact --since HEAD on a dirty tree failed: %d %s %s", code, out, errb)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the work tree's core.fsmonitor hook must not run (stat err %v)", err)
+	}
+}
+
+// TestChangedFilesSinceExplainsUsageErrors는 git diff가 인자를 사용법 오류(종료 코드 129)로 거부하면
+// 원인과 해결 방향을 담은 한 줄 오류를 내는지 본다. git 2.24보다 오래된 git은 --end-of-options를 모르는
+// 옵션으로 보고 수십 줄 사용법만 찍는다 — 그대로 옮기면 왜 실패했는지 보이지 않는다. 그런 git을
+// 흉내 내는 가짜 git을 PATH에 둔다. 다른 실패(종료 코드 128의 bad revision)는 git의 말을 그대로 옮긴다.
+func TestChangedFilesSinceExplainsUsageErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake git is a POSIX shell script")
+	}
+	fake := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = nope ]; then echo \"fatal: bad revision 'nope'\" >&2; exit 128; fi\n" +
+		"done\n" +
+		"echo 'usage: git diff [<options>] [<commit> [<commit>]] [--] [<path>...]' >&2\n" +
+		"echo '   or: git diff [<options>] --cached [<commit>] [--] [<path>...]' >&2\n" +
+		"exit 129\n"
+	if err := os.WriteFile(filepath.Join(fake, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fake)
+
+	_, err := changedFilesSince(t.TempDir(), "origin/main...HEAD")
+	if err == nil {
+		t.Fatal("a usage error from git must fail")
+	}
+	msg := err.Error()
+	for _, want := range []string{"(usage: git diff [<options>]", "git 2.24 or later", "--end-of-options", "--files"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("usage error must say %q: %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "\n") {
+		t.Errorf("usage error must keep only git's first usage line: %q", msg)
+	}
+
+	_, err = changedFilesSince(t.TempDir(), "nope")
+	if err == nil || err.Error() != "git diff nope: fatal: bad revision 'nope'" {
+		t.Fatalf("other git failures must keep git's own message: %v", err)
+	}
+}
+
 // TestRulesSarif는 SARIF 출력이 스키마를 갖춘 JSON인지 확인한다.
 func TestRulesSarif(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
@@ -717,6 +836,77 @@ func TestUnknownFormat(t *testing.T) {
 	} {
 		if code, _, _ := run(t, args...); code != 2 {
 			t.Fatalf("%v: expected 2, got %d", args, code)
+		}
+	}
+}
+
+// TestBadFormatLeavesArtifactsUntouched는 거부될 --format 호출이 기존 baseline·저장 문서를
+// 덮어쓰지 않는지 확인한다 — 형식 오타 한 번이 커밋된 baseline을 지우면 다음 --baseline
+// 실행에서 알려진 항목이 전부 새 항목이 된다. rules처럼 형식 검증이 부수 효과보다 먼저다.
+func TestBadFormatLeavesArtifactsUntouched(t *testing.T) {
+	dir := cycleFixture(t)
+	tmp := t.TempDir()
+	cases := []struct {
+		path string
+		args []string
+	}{
+		{filepath.Join(tmp, "cycles.json"), []string{"cycles", "--dir", dir, "--write-baseline"}},
+		{filepath.Join(tmp, "dead.json"), []string{"dead", "--dir", dir, "--write-baseline"}},
+		{filepath.Join(tmp, "graph.json"), []string{"graph", "--dir", dir, "--out"}},
+	}
+	const sentinel = "existing artifact\n"
+	for _, c := range cases {
+		t.Run(c.args[0], func(t *testing.T) {
+			if err := os.WriteFile(c.path, []byte(sentinel), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			args := append(append([]string(nil), c.args...), c.path, "--format", "bogus")
+			code, out, errb := run(t, args...)
+			if code != 2 || out != "" || !strings.Contains(errb, `unknown format "bogus"`) {
+				t.Fatalf("%v: bad format must be a usage error before any output: %d %q %q", args, code, out, errb)
+			}
+			if got, err := os.ReadFile(c.path); err != nil || string(got) != sentinel {
+				t.Fatalf("%v: rejected invocation rewrote %s: %q %v", args, c.path, got, err)
+			}
+			// 같은 호출이 올바른 형식이면 실제로 쓴다 — 경로가 틀려 위 검사가 헛도는 것을 막는다.
+			if code, _, errb := run(t, append(c.args, c.path)...); code != 0 {
+				t.Fatalf("%v: valid invocation failed: %d %s", c.args, code, errb)
+			}
+			if got, err := os.ReadFile(c.path); err != nil || string(got) == sentinel {
+				t.Fatalf("%v: valid invocation must write %s: %v", c.args, c.path, err)
+			}
+		})
+	}
+}
+
+// failingWriter는 모든 쓰기를 실패시킨다 — 디스크가 가득 찬 표준 출력을 흉내 낸다.
+type failingWriter struct{}
+
+// Write는 io.Writer 계약이다.
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("no space left on device")
+}
+
+// TestStdoutWriteErrorsFail은 산출물을 표준 출력에 쓰다 실패하면 2로 끝나는지 확인한다 —
+// 잘린 그래프·SARIF·사실 문서가 성공(0)으로 끝나면 소비자가 그것을 완전한 산출물로 읽는다.
+func TestStdoutWriteErrorsFail(t *testing.T) {
+	dead, rules := deadFixture(t), rulesFixture(t)
+	for _, args := range [][]string{
+		{"graph", "--dir", dead},
+		{"graph", "--dir", dead, "--format", "dot"},
+		{"cycles", "--dir", dead, "--format", "sarif"},
+		{"dead", "--dir", dead, "--format", "sarif"},
+		{"rules", "--dir", rules, "--format", "sarif"},
+		{"rules", "--dir", rules, "--format", "json"},
+		{"bridges", "--dir", dead},
+		{"schema", "--dir", dead},
+		{"routes", "--dir", dead},
+		{"reach", "example.com/fixture/lib.Run", "--dir", dead},
+	} {
+		var errb bytes.Buffer
+		code := Run(args, failingWriter{}, &errb)
+		if code != 2 || !strings.Contains(errb.String(), "no space left on device") {
+			t.Errorf("%v: a failed write must exit 2 with its cause, got %d %q", args, code, errb.String())
 		}
 	}
 }
@@ -1122,6 +1312,51 @@ func TestBridgesNoInterop(t *testing.T) {
 	}
 }
 
+// TestBridgesSkipsNonRegularSources는 bridges가 정규 파일이 아닌 .go 항목을 읽지 않고
+// unparsed로 세는지 확인한다. 분석 대상이 .go 이름의 FIFO나 장치 링크를 두면 파서가 open에서
+// 막히거나(FIFO) 끝없이 읽었다(/dev/zero — 회귀해도 메모리를 쓰지 않는 FIFO로 검증한다).
+// 건너뛴 파일은 limitation으로 남아야 "cgo 없음"과 구분되고, 읽지 않았으니 sourceModifiedAt
+// (이번 추출에서 읽은 소스의 최신 mtime)에도 들어가지 않는다. 나머지 파일의 관측은 그대로다.
+func TestBridgesSkipsNonRegularSources(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc main() {}\n",
+		"native/native.go": "package native\n\nimport \"C\"\n\n" +
+			"//export Add\nfunc Add(a, b C.int) C.int { return a + b }\n",
+	})
+	testutil.MakeFIFO(t, filepath.Join(dir, "pipe.go"))
+	elsewhere := filepath.Join(t.TempDir(), "pipe")
+	testutil.MakeFIFO(t, elsewhere)
+	if err := os.Symlink(elsewhere, filepath.Join(dir, "native", "linked.go")); err != nil {
+		t.Fatal(err)
+	}
+	read := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, f := range []string{"main.go", "native/native.go"} {
+		if err := os.Chtimes(filepath.Join(dir, f), read, read); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var code int
+	var out, errb string
+	testutil.FinishWithin(t, testutil.BlockDeadline, func() { code, out, errb = run(t, "bridges", "--dir", dir) })
+	if code != 0 {
+		t.Fatalf("bridges failed: %d %s", code, errb)
+	}
+	var doc struct {
+		SourceModifiedAt string   `json:"sourceModifiedAt"`
+		Limitations      []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	want := []string{
+		"unscanned-ffi-interop: 1 Go source files use cgo interop (1 //export symbols)",
+		"unparsed-sources: 2 Go files could not be parsed; cgo use there is uncounted",
+	}
+	if !reflect.DeepEqual(doc.Limitations, want) || doc.SourceModifiedAt != "2020-01-02T03:04:05.000Z" {
+		t.Fatalf("non-regular .go entries must be skipped as unparsed, unread:\n%s", out)
+	}
+}
+
 // TestSchema는 persistence 생산자가 SQL 관계 참조를 relation-use 사실로
 // 내는지 확인한다 — 리터럴·한정 이름·동적 인자·테이블 바인딩 태그를 함께 본다.
 func TestSchema(t *testing.T) {
@@ -1377,6 +1612,239 @@ func TestGraphLevel(t *testing.T) {
 	}
 }
 
+// assertTextSafe는 텍스트 출력의 줄에 원시 제어 문자(forbiddenChars, 잘못된 UTF-8)가 없고
+// "::"로 시작하는 줄이 없는지 본다 — GitHub Actions는 줄 앞 공백을 지운 뒤 "::"로 시작하는
+// 줄을 워크플로 명령으로 읽고, ESC 시퀀스는 터미널 화면을 지우거나 가짜 줄을 그린다.
+func assertTextSafe(t *testing.T, label, out string) {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if forbiddenChars.MatchString(line) || !utf8.ValidString(line) {
+			t.Errorf("%s: raw control character in text output line %q", label, line)
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "::") || strings.Contains(line, "##[") {
+			t.Errorf("%s: text output line reads as a workflow command: %q", label, line)
+		}
+	}
+}
+
+// TestRulesTextEscapesControlCharacters는 분석 대상이 고른 파일 이름과 설정의 reason에 든
+// 개행·ESC가 rules 텍스트 출력에서 이스케이프되는지 본다. JSON은 encoding/json이 이미
+// 이스케이프하므로 원문 그대로여야 한다.
+func TestRulesTextEscapesControlCharacters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file names with control characters are not valid on windows")
+	}
+	newlineFile := "web/w\n::error title=gartograph::injected\nx.go"
+	dir := testutil.WriteModule(t, map[string]string{
+		newlineFile:                   "package web\n\nimport _ \"example.com/fixture/db\"\n",
+		"api/a\x1b[2J\x1b[31mFAKE.go": "package api\n\nimport _ \"example.com/fixture/db\"\n",
+		"db/db.go":                    "package db\n",
+		".gartograph.yml": `components:
+  web: ["web"]
+  api: ["api"]
+  db: ["db"]
+deps: {}
+deny:
+  api:
+    - {to: db, reason: "line one\n::warning::fake \e[31mred"}
+`,
+	})
+	code, out, errb := run(t, "rules", "--dir", dir)
+	if code != 0 {
+		t.Fatalf("rules failed: %d %s", code, errb)
+	}
+	assertTextSafe(t, "rules", out)
+	for _, want := range []string{
+		`w\x0a::error title=gartograph::injected\x0ax.go:3:8`,
+		`a\x1b[2J\x1b[31mFAKE.go:3:8`,
+		`reason: line one\x0a::warning::fake \x1b[31mred`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rules text must keep the escaped text %q:\n%s", want, out)
+		}
+	}
+	code, out, errb = run(t, "rules", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("rules json failed: %d %s", code, errb)
+	}
+	var rep struct {
+		Violations []struct {
+			Reason   string `json:"reason"`
+			Position *struct {
+				File string `json:"file"`
+			} `json:"position"`
+		} `json:"violations"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("rules json: %v\n%s", err, out)
+	}
+	var raw []string
+	for _, v := range rep.Violations {
+		raw = append(raw, v.Reason)
+		if v.Position != nil {
+			raw = append(raw, v.Position.File)
+		}
+	}
+	joined := strings.Join(raw, "|")
+	if !strings.Contains(joined, "line one\n::warning::fake \x1b[31mred") ||
+		!strings.Contains(joined, filepath.FromSlash(newlineFile)) {
+		t.Fatalf("JSON must keep the original strings (encoding/json escapes them): %q", joined)
+	}
+}
+
+// TestComponentNameLinesDoNotStartWorkflowCommands는 설정의 컴포넌트 이름이 줄 첫머리에 오는
+// mapping·metrics 텍스트 출력이 `::`로 시작해 GitHub Actions 워크플로 명령으로 읽히지 않는지 본다.
+// 러너는 앞 공백류(NBSP·U+3000 포함)를 지운 뒤 `::`를 보므로 제어 문자 이스케이프만으로는 막히지
+// 않는다. 줄 어디에든 있는 옛 형식 `##[명령]`도 러너가 읽으므로 함께 막는다.
+func TestComponentNameLinesDoNotStartWorkflowCommands(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"web/web.go":   "package web\n\nimport _ \"example.com/fixture/db\"\n",
+		"db/db.go":     "package db\n",
+		"nbsp/nbsp.go": "package nbsp\n",
+		"wide/wide.go": "package wide\n",
+		"old/old.go":   "package old\n",
+		".gartograph.yml": `components:
+  "::error::injected": ["web"]
+  "  ::warning::spaced": ["db"]
+  "\u00a0::error::nbsp": ["nbsp"]
+  "\u3000::error::wide": ["wide"]
+  "legacy ##[error]old": ["old"]
+deps: {}
+`,
+	})
+	for _, command := range []string{"mapping", "metrics"} {
+		code, out, errb := run(t, command, "--dir", dir)
+		if code != 0 {
+			t.Fatalf("%s failed: %d %s", command, code, errb)
+		}
+		assertTextSafe(t, command, out)
+		for _, want := range []string{`\x3a:error::injected`, "\u00a0\\x3a:error::nbsp", "\u3000\\x3a:error::wide",
+			`legacy \x23#[error]old`} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s text must keep the component name with only the command marker escaped (%q):\n%s",
+					command, want, out)
+			}
+		}
+	}
+}
+
+// TestNeutralizeWorkflowCommand는 러너가 읽는 두 명령 형식만 바꾸고 나머지 줄은 바이트 그대로 두는지
+// 본다 — 앞 공백류 뒤의 `::`(유니코드 공백 포함)와 줄 어디에든 있는 `##[`.
+func TestNeutralizeWorkflowCommand(t *testing.T) {
+	for in, want := range map[string]string{
+		"::error::x":               `\x3a:error::x`,
+		"   ::warning::x":          `   \x3a:warning::x`,
+		"\u00a0::error::x":         "\u00a0" + `\x3a:error::x`,
+		"\u2003\u3000 ::notice::x": "\u2003\u3000 " + `\x3a:notice::x`,
+		"see ##[error]x":           `see \x23#[error]x`,
+		"###[a] ##[b]":             `#\x23#[a] \x23#[b]`,
+		"::a ##[b]":                `\x3a:a \x23#[b]`,
+		"a::b":                     "a::b",
+		"x ::y":                    "x ::y",
+		":single":                  ":single",
+		"## [x] #[y]":              "## [x] #[y]",
+		`C:\work\m\x.go`:           `C:\work\m\x.go`,
+		"cycle: [m.A m.B]":         "cycle: [m.A m.B]",
+		"":                         "",
+	} {
+		if got := neutralizeWorkflowCommand(in); got != want {
+			t.Errorf("neutralizeWorkflowCommand(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// controlCharDocuments는 정점 ID·limitation에 제어 문자를 담은 저장 문서 두 개(old·new)를
+// 쓰고 경로를 돌려준다 — --graph 문서는 분석 대상이 고를 수 있는 입력이다. 제어 문자가 없어도
+// 워크플로 명령으로 읽히는 ID(앞 NBSP 뒤 `::` — 설정 없는 metrics에서 줄 첫머리에 온다 — 와 옛
+// 형식 `##[`)도 담는다.
+func controlCharDocuments(t *testing.T) (string, string) {
+	t.Helper()
+	const (
+		pkg    = "example.com/m"
+		evil   = "example.com/m/x\n::error::pkg"
+		lead   = "\u00a0::error::lead"
+		legacy = "example.com/m/y##[error]legacy"
+		a      = "example.com/m.A\x1b[2J"
+		b      = "example.com/m.B\u2028::error::b"
+	)
+	newDoc := &graph.Document{Version: graph.Version, Tool: graph.Tool, Level: graph.LevelSymbol,
+		Module: pkg, Limitations: []string{"note\n::warning::lim \x1b[31m"},
+		Vertices: []graph.Vertex{
+			{ID: pkg, Kind: graph.KindPackage}, {ID: evil, Kind: graph.KindPackage},
+			{ID: lead, Kind: graph.KindPackage}, {ID: legacy, Kind: graph.KindPackage},
+			{ID: a, Kind: graph.KindFunc, Exported: true}, {ID: b, Kind: graph.KindFunc, Exported: true},
+		},
+		Edges: []graph.Edge{
+			{From: evil, To: pkg, Kind: graph.EdgeImport},
+			{From: a, To: b, Kind: graph.EdgeCall}, {From: b, To: a, Kind: graph.EdgeCall},
+		}}
+	oldDoc := &graph.Document{Version: graph.Version, Tool: graph.Tool, Level: graph.LevelSymbol,
+		Module: pkg, Limitations: []string{"old\n::notice::lim"},
+		Vertices: []graph.Vertex{{ID: pkg, Kind: graph.KindPackage}, {ID: a, Kind: graph.KindFunc, Exported: true}}}
+	tmp := t.TempDir()
+	oldPath, newPath := filepath.Join(tmp, "old.json"), filepath.Join(tmp, "new.json")
+	for path, doc := range map[string]*graph.Document{oldPath: oldDoc, newPath: newDoc} {
+		if err := export.SaveFile(doc, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return oldPath, newPath
+}
+
+// TestTextOutputsEscapeDocumentStrings는 --graph 문서의 ID·limitation에 든 제어 문자가
+// cycles·dead·explain·diff·metrics·mapping 텍스트 출력에서 이스케이프되는지 본다.
+func TestTextOutputsEscapeDocumentStrings(t *testing.T) {
+	oldPath, newPath := controlCharDocuments(t)
+	empty := t.TempDir()
+	cfg := filepath.Join(empty, "rules.yml")
+	if err := os.WriteFile(cfg, []byte("components:\n  other: [\"nothing\"]\ndeps: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"cycles", "--graph", newPath, "--level", "symbol"},
+		{"dead", "--graph", newPath},
+		{"dead", "--graph", newPath, "--root", "example.com/m.A\x1b[2J", "--explain", "example.com/m.B\u2028::error::b"},
+		{"dead", "--graph", newPath, "--explain", "example.com/m.A\x1b[2J"},
+		{"diff", oldPath, newPath},
+		{"metrics", "--graph", newPath, "--dir", empty},
+		{"mapping", "--graph", newPath, "--config", cfg},
+	} {
+		code, out, errb := run(t, args...)
+		if code != 0 {
+			t.Fatalf("%v: %d %s", args, code, errb)
+		}
+		assertTextSafe(t, args[0], out)
+		if !strings.Contains(out, `\x0a::`) && !strings.Contains(out, `\x1b[2J`) {
+			t.Errorf("%v: text output must keep the escaped strings:\n%s", args, out)
+		}
+		// 설정 없는 metrics는 패키지 ID가 줄 첫머리다 — 앞 공백류 뒤 `::`가 그대로면 명령 줄이다.
+		if args[0] == "metrics" && !strings.Contains(out, "\u00a0\\x3a:error::lead: 1 pkgs") {
+			t.Errorf("%v: a package ID line must not start a workflow command after leading whitespace:\n%s", args, out)
+		}
+	}
+}
+
+// TestTextSafe는 이스케이프 규칙을 직접 확인한다 — 제어 문자가 없는 문자열은 같은 값이고
+// (일반 출력 바이트 보존), 백슬래시는 그대로다(windows 경로).
+func TestTextSafe(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                       "",
+		"example.com/m.(T).Run":  "example.com/m.(T).Run",
+		`C:\work\m\x.go`:         `C:\work\m\x.go`,
+		"한글/경로.go":               "한글/경로.go",
+		"a\nb\tc\rd":             `a\x0ab\x09c\x0dd`,
+		"\x00\x1b[2J\x7f":        `\x00\x1b[2J\x7f`,
+		"c1\u0085\u009b":         `c1\u0085\u009b`,
+		"ls\u2028ps\u2029":       `ls\u2028ps\u2029`,
+		"bad\xffutf8\xc3":        `bad\xffutf8\xc3`,
+		"mixed 한\x1b글 \u2028end": `mixed 한\x1b글 \u2028end`,
+	} {
+		if got := textSafe(in); got != want {
+			t.Errorf("textSafe(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestRulesFileScope는 fileRules가 프로덕션 파일의 import만 위반으로
 // 잡는지 종단으로 확인한다 — _test.go에서 온 지점은 위반이 아니다.
 func TestRulesFileScope(t *testing.T) {
@@ -1416,6 +1884,114 @@ fileRules:
 	}
 	if !strings.Contains(out, "keep test helpers") {
 		t.Fatalf("reason must be reported: %s", out)
+	}
+}
+
+// TestRulesRejectsUnmatchablePattern은 MatchPath가 적힌 그대로 맞출 수 없는 패턴이 든 설정을
+// 규칙 검사와 수확이 모두 2로 거부하는지 종단으로 확인한다. 받아 주던 때는 "app/**/*.go"
+// fileRules가 영원히 맞지 않아 프로덕션 import를 두고도 rules --strict가 0으로 통과했고,
+// "app/su?" exclude는 아무것도 빼지 않았다.
+func TestRulesRejectsUnmatchablePattern(t *testing.T) {
+	module := func(from, exclude string) string {
+		return testutil.WriteModule(t, map[string]string{
+			"app/app.go":         "package app\n\nimport _ \"example.com/fixture/testkit\"\n",
+			"app/sub/sub.go":     "package sub\n\nimport _ \"example.com/fixture/testkit\"\n",
+			"testkit/testkit.go": "package testkit\n",
+			".gartograph.yml": `components:
+  app: ["app/**"]
+  testkit: ["testkit"]
+deps:
+  app: ["testkit"]
+fileRules:
+  - name: no-testkit
+    from: "` + from + `"
+    to: testkit
+exclude: ["` + exclude + `"]
+`,
+		})
+	}
+	// 대조: 지원 문법이면 같은 규칙이 실제로 위반을 잡는다.
+	if code, out, errb := run(t, "rules", "--dir", module("app/*.go", "gen/**"), "--strict"); code != 1 ||
+		!strings.Contains(out, "violation[fileScope:no-testkit]") {
+		t.Fatalf("a supported pattern must catch the import: %d %s %s", code, out, errb)
+	}
+	for _, c := range []struct{ from, exclude, want string }{
+		{"app/**/*.go", "gen/**", `fileRules "no-testkit": from pattern "app/**/*.go"`},
+		{"app/*.go", "app/su?", `exclude: entry 0 "app/su?"`},
+	} {
+		dir := module(c.from, c.exclude)
+		for _, args := range [][]string{{"rules", "--dir", dir, "--strict"}, {"graph", "--dir", dir}} {
+			code, out, errb := run(t, args...)
+			if code != 2 || !strings.Contains(errb, c.want) || !strings.Contains(errb, "supported patterns") {
+				t.Fatalf("%s: an unmatchable pattern must fail with exit 2 naming it: %d %s %s",
+					args[0], code, out, errb)
+			}
+		}
+	}
+}
+
+// TestRulesFileScopeBaselineAcrossCheckouts는 한 체크아웃에서 쓴 fileScope baseline이
+// 같은 경로와 다른 경로로 복사한 저장소 모두에서 맞는지 종단으로 확인한다 — README대로
+// baseline을 커밋하면 CI는 다른 절대 경로에서 수확한다. baselined 항목은 지금 체크아웃의
+// 지점을 가리켜야 한다(표시 위치는 바뀌지 않는다).
+func TestRulesFileScopeBaselineAcrossCheckouts(t *testing.T) {
+	first := testutil.WriteModule(t, map[string]string{
+		"web/web.go":    "package web\n\nimport _ \"example.com/fixture/testhelp\"\n",
+		"testhelp/t.go": "package testhelp\n",
+		".gartograph.yml": `components:
+  web: ["web"]
+  testhelp: ["testhelp"]
+deps:
+  web: ["testhelp"]
+fileRules:
+  - name: no-testdeps-in-prod
+    from: "!*_test.go"
+    to: testhelp
+`,
+	})
+	moved := filepath.Join(t.TempDir(), "checkout")
+	if err := os.CopyFS(moved, os.DirFS(first)); err != nil {
+		t.Fatalf("copying the fixture to a second checkout: %v", err)
+	}
+	base := filepath.Join(t.TempDir(), "baseline.json")
+	if code, _, errb := run(t, "rules", "--dir", first, "--write-baseline", base); code != 0 {
+		t.Fatalf("--write-baseline failed: %d %s", code, errb)
+	}
+	// 임시 디렉터리가 심링크 아래(macOS의 /var)일 수 있어 양쪽을 실제 경로로 비교한다.
+	realPath := func(p string) string {
+		resolved, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			t.Fatalf("resolving %s: %v", p, err)
+		}
+		return resolved
+	}
+	for _, dir := range []string{first, moved} {
+		code, out, errb := run(t, "rules", "--dir", dir,
+			"--baseline", base, "--strict", "--format", "json")
+		if code != 0 {
+			t.Fatalf("%s: baselined fileScope violation must not fail strict: %d %s %s",
+				dir, code, out, errb)
+		}
+		var rep struct {
+			Violations []json.RawMessage `json:"violations"`
+			Baselined  []struct {
+				Rule     string `json:"rule"`
+				Position struct {
+					File string `json:"file"`
+				} `json:"position"`
+			} `json:"baselined"`
+			StaleBaseline []json.RawMessage `json:"staleBaseline"`
+		}
+		if err := json.Unmarshal([]byte(out), &rep); err != nil {
+			t.Fatalf("not JSON: %v\n%s", err, out)
+		}
+		if len(rep.Violations) != 0 || len(rep.Baselined) != 1 || len(rep.StaleBaseline) != 0 {
+			t.Fatalf("%s: expected 0 fresh + 1 baselined + 0 stale: %s", dir, out)
+		}
+		if rep.Baselined[0].Rule != "fileScope" || rep.Baselined[0].Position.File == "" ||
+			realPath(rep.Baselined[0].Position.File) != realPath(filepath.Join(dir, "web", "web.go")) {
+			t.Fatalf("%s: baselined entry must point at this checkout's web.go: %s", dir, out)
+		}
 	}
 }
 
@@ -1669,6 +2245,41 @@ func TestDeadExplainRTA(t *testing.T) {
 	}
 }
 
+// TestDeadRTAWithoutWellTypedPackages는 RTA가 분석할 타입 검사된 패키지가 없을 때(유일한 패키지의
+// 타입 오류, 아무것도 고르지 않는 패턴) dead --algo rta와 --explain이 패닉 대신 원인과 해결 방향을
+// 담은 분석 오류(exit 2)를 내는지 확인한다. CHA 경로는 그대로 동작한다 — 타입 오류는 limitation이다.
+func TestDeadRTAWithoutWellTypedPackages(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc helper() int { return undefinedName }\n\nfunc main() { _ = helper() }\n",
+	})
+	for _, args := range [][]string{
+		{"dead", "--dir", dir, "--algo", "rta"},
+		{"dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/fixture.helper"},
+		{"dead", "--dir", dir, "--algo", "rta", "--pattern", "./nothing/..."},
+	} {
+		code, _, errb := runRecovered(t, args...)
+		if code != 2 || !strings.Contains(errb, "rta: no well-typed packages to analyze") ||
+			!strings.Contains(errb, "without --algo rta") {
+			t.Errorf("%v: want exit 2 with the cause and the way out, got %d %q", args[3:], code, errb)
+		}
+	}
+	if code, _, errb := run(t, "dead", "--dir", dir); code != 0 {
+		t.Fatalf("CHA dead must still work on an ill-typed package: %d %s", code, errb)
+	}
+}
+
+// runRecovered는 run과 같되 패닉을 테스트 실패로 바꾼다 — 패닉이 테스트 바이너리를 죽이면 같은
+// 실행의 다른 결과까지 잃는다.
+func runRecovered(t *testing.T, args ...string) (int, string, string) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("%v panicked instead of reporting an error: %v", args, r)
+		}
+	}()
+	return run(t, args...)
+}
+
 // TestExcludeConfig는 .gartograph.yml의 exclude가 수확에서 패키지를
 // 빼는지 확인한다 — 설정과 수확이 같은 해석을 써야 한다.
 func TestExcludeConfig(t *testing.T) {
@@ -1707,6 +2318,53 @@ import _ "example.com/fixture/gen"
 	}
 	if !noted {
 		t.Fatalf("exclusion must be a limitation: %s", out)
+	}
+}
+
+// TestConfigMustBeRegularFile은 분석 대상의 .gartograph.yml이 정규 파일이 아니면 명령이
+// 멈추지 않고 원인을 담아 2로 끝나는지 확인한다. 수확 명령은 전부 exclude를 읽으려고 이
+// 파일을 연다 — FIFO는 open에서, /dev/zero 링크는 읽기에서 끝나지 않았다(장치는 회귀해도
+// 메모리를 쓰지 않는 /dev/null로 검증한다). 정규 파일을 가리키는 링크는 지금처럼 읽힌다.
+func TestConfigMustBeRegularFile(t *testing.T) {
+	// replaced는 rulesFixture의 규칙 파일 자리에 place가 만든 파일을 둔 모듈이다.
+	replaced := func(place func(cfg string)) string {
+		dir := rulesFixture(t)
+		cfg := filepath.Join(dir, ".gartograph.yml")
+		if err := os.Remove(cfg); err != nil {
+			t.Fatal(err)
+		}
+		place(cfg)
+		return dir
+	}
+	fifoDir := replaced(func(cfg string) { testutil.MakeFIFO(t, cfg) })
+	deviceDir := replaced(func(cfg string) {
+		if err := os.Symlink(os.DevNull, cfg); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, dir := range []string{deviceDir, fifoDir} {
+		for _, cmd := range []string{"graph", "rules"} {
+			var code int
+			var errb string
+			testutil.FinishWithin(t, testutil.BlockDeadline, func() { code, _, errb = run(t, cmd, "--dir", dir) })
+			if code != 2 || !strings.Contains(errb, "is not a regular file") {
+				t.Fatalf("%s --dir %s: want exit 2 naming the cause, got %d %s", cmd, dir, code, errb)
+			}
+		}
+	}
+	shared := filepath.Join(t.TempDir(), "shared.yml")
+	if err := os.WriteFile(shared, []byte("components:\n  web: [\"web\"]\n  db: [\"db\"]\ndeps: {}\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := replaced(func(cfg string) {
+		if err := os.Symlink(shared, cfg); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if code, out, errb := run(t, "rules", "--dir", linkDir, "--strict"); code != 1 ||
+		!strings.Contains(out, "example.com/fixture/web") {
+		t.Fatalf("a linked regular rules file must still be checked: %d %s %s", code, out, errb)
 	}
 }
 
@@ -1812,7 +2470,17 @@ func TestCyclesSARIF(t *testing.T) {
 		Version string `json:"version"`
 		Runs    []struct {
 			Results []struct {
-				RuleID string `json:"ruleId"`
+				RuleID    string `json:"ruleId"`
+				Locations []struct {
+					PhysicalLocation *struct {
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+						Region struct {
+							StartLine int `json:"startLine"`
+						} `json:"region"`
+					} `json:"physicalLocation"`
+				} `json:"locations"`
 			} `json:"results"`
 		} `json:"runs"`
 	}
@@ -1823,6 +2491,14 @@ func TestCyclesSARIF(t *testing.T) {
 		len(sarif.Runs[0].Results) != 1 ||
 		sarif.Runs[0].Results[0].RuleID != "dependency-cycle" {
 		t.Fatalf("unexpected SARIF: %s", out)
+	}
+	// 순환을 이루는 간선의 첫 지점이 물리 위치로 실려야 code scanning이 결과를
+	// 파일·줄에 놓는다 — 논리 위치만으로는 표시할 곳이 없다.
+	locs := sarif.Runs[0].Results[0].Locations
+	if len(locs) != 1 || locs[0].PhysicalLocation == nil ||
+		locs[0].PhysicalLocation.ArtifactLocation.URI != "a/a.go" ||
+		locs[0].PhysicalLocation.Region.StartLine != 3 {
+		t.Fatalf("cycle result must carry the first evidence site as physicalLocation: %s", out)
 	}
 	// baseline 왕복 — 쓰고 읽으면 같은 순환이 baselined로 간다.
 	bp := filepath.Join(dir, "b.json")
@@ -1835,6 +2511,14 @@ func TestCyclesSARIF(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("baseline read failed: %d", code)
 	}
+	// 위치는 SARIF에만 싣는다 — cycles JSON과 baseline 파일의 형식은 그대로다.
+	written, err := os.ReadFile(bp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "positions") || strings.Contains(string(written), "positions") {
+		t.Fatalf("cycles JSON and baseline must not carry positions:\n%s\n%s", out, written)
+	}
 	var rep struct {
 		Cycles    []any `json:"cycles"`
 		Baselined []any `json:"baselined"`
@@ -1844,6 +2528,69 @@ func TestCyclesSARIF(t *testing.T) {
 	}
 	if len(rep.Cycles) != 0 || len(rep.Baselined) != 1 {
 		t.Fatalf("known cycle must be baselined: %s", out)
+	}
+}
+
+// TestCyclesEvidenceOnce는 CLI JSON과 MCP gartograph_cycles가 같은 쌍의 관계 종류마다
+// 증거 간선을 한 번만 싣는지 확인한다. call과 references가 함께 있는 쌍(Go 호출에서
+// 흔하다)의 증거가 종류 수만큼 거듭 실리면, 고칠 간선 수를 세는 에이전트가 부풀려 센다.
+func TestCyclesEvidenceOnce(t *testing.T) {
+	docJSON := `{"version":2,"level":"symbol","vertices":[
+{"id":"m.A","kind":"func"},{"id":"m.B","kind":"func"}],
+"edges":[{"from":"m.A","to":"m.B","kind":"call","positions":[{"file":"a.go","line":3}]},
+{"from":"m.A","to":"m.B","kind":"references","positions":[{"file":"a.go","line":4}]},
+{"from":"m.B","to":"m.A","kind":"call","positions":[{"file":"b.go","line":5}]}]}`
+	p := filepath.Join(t.TempDir(), "g.json")
+	if err := os.WriteFile(p, []byte(docJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"from":"m.A","kind":"call","to":"m.B"},` +
+		`{"from":"m.A","kind":"references","to":"m.B"},{"from":"m.B","kind":"call","to":"m.A"}]`
+	type cycleEvidence struct {
+		Edges []map[string]any `json:"edges"`
+	}
+	// evidenceOf는 순환 하나의 증거 간선을 비교할 수 있게 다시 직렬화한다.
+	evidenceOf := func(cycles []cycleEvidence) string {
+		t.Helper()
+		if len(cycles) != 1 {
+			t.Fatalf("expected one cycle, got %d", len(cycles))
+		}
+		got, err := json.Marshal(cycles[0].Edges)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(got)
+	}
+	code, out, errb := run(t, "cycles", "--graph", p, "--level", "symbol", "--format", "json")
+	if code != 0 {
+		t.Fatalf("cycles json failed: %d %s", code, errb)
+	}
+	var report struct {
+		Cycles []cycleEvidence `json:"cycles"`
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("cycles output is not JSON: %v\n%s", err, out)
+	}
+	if got := evidenceOf(report.Cycles); got != want {
+		t.Fatalf("CLI evidence must name each relation once:\ngot  %s\nwant %s", got, want)
+	}
+	doc, err := export.LoadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := mcpSession(t, &mcpServer{doc: doc},
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gartograph_cycles","arguments":{"level":"symbol"}}}`)
+	result := res[0]["result"].(map[string]any)
+	if result["isError"] == true {
+		t.Fatalf("MCP cycles errored: %v", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var mcpCycles []cycleEvidence
+	if err := json.Unmarshal([]byte(text), &mcpCycles); err != nil {
+		t.Fatalf("MCP cycles text is not JSON: %v\n%s", err, text)
+	}
+	if got := evidenceOf(mcpCycles); got != want {
+		t.Fatalf("MCP evidence must match CLI:\ngot  %s\nwant %s", got, want)
 	}
 }
 
@@ -1967,6 +2714,140 @@ func main() { dep.F() }
 	}
 	if len(rep.Unused) != 0 || rep.UsedRequires != 1 {
 		t.Fatalf("imported require must count as used: %s", out)
+	}
+	// 오류도 제외 파일도 없는 모듈은 limitations 키가 없다 — 알릴 것이 없으면 조용하다.
+	if strings.Contains(out, "limitations") {
+		t.Fatalf("a clean module must not carry limitations: %s", out)
+	}
+}
+
+// unusedDepsReport는 unused-deps JSON 보고에서 테스트가 보는 필드다.
+type unusedDepsReport struct {
+	Unused       []string `json:"unused"`
+	UsedRequires int      `json:"usedRequires"`
+	Limitations  []string `json:"limitations"`
+}
+
+// runUnusedDepsJSON은 unused-deps를 JSON으로 실행해 보고를 읽는다.
+func runUnusedDepsJSON(t *testing.T, dir string) unusedDepsReport {
+	t.Helper()
+	code, out, errb := run(t, "unused-deps", "--dir", dir, "--format", "json")
+	if code != 0 {
+		t.Fatalf("unused-deps failed: %d %s", code, errb)
+	}
+	var rep unusedDepsReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	return rep
+}
+
+// TestUnusedDepsCountsConstraintExcludedFiles는 빌드 제약으로 빠진 파일의 import도 "사용"으로
+// 세는지 확인한다 — go mod tidy는 ignore 외의 모든 태그·플랫폼 파일을 보므로, 다른 OS 전용 파일과
+// //go:build integration 파일에서만 쓰는 require는 tidy가 지킨다. //go:build ignore 파일만 쓰는
+// require는 tidy가 지우므로 미사용이다. 로드하지 않은 패키지(other·integ)를 import하는 제외 파일
+// 수는 limitation으로 남는다.
+func TestUnusedDepsCountsConstraintExcludedFiles(t *testing.T) {
+	otherOS := "windows"
+	if runtime.GOOS == "windows" {
+		otherOS = "linux"
+	}
+	files := map[string]string{
+		"go.mod": `module example.com/fixture
+
+go 1.27
+
+require (
+	example.com/ignored v0.0.0
+	example.com/integ v0.0.0
+	example.com/other v0.0.0
+)
+
+replace (
+	example.com/ignored => ./ignored
+	example.com/integ => ./integ
+	example.com/other => ./other
+)
+`,
+		"main.go":                "package main\n\nfunc main() {}\n",
+		"run_" + otherOS + ".go": "package main\n\nimport \"example.com/other\"\n\nfunc init() { other.F() }\n",
+		"integ_test.go": "//go:build integration\n\npackage main\n\nimport (\n\t\"testing\"\n\n" +
+			"\t\"example.com/integ\"\n)\n\nfunc TestInteg(t *testing.T) { integ.F() }\n",
+		"gen.go": "//go:build ignore\n\npackage main\n\nimport \"example.com/ignored\"\n\nfunc main() { ignored.F() }\n",
+	}
+	for _, m := range []string{"ignored", "integ", "other"} {
+		files[m+"/go.mod"] = "module example.com/" + m + "\n\ngo 1.27\n"
+		files[m+"/"+m+".go"] = "package " + m + "\n\nfunc F() {}\n"
+	}
+	dir := testutil.WriteModule(t, files)
+	rep := runUnusedDepsJSON(t, dir)
+	if !slices.Equal(rep.Unused, []string{"example.com/ignored"}) || rep.UsedRequires != 2 {
+		t.Fatalf("excluded-file imports must count as used, ignore-tagged ones must not: %+v", rep)
+	}
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
+		"2 source files excluded by build constraints import packages that were not loaded;") {
+		t.Fatalf("the two read excluded files must be counted: %v", rep.Limitations)
+	}
+	if code, _, _ := run(t, "unused-deps", "--dir", dir, "--strict"); code != 1 {
+		t.Fatalf("the ignore-only require is still a direct unused require, strict must exit 1: %d", code)
+	}
+}
+
+// TestUnusedDepsExcludedFileLimitationCountsUnseenImports는 제외 파일 limitation이 실제 공백만 세는지
+// 확인한다 — 제외 파일이 std나 이미 로드된 패키지만 import하면 그 패키지의 의존은 이미 셌거나(로드됨)
+// require에 기대지 않는다(std). 대부분 저장소의 OS별 파일이 그렇다 — 알릴 것이 없으면 조용해야 한다.
+// 이 플랫폼 파일이 없어 로드되지 않은 주 모듈 패키지를 import하는 제외 파일은 공백이다.
+func TestUnusedDepsExcludedFileLimitationCountsUnseenImports(t *testing.T) {
+	otherOS := "windows"
+	if runtime.GOOS == "windows" {
+		otherOS = "linux"
+	}
+	files := map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\n" +
+			"replace example.com/dep => ./dep\n",
+		"dep/go.mod": "module example.com/dep\n\ngo 1.27\n",
+		"dep/dep.go": "package dep\n\nfunc F() {}\n",
+		"lib/lib.go": "package lib\n\nfunc G() {}\n",
+		"main.go": "package main\n\nimport (\n\t\"example.com/dep\"\n\t\"example.com/fixture/lib\"\n)\n\n" +
+			"func main() { dep.F(); lib.G() }\n",
+		"run_" + otherOS + ".go": "package main\n\nimport (\n\t\"os\"\n\t\"syscall\"\n\n\t\"example.com/dep\"\n" +
+			"\t\"example.com/fixture/lib\"\n)\n\nfunc init() { _, _ = os.Getpid(), syscall.Getpid(); dep.F(); lib.G() }\n",
+		"stub.go": "//go:build js || wasip1\n\npackage main\n\nimport \"os\"\n\nvar _ = os.O_RDONLY\n",
+	}
+	rep := runUnusedDepsJSON(t, testutil.WriteModule(t, files))
+	if len(rep.Unused) != 0 || rep.UsedRequires != 1 || len(rep.Limitations) != 0 {
+		t.Fatalf("excluded files importing only std and loaded packages leave no gap: %+v", rep)
+	}
+	files["winonly/w_"+otherOS+".go"] = "package winonly\n\nfunc W() {}\n"
+	files["svc_"+otherOS+".go"] = "package main\n\nimport \"example.com/fixture/winonly\"\n\nfunc init() { winonly.W() }\n"
+	rep = runUnusedDepsJSON(t, testutil.WriteModule(t, files))
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
+		"1 source files excluded by build constraints import packages that were not loaded;") {
+		t.Fatalf("an excluded file importing an unloaded module package must be counted: %v", rep.Limitations)
+	}
+}
+
+// TestUnusedDepsLoadErrors는 받을 수 없는 require(오프라인·인증 실패)를 import하는 패키지가 로드에
+// 실패해도 그 require를 미사용으로 오보하지 않는지 확인한다 — 실패한 import 경로를 require 목록의
+// 가장 긴 모듈에 귀속하고, 로드 오류 수를 limitation으로 남긴다. 판정 근거가 빈 사실을 숨기면
+// 소비자가 쓰는 require를 지운다.
+func TestUnusedDepsLoadErrors(t *testing.T) {
+	t.Setenv("GOPROXY", "off")
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod":  "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/missing v1.0.0\n",
+		"main.go": "package main\n\nimport _ \"example.com/missing/pkg\"\n\nfunc main() {}\n",
+	})
+	rep := runUnusedDepsJSON(t, dir)
+	if len(rep.Unused) != 0 || rep.UsedRequires != 1 {
+		t.Fatalf("a require whose package failed to load is still imported: %+v", rep)
+	}
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
+		"1 packages reported load errors;") {
+		t.Fatalf("load errors must be counted: %v", rep.Limitations)
+	}
+	code, out, _ := run(t, "unused-deps", "--dir", dir)
+	if code != 0 || !strings.Contains(out, "limitation: 1 packages reported load errors;") {
+		t.Fatalf("text output must show the limitation: %d %s", code, out)
 	}
 }
 
@@ -2611,6 +3492,50 @@ func TestDiffInterfaceGainedMethodHarvested(t *testing.T) {
 	code, out, _ = run(t, "diff", oldPath, newPath, "--strict")
 	if code != 1 || !strings.Contains(out, "a.I gained method Read via embedding") {
 		t.Fatalf("embedding an interface from outside the module must be breaking: %d %s", code, out)
+	}
+}
+
+// TestDiffEmbeddedFieldRetypeHarvested는 실제 수확 문서에서 공개 struct가 임베드한 비공개 타입의
+// 재형이 diff --strict를 막는지 확인한다 — *inner → inner면 값 T가 포인터 리시버 메서드 Foo를 잃어
+// `var _ fooer = T{}` 같은 소비자가 깨지는데, 수확은 구체 타입을 포인터 메서드 집합으로 싣고 승격
+// 메서드를 선언 타입 아래에 둬 시그니처·정점 비교로는 보이지 않는다. 같은 이름의 명명 필드와 내부
+// 필드(mu) 재형은 계속 게이트를 막지 않는다.
+func TestDiffEmbeddedFieldRetypeHarvested(t *testing.T) {
+	const inner = "package a\n\ntype inner struct{ n int }\n\nfunc (i *inner) Foo() int { return i.n }\n\n"
+	const generic = "package a\n\ntype inner[V any] struct{ v V }\n\nfunc (i inner[V]) Get() V { return i.v }\n\n"
+	for _, tc := range []struct {
+		name     string
+		old, new string
+		code     int
+		want     string
+	}{
+		{"pointer embed to value embed", inner + "type T struct {\n\t*inner\n\tName string\n}\n",
+			inner + "type T struct {\n\tinner\n\tName string\n}\n", 1,
+			"breaking: embedded field example.com/fixture/a.T.inner changed type: " +
+				"*example.com/fixture/a.inner -> example.com/fixture/a.inner"},
+		{"generic embed type argument", generic + "type T struct{ inner[int] }\n",
+			generic + "type T struct{ inner[string] }\n", 1,
+			"breaking: embedded field example.com/fixture/a.T.inner changed type: " +
+				"example.com/fixture/a.inner[int] -> example.com/fixture/a.inner[string]"},
+		{"named field typed like its name", inner + "type T struct{ inner *inner }\n",
+			inner + "type T struct{ inner inner }\n", 0, "0 breaking"},
+		{"internal mutex", "package a\n\nimport \"sync\"\n\ntype T struct {\n\tName string\n\tmu sync.Mutex\n}\n",
+			"package a\n\nimport \"sync\"\n\ntype T struct {\n\tName string\n\tmu sync.RWMutex\n}\n", 0, "0 breaking"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			oldPath, newPath := filepath.Join(tmp, "old.json"), filepath.Join(tmp, "new.json")
+			for src, out := range map[string]string{tc.old: oldPath, tc.new: newPath} {
+				dir := testutil.WriteModule(t, map[string]string{"a/a.go": src})
+				if code, _, errb := run(t, "graph", "--level", "type", "--dir", dir, "--out", out); code != 0 {
+					t.Fatalf("graph failed: %d %s", code, errb)
+				}
+			}
+			code, out, _ := run(t, "diff", oldPath, newPath, "--strict")
+			if code != tc.code || !strings.Contains(out, tc.want) {
+				t.Fatalf("diff --strict = %d, want %d with %q:\n%s", code, tc.code, tc.want, out)
+			}
+		})
 	}
 }
 

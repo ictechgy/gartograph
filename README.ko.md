@@ -83,10 +83,18 @@ gartograph query <정점ID> --depth 2            # 이웃 되묻기(에이전트
 gartograph query 'github.com/ictechgy/gartograph/graph.(Document).Sort'
 gartograph impact <정점ID> --depth 2           # 역방향 전이 — 바꾸면 뭐가 깨지나
 gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분석
-                                              # (--files cli/cli.go도 가능)
+                                              # (git 2.24 이상. --files cli/cli.go도 가능. '-'로 시작하거나
+                                              #  제어 문자가 든 값은 사용법 오류. git 호출은 fsmonitor 훅을
+                                              #  끄지만 작업 트리의 .git/config(필터 등)는 신뢰한다 —
+                                              #  출처를 모르는 트리에서는 --files를 쓴다)
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
 gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트별 고유분
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
+                                               # (tidy처럼 빌드 제약 제외 파일·로드 실패 import도 셈,
+                                               #  //go:build ignore 제외 — limitations는 로드 오류와,
+                                               #  이번에 로드하지 않은 패키지를 import하는 제외 파일을 셈.
+                                               #  std만 쓰는 제외 파일은 조용하다.
+                                               #  이 플랫폼 파일이 없는 패키지는 로드되지 않아 --goos로 확인)
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 # (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·
 #  인터페이스 메서드 추가·서명 변경(직접·임베드 경유 — 두 문서에 메서드 집합이 있으면
@@ -117,6 +125,10 @@ limitations에 남음), `--graph`(저장 문서 읽기).
 컴포넌트는 자기 자신 외에 아무것도 의존할 수 없습니다. 어느 컴포넌트에도
 속하지 않은 패키지는 `unmapped`로 보고됩니다 — 매핑 구멍은 "규칙 무관"이
 아니라 "규칙이 모르는 영역"입니다.
+
+규칙 파일은 16 MiB 이하의 일반 파일이거나 그런 파일을 가리키는 링크여야 합니다.
+수확하는 명령은 모두 `exclude`를 읽으려고 이 파일을 열기 때문에, 장치·이름 있는
+파이프·그보다 큰 파일은 끝없이 읽는 대신 오류(종료 코드 2)가 됩니다.
 
 ```yaml
 components:
@@ -231,8 +243,15 @@ gartograph dead   --baseline .dead-baseline.json --strict
 기록된 위반은 `baselined`로 보고되고, 더 이상 발생하지 않는 항목은
 `staleBaseline`으로 돌아옵니다 — 쌓이면 재생성하세요. SARIF와 `--strict`는
 새 위반만 봅니다.
+항목은 가리키는 사실로 짝지어지고 줄 번호나 체크아웃 경로는 보지 않습니다
+(`fileRules` 위반은 규칙·import 간선·파일 이름으로 맞춥니다) — 한 머신에서
+커밋한 baseline이 CI에서도 그대로 맞습니다.
 
 패턴: 정확 일치, `x/**` 재귀 접두사, `*` 세그먼트 글롭.
+규칙 파일을 읽을 때 components·`exclude`·`fileRules.from`의 그 밖의
+문법은 거부합니다(exit 2) — `?`, `[...]`, `{...}`, `\`, 한 세그먼트의
+`*` 두 개 이상, 끝의 `/**`가 아닌 `**`, 그 `/**` 앞의 `*`, 빈 세그먼트.
+이런 패턴은 아무것도 맞지 않아 그 위의 규칙이 조용히 통과하기 때문입니다.
 `rules`·`cycles`·`dead` 모두 `--format sarif`를 받습니다 — 순환은
 `dependency-cycle` error, unreachable은 `unreachable-symbol` warning
 (삭제 판정이 아니라 사실)으로 보고됩니다.
@@ -272,6 +291,14 @@ gartograph dead   --baseline .dead-baseline.json --strict
   수확한 문서는 `anonymousDispatch: true`를 싣고, 표시 없는 옛 저장 문서에는
   재수확 권고가 붙습니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히
   안 보이고 보고가 그 사실을 밝힙니다.
+- 텍스트 출력(`--format text` 리포트, `diff`·`metrics`·`mapping`·`unused-deps`·
+  `dead --explain`)은 ID·경로·reason·limitation의 제어 문자(C0·C1, DEL,
+  U+2028/U+2029)와 잘못된 UTF-8을 `\xNN`·`\uNNNN`으로 이스케이프합니다 — 조작된
+  파일 이름·규칙 `reason`·저장 문서가 새 출력 줄(GitHub Actions `::` 워크플로 명령)을
+  열거나 터미널 제어 시퀀스를 보내지 못합니다. Actions 러너가 한 줄 안에서 읽는 두
+  명령 형식도 같은 표기로 바꿉니다 — 공백류(NBSP 포함) 뒤 줄 첫머리의 `::`는 `\x3a:`,
+  모든 `##[`는 `\x23#[`가 됩니다. 그 밖의 문자열은 그대로 찍고, JSON·SARIF는 원래
+  문자열을 JSON 이스케이프로 싣습니다.
 
 ## 그래프 문서
 
@@ -355,7 +382,8 @@ breaking으로 분류하는 재료입니다.
   `candidate`. 함수 값·리플렉션 호출은 세지 않아 `dispatch`·`unresolvedCalls`는 싣지
   않습니다(완전성 주장 없음).
 - `--depth`(1–128, 기본 128)·`--max`(도달 1–100000, 기본 100000)로 자르면
-  `truncationReasons`에 `depth`·`max-reached`가 실립니다.
+  `truncationReasons`에 `depth`·`max-reached`가 실립니다. `rootsTruncated`는 실린
+  심볼만 봅니다 — `--max`로 빠진 심볼은 세지 않습니다.
 - `project`는 `schema`와 같은 realpath, `revision`은 `--revision` 또는 작업 트리가
   깨끗할 때의 git `HEAD`(`--graph`면 생략), `graphRevision`은 그래프 JSON의 SHA-256,
   `--generated-at`은 시각을 고정합니다.

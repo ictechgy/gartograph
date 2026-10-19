@@ -33,13 +33,29 @@ type PathResult struct {
 
 // Path는 from에서 to로 가는 최단 의존 경로를 BFS로 찾는다.
 // contains는 소유 관계라 경로에 쓰지 않는다(Adjacency가 걸러 준다).
+// 한 번만 묻는 경로라 두 정점은 목록에서 찾는다 — 정점 둘을 찾자고 정점 수만큼의 색인을 만들지 않는다.
 func Path(d *graph.Document, from, to string) (*PathResult, error) {
 	for _, id := range []string{from, to} {
 		if !d.HasVertex(id) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 		}
 	}
-	adj := graph.Adjacency(d)
+	return shortestPath(d, graph.Adjacency(d), from, to), nil
+}
+
+// Path는 색인 위의 Path다 — 같은 Index로 거듭 물으면 ID 색인과 의존 인접 맵을 다시 만들지 않는다.
+func (x *Index) Path(from, to string) (*PathResult, error) {
+	for _, id := range []string{from, to} {
+		if x.vertices()[id] == nil {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+		}
+	}
+	return shortestPath(x.doc, x.adjacency(), from, to), nil
+}
+
+// shortestPath는 Path의 본체다 — 의존 인접 맵(adj) 위에서 from→to 최단 경로를 BFS로 찾고 홉마다 관계
+// 종류를 싣는다. 한 번짜리 Path와 색인 위의 Path가 이 함수를 함께 써서 답이 갈라지지 않는다.
+func shortestPath(d *graph.Document, adj map[string][]string, from, to string) *PathResult {
 	parent := map[string]string{from: ""}
 	queue := []string{from}
 	for len(queue) > 0 {
@@ -58,7 +74,7 @@ func Path(d *graph.Document, from, to string) (*PathResult, error) {
 	}
 	res := &PathResult{From: from, To: to, Limitations: d.Limitations}
 	if _, ok := parent[to]; !ok {
-		return res, nil
+		return res
 	}
 	var ids []string
 	for cur := to; ; cur = parent[cur] {
@@ -73,8 +89,8 @@ func Path(d *graph.Document, from, to string) (*PathResult, error) {
 	for i := 1; i < len(ids); i++ {
 		res.Hops[i] = PathHop{
 			ID:    ids[i],
-			Kinds: dependencyKinds(d, ids[i-1], ids[i], false),
+			Kinds: dependencyKinds(d, ids[i-1], ids[i]),
 		}
 	}
-	return res, nil
+	return res
 }

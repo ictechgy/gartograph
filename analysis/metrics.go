@@ -6,6 +6,7 @@ package analysis
 
 import (
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/ictechgy/gartograph/config"
@@ -53,8 +54,10 @@ type MetricsReport struct {
 func Metrics(d *graph.Document, cfg *config.File) *MetricsReport {
 	unit := map[string]string{} // 패키지 정점 ID → 단위(컴포넌트 또는 패키지 자신)
 	var unmapped []string
+	var mapped map[string][]string // 컴포넌트 → 정렬된 패키지 정점 ID(MapComponents 결과)
 	if cfg != nil {
 		m := MapComponents(d, cfg)
+		mapped = m.Components
 		for name, pkgs := range m.Components {
 			for _, p := range pkgs {
 				unit[p] = name
@@ -144,12 +147,10 @@ func Metrics(d *graph.Document, cfg *config.File) *MetricsReport {
 	for _, n := range sorted {
 		var pkgs []string
 		if cfg != nil {
-			for p, u := range unit {
-				if u == n {
-					pkgs = append(pkgs, p)
-				}
-			}
-			sort.Strings(pkgs)
+			// 매핑 결과는 이미 정렬된 목록이다 — 컴포넌트마다 unit 전체를 다시 훑으면 init이
+			// 만든 패키지당 컴포넌트 설정에서 비용이 컴포넌트 수 × 패키지 수가 된다.
+			// 겹친 정점 ID(손으로 합친 문서)는 unit 키처럼 한 번만 싣는다.
+			pkgs = slices.Compact(mapped[n])
 		} else {
 			pkgs = []string{n}
 		}
@@ -185,14 +186,20 @@ func Metrics(d *graph.Document, cfg *config.File) *MetricsReport {
 // 빈 식별자 루트(pkg._)는 뺀다 — var _ I = (*T)(nil)은 컴파일 타임 단언이라
 // 패키지를 남기겠다는 표지(init의 부작용·keep 어노테이션)가 아니다. 흔한 관용구라
 // 넣으면 import되지 않는 패키지 대부분이 orphan에서 숨는다.
+// 루트 정점은 한 번 만든 ID 색인으로 찾는다 — 루트마다 정점 목록을 훑으면 --tests 문서(테스트
+// 함수가 모두 루트)를 --graph로 넣었을 때 비용이 루트 수 × 정점 수가 된다.
 func rootSet(d *graph.Document) map[string]bool {
 	out := map[string]bool{}
+	if len(d.Roots) == 0 {
+		return out
+	}
+	byID := graph.VertexIndex(d)
 	for _, r := range d.Roots {
-		v, ok := d.VertexByID(r)
-		if ok && v.Kind == graph.KindVar && v.Name == "_" {
+		v := byID[r]
+		if v != nil && v.Kind == graph.KindVar && v.Name == "_" {
 			continue
 		}
-		if ok && v.Package != "" {
+		if v != nil && v.Package != "" {
 			out[v.Package] = true
 		} else {
 			out[r] = true

@@ -47,6 +47,11 @@ func SplitBaseline[T any](items, baseline []T, key func(T) string) (fresh, basel
 // 새 위반으로 울리면 baseline이 소음이 된다.
 // fileScope 위반은 지점 단위라 규칙 이름과 파일을 함께 쓴다 — 줄 번호는
 // 드리프트로 흔들리고, 파일이 같으면 같은 위반으로 보는 게 정확하다.
+// 파일은 경로가 아니라 이름만 쓴다 — 위치는 수확 머신의 절대 경로라, 경로 전체를
+// 쓰면 개발 머신에서 커밋한 baseline이 다른 경로에서 체크아웃한 CI에서 전부
+// fresh·stale로 갈라진다. 키에 이미 import하는 패키지(From)가 있고 한 패키지의
+// 파일은 한 디렉터리에 있으므로 이름만으로 유일하다. 키는 비교할 때 계산하므로
+// 절대 경로를 담은 기존 baseline 파일도 형식 변경 없이 그대로 맞는다.
 // reason은 사유 텍스트라 동일성에 넣지 않는다.
 // \x00 구분은 필드 안에 나올 수 없는 값이라 튜플 충돌이 없다.
 func ViolationBaselineKey(v Violation) string {
@@ -56,7 +61,7 @@ func ViolationBaselineKey(v Violation) string {
 	case "fileScope":
 		file := ""
 		if v.Position != nil {
-			file = v.Position.File
+			file = fileBaseName(v.Position.File)
 		}
 		return v.Rule + "\x00" + v.Name + "\x00" + v.From + "\x00" +
 			v.To + "\x00" + file
@@ -67,6 +72,13 @@ func ViolationBaselineKey(v Violation) string {
 	}
 	return v.Rule + "\x00" + string(v.Kind) + "\x00" + graph.CanonicalID(v.From) + "\x00" +
 		graph.CanonicalID(v.To) + "\x00" + v.FromComponent + "\x00" + v.ToComponent
+}
+
+// fileBaseName은 경로의 마지막 요소인 파일 이름을 돌려준다.
+// '/'와 '\'를 모두 구분자로 본다 — filepath.Base는 실행 OS의 구분자만 알아서,
+// 윈도에서 쓴 baseline을 리눅스 CI가 읽으면 경로 전체가 이름으로 남아 맞지 않는다.
+func fileBaseName(path string) string {
+	return path[strings.LastIndexAny(path, `/\`)+1:]
 }
 
 // CycleBaselineKey는 순환의 동일성을 정의한다.

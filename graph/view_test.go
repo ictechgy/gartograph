@@ -2,6 +2,10 @@ package graph
 
 import (
 	"errors"
+	"fmt"
+	"math/rand"
+	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -84,6 +88,60 @@ func TestRootIDs(t *testing.T) {
 	if len(roots) != 1 || roots[0] != "p.main" {
 		t.Fatalf("expected only live root p.main, got %v", roots)
 	}
+}
+
+// TestRootIDsMatchesScan은 무작위 문서에서 RootIDs가 루트마다 정점 목록을 훑던 구현(scanRootIDs)과
+// 같은 목록을 내는지 확인한다. 문서에 없는 루트, 겹친 루트, 겹친 정점 ID를 섞는다 — 존재 확인을
+// 색인으로 바꾼 것은 비용만 줄여야 하고 걸러지는 루트와 순서는 그대로여야 한다.
+func TestRootIDsMatchesScan(t *testing.T) {
+	r := rand.New(rand.NewSource(5))
+	sawGhost, sawDuplicate := false, false
+	for trial := 0; trial < 500; trial++ {
+		d := randomRootedDocument(r)
+		got, want := d.RootIDs(), scanRootIDs(d)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("trial %d roots %v over %d vertices: got %v, want %v",
+				trial, d.Roots, len(d.Vertices), got, want)
+		}
+		sawGhost = sawGhost || len(want) < len(d.Roots)
+		for i := 1; i < len(want); i++ {
+			sawDuplicate = sawDuplicate || want[i] == want[i-1]
+		}
+	}
+	if !sawGhost || !sawDuplicate {
+		t.Fatalf("random documents must exercise missing (%v) and repeated (%v) roots", sawGhost, sawDuplicate)
+	}
+}
+
+// randomRootedDocument는 RootIDs 대조용 무작위 문서다. 루트는 정점 ID 범위를 넘겨 뽑아 문서에
+// 없는 루트와 겹친 루트가 생기고, 정점 ID도 가끔 겹친다(손으로 합친 저장 문서).
+func randomRootedDocument(r *rand.Rand) *Document {
+	d := &Document{}
+	n := 1 + r.Intn(20)
+	for i := 0; i < n; i++ {
+		d.Vertices = append(d.Vertices, Vertex{ID: fmt.Sprintf("m.v%02d", i), Kind: KindFunc})
+	}
+	if r.Intn(3) == 0 {
+		d.Vertices = append(d.Vertices, Vertex{ID: d.Vertices[r.Intn(n)].ID, Kind: KindVar})
+	}
+	r.Shuffle(len(d.Vertices), func(i, j int) { d.Vertices[i], d.Vertices[j] = d.Vertices[j], d.Vertices[i] })
+	for k := r.Intn(2*n + 2); k > 0; k-- {
+		d.Roots = append(d.Roots, fmt.Sprintf("m.v%02d", r.Intn(n+n/2+2)))
+	}
+	return d
+}
+
+// scanRootIDs는 색인을 쓰기 전의 RootIDs다 — 루트마다 HasVertex로 정점 목록을 훑는다.
+// 느려도 출력 대조 기준으로 그대로 둔다.
+func scanRootIDs(d *Document) []string {
+	var out []string
+	for _, r := range d.Roots {
+		if d.HasVertex(r) {
+			out = append(out, r)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestParseLevel은 레벨 문자열 해석과 에러 경로를 확인한다.

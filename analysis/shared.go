@@ -28,20 +28,28 @@ type SharedResult struct {
 // 교집합과 루트별 고유분을 계산한다. 루트가 문서에 없으면
 // ErrNotFound다 — "교집합이 비었다"와 "루트가 없다"는 다른 사실이다.
 func Shared(d *graph.Document, roots []string) (*SharedResult, error) {
+	return NewIndex(d).Shared(roots)
+}
+
+// Shared는 색인 위의 Shared다. 루트마다의 도달 집합은 DependencyReachable과 같은 규칙(의존 간선만)이고,
+// 의존 인접 맵은 한 번 만든 것을 모든 루트가 함께 쓴다 — 루트마다 인접 맵을 새로 만들면 비용이
+// 루트 수 × 간선 수가 된다. 같은 Index로 거듭 물으면 인접 맵과 ID 색인도 다시 만들지 않는다.
+func (x *Index) Shared(roots []string) (*SharedResult, error) {
 	for _, id := range roots {
-		if !d.HasVertex(id) {
+		if x.vertices()[id] == nil {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 		}
 	}
+	adj := x.adjacency()
 	reach := make(map[string]map[string]bool, len(roots))
 	count := map[string]int{} // 정점 → 도달하는 루트 수
 	for _, r := range roots {
-		reach[r] = DependencyReachable(d, []string{r})
+		reach[r] = reachFrom(adj, []string{r})
 		for id := range reach[r] {
 			count[id]++
 		}
 	}
-	res := &SharedResult{Roots: roots, Limitations: d.Limitations}
+	res := &SharedResult{Roots: roots, Limitations: x.doc.Limitations}
 	var shared []string
 	for id, n := range count {
 		if n == len(roots) {

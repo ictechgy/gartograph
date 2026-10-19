@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -233,7 +234,11 @@ func buildDocument(root string, reachable []*packages.Package,
 		Root:    root,
 	}
 	kept := make(map[string]*packages.Package)
-	var extImports, exclImports, errCount int
+	// 생략 수는 (패키지, 대상) 집합으로 센다 — 테스트 변형("p [p.test]")은 원 패키지의 import와
+	// 오류를 다시 싣는다. 정점이 PkgPath로 합쳐지듯 수치도 합쳐야 --tests 문서가 실제의 두 배를
+	// 말하지 않는다. 로드 오류는 문구("N packages reported load errors")대로 패키지(PkgPath) 수다 —
+	// 오류 문장 수가 아니고, unused-deps의 같은 문구와도 같은 것을 센다.
+	extImports, exclImports, loadErrors := map[[2]string]bool{}, map[[2]string]bool{}, map[string]bool{}
 
 	// 먼저 정점을 확정한다 — 간선은 양쪽 정점이 살아 있어야 만든다.
 	// 끝이 없는 간선은 유령 정점이 되어 소비자를 헷갈리게 한다.
@@ -262,7 +267,9 @@ func buildDocument(root string, reachable []*packages.Package,
 		if kept[p.PkgPath] == nil {
 			continue
 		}
-		errCount += len(p.Errors)
+		if len(p.Errors) > 0 {
+			loadErrors[p.PkgPath] = true
+		}
 		if p.ID != p.PkgPath {
 			// 테스트 변형("p [p.test]")은 PkgPath가 원 패키지와 같아
 			// 정점이 합쳐진다 — 변형의 import는 _test.go의 의존이므로
@@ -276,9 +283,9 @@ func buildDocument(root string, reachable []*packages.Package,
 						Positions: sites[imp.PkgPath],
 					})
 				} else if excluded[imp.PkgPath] {
-					exclImports++
+					exclImports[[2]string{p.PkgPath, imp.PkgPath}] = true
 				} else {
-					extImports++
+					extImports[[2]string{p.PkgPath, imp.PkgPath}] = true
 				}
 			}
 			merged++
@@ -294,9 +301,9 @@ func buildDocument(root string, reachable []*packages.Package,
 					Positions: sites[imp.PkgPath],
 				})
 			} else if excluded[imp.PkgPath] {
-				exclImports++
+				exclImports[[2]string{p.PkgPath, imp.PkgPath}] = true
 			} else {
-				extImports++
+				extImports[[2]string{p.PkgPath, imp.PkgPath}] = true
 			}
 		}
 	}
@@ -306,17 +313,17 @@ func buildDocument(root string, reachable []*packages.Package,
 		doc.Limitation(fmt.Sprintf(
 			"%d source files were excluded by build constraints (use --tags to include)", ignored))
 	}
-	if extImports > 0 {
+	if len(extImports) > 0 {
 		doc.Limitation(fmt.Sprintf(
-			"%d imports of packages outside the module were omitted (use --deps to include)", extImports))
+			"%d imports of packages outside the module were omitted (use --deps to include)", len(extImports)))
 	}
-	if exclImports > 0 {
+	if len(exclImports) > 0 {
 		doc.Limitation(fmt.Sprintf(
-			"%d imports to excluded packages were omitted (matched by exclude patterns)", exclImports))
+			"%d imports to excluded packages were omitted (matched by exclude patterns)", len(exclImports)))
 	}
-	if errCount > 0 {
+	if len(loadErrors) > 0 {
 		doc.Limitation(fmt.Sprintf(
-			"%d packages reported load errors; their import edges may be incomplete", errCount))
+			"%d packages reported load errors; their import edges may be incomplete", len(loadErrors)))
 	}
 	if merged > 0 {
 		// _test.go 의존이 원 패키지로 귀속된다는 사실을 남긴다 —
@@ -372,14 +379,25 @@ func walkImports(roots []*packages.Package) []*packages.Package {
 // 마커는 패키지 절보다 앞에 있어야 생성 표시로 인정된다.
 var generatedMarker = regexp.MustCompile(`^// Code generated .* DO NOT EDIT\.$`)
 
+// maxGeneratedHeader는 생성 표지를 찾으며 읽는 파일 앞부분의 상한(바이트)이다. 표지는 패키지
+// 절보다 앞에 있어야 해서 판정은 보통 첫 몇 줄에서 끝난다 — 상한은 패키지 절이 끝내 나오지
+// 않는 입력에서 읽기를 멈추게 하는 방어다.
+const maxGeneratedHeader = 1 << 20
+
 // isGeneratedFile은 파일의 패키지 절 이전에 생성 표지가 있는지 본다.
+// 정규 파일만 읽는다 — 쓰는 쪽이 없는 FIFO는 open에서 영원히 막히고 장치는 끝없이 읽히므로,
+// 막히지 않게 연 뒤(readFlags) 연 파일의 종류를 fstat로 본다. 경로를 Lstat하지 않는 이유는
+// 링크를 따라간 정상 .go 파일의 판정을 그대로 두기 위해서다.
 func isGeneratedFile(path string) bool {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, readFlags, 0)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	sc := bufio.NewScanner(io.LimitReader(f, maxGeneratedHeader))
 	for sc.Scan() {
 		line := sc.Text()
 		if strings.HasPrefix(line, "package ") {
@@ -457,14 +475,18 @@ func importSites(p *packages.Package) map[string][]graph.Position {
 // countIgnored는 그래프에 남은 패키지의 빌드 제약 제외 파일을 센다.
 // IgnoredFiles는 go list가 알고 있는데 현재 태그로는 빌드되지 않은
 // 파일들이다 — 세지 않으면 소비자가 빠진 파일의 존재 자체를 모른다.
+// 테스트 변형은 원 패키지와 같은 디렉터리라 같은 파일을 다시 싣는다 — 경로로 한 번만 센다.
 func countIgnored(reachable []*packages.Package, kept map[string]*packages.Package) int {
-	n := 0
+	files := map[string]bool{}
 	for _, p := range reachable {
-		if kept[p.PkgPath] != nil {
-			n += len(p.IgnoredFiles)
+		if kept[p.PkgPath] == nil {
+			continue
+		}
+		for _, f := range p.IgnoredFiles {
+			files[f] = true
 		}
 	}
-	return n
+	return len(files)
 }
 
 // keep은 패키지를 그래프에 담을지 결정한다.

@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"cmp"
 	"slices"
 	"sort"
 	"unicode/utf8"
@@ -18,9 +19,13 @@ const (
 	MaxTraversalRoots = 10_000
 	// MaxRootsPerReached는 정점 하나가 싣는 root 인덱스 상한이다(넘으면 rootsTruncated).
 	MaxRootsPerReached = 64
-	// dominatingRoots는 전파를 멈추게 하는 더 작은 root 수다 — 정점이 root라 자기
-	// 인덱스를 빼도 64개가 남도록 하나 더 둔다.
-	dominatingRoots = MaxRootsPerReached + 1
+	// decisiveRoots는 정점의 행을 정하는 더 작은 root 수다 — 싣는 64개와 rootsTruncated를 정하는
+	// 65번째. 정점이 자기 아닌 더 작은 root를 이만큼 가졌으면 더 큰 root가 닿아도 그 행은 그대로다.
+	decisiveRoots = MaxRootsPerReached + 1
+	// dominatingRoots는 전파를 멈추게 하는 더 작은 root 수다. 하류 정점이 root면 자기 인덱스가
+	// 빠지므로 decisiveRoots보다 하나 더 둔다 — 그래야 모든 정점이 자기 아닌 가장 작은 root
+	// decisiveRoots개를 정확한 단계와 함께 가진다(hasDepthCut이 그 개수에 기댄다).
+	dominatingRoots = decisiveRoots + 1
 	// evidenceMemoryBytes는 정확한 등급 비교(root당 비트 하나)가 쓸 메모리 상한이다.
 	evidenceMemoryBytes = 64 << 20
 )
@@ -79,13 +84,22 @@ type TraversalResult struct {
 }
 
 // Traverse는 모든 root를 한 번에 출발시키는 단계 동기 너비 우선 순회다(isthmus
-// language-traversal v1 의미, pythograph·tsograph와 같은 알고리즘).
+// language-traversal v1 의미). 행의 정의는 pythograph·tsograph와 같고, 전파 규칙은 다르다(아래).
 //   - reached는 자기 자신이 아닌 root에서 간선 1개 이상으로(깊이 상한 안) 닿은 정점이다.
 //     다른 root에서 닿은 root도 싣되 roots에는 그 다른 root만 넣는다.
 //   - depth는 그 root 중 가장 가까운 것까지의 거리, via는 가장 가까운 root(같으면 작은
 //     인덱스)에서 depth-1 거리인 선행 정점 중 UTF-16 순서로 가장 작은 것이다.
-//   - 정점이 자기 아닌 더 작은 인덱스 root를 65개 이상 가졌으면 더 큰 root는 그 정점에서
-//     전파를 멈춘다 — 출력(작은 인덱스 64개·depth·via)을 바꿀 수 없다.
+//   - 단계마다 이웃에 도착한 root를 인덱스 오름차순으로 받아들인다. 정점이 자기 아닌 더 작은 인덱스
+//     root를 66개(dominatingRoots) 이상 가졌으면 더 큰 root는 그 정점에서 전파를 멈춘다 — 출력(작은
+//     인덱스 64개·depth·via)도, depth 잘림 판정(decisiveRoots, 65개)도 바꿀 수 없다.
+//   - rootsTruncated는 싣는 행의 roots를 64개로 잘랐을 때만 참이다. MaxReached(--max)로 빠진 행은
+//     보지 않는다 — max-reached가 이미 문서가 부분이라고 알린다. 전파 중단 여부와 무관하므로 root
+//     순서에도 흔들리지 않는다.
+//
+// pythograph·tsograph는 도착 순서대로 받아들이고 65개 하나로 전파와 잘림 판정을 함께 정한다. 행은
+// 같지만 두 가지가 갈릴 수 있다. 최단 경로에서 막혔다가 더 긴 경로로 마지막 단계에 늦게 닿은 root를
+// 그쪽은 depth 잘림으로 셀 수 있다(이쪽은 세지 않는다). 그쪽은 전파 중단이 있었으면 --max로 빠진
+// 행 때문이어도 rootsTruncated를 단다.
 //
 // 간선은 impact와 같은 의존 간선 전부(contains 제외)다. TypeEdges가 members면 필드 선언에서 나온
 // 타입 구조 간선을 필드 정점의 간선으로 옮긴다(typeedges.go).
@@ -104,11 +118,13 @@ func Traverse(d *graph.Document, req TraversalRequest) *TraversalResult {
 		rows = rows[:req.MaxReached]
 		res.TruncationReasons = append(res.TruncationReasons, "max-reached")
 	}
-	res.RootsTruncated = prop.pruned
 	var evidenceOf func(string) string
 	if res.EvidenceClassified {
 		evidenceOf, res.EvidenceApproximated = evidenceTiers(d, req, adj, prop.levels)
 	}
+	// rootsTruncated는 싣는 행만 본다. 전파를 멈춘 정점은 자기 아닌 더 작은 root를 dominatingRoots개
+	// 이상 가져 그 행이 언제나 64개를 넘는다 — 그 행이 실리면 여기서 잡히고, --max로 빠졌으면 문서의
+	// 어느 목록도 잘리지 않았다.
 	for i := range rows {
 		if len(rows[i].Roots) > MaxRootsPerReached {
 			rows[i].Roots = rows[i].Roots[:MaxRootsPerReached]
@@ -174,36 +190,72 @@ func buildTraversalAdjacency(d *graph.Document, direction string, directOnly boo
 
 // propagation은 전파 결과다.
 type propagation struct {
-	levels   map[string]map[int]int // 정점 → (root 인덱스 → 처음 닿은 단계)
+	levels   map[string]heldRoots // 정점 → 가진 root(인덱스 오름차순, 처음 닿은 단계)
 	depthCut bool
-	pruned   bool
 }
 
-// propagate는 모든 root에서 단계 동기로 전파한다. 경계는 정점 ID 순으로 훑어 결과가
-// 맵 순회 순서에 흔들리지 않게 한다.
+// heldRoot는 정점이 가진 root 하나다: root 인덱스와 처음 닿은 단계.
+type heldRoot struct{ index, level int }
+
+// heldRoots는 정점 하나가 가진 root 목록이다(root 인덱스 오름차순). 정렬해 두면 보유 여부와
+// "r보다 작은 인덱스 수"(dominated)를 이분 탐색으로 센다 — 맵이면 그 셈이 도착마다 보유 전체를
+// 훑어, root가 많은 순회에서 전파 시간의 절반 가까이를 썼다.
+type heldRoots []heldRoot
+
+// search는 r보다 작은 인덱스 수(r이 들어갈 자리)와 r을 가졌는지다.
+func (h heldRoots) search(r int) (int, bool) {
+	return slices.BinarySearchFunc(h, r, func(e heldRoot, target int) int { return cmp.Compare(e.index, target) })
+}
+
+// level은 root r이 처음 닿은 단계다. 갖지 않았으면 false다.
+func (h heldRoots) level(r int) (int, bool) {
+	i, ok := h.search(r)
+	if !ok {
+		return 0, false
+	}
+	return h[i].level, true
+}
+
+// propagate는 모든 root에서 단계 동기로 전파한다. 단계마다 이웃에 도착하는 root를 먼저 모아
+// 인덱스 오름차순으로 받아들인다 — 그래야 결과가 맵 순회 순서에 흔들리지 않고, 경계 정점의
+// ID 순서와 root 인덱스 순서가 엇갈려도(큰 인덱스가 먼저 도착해도) 전파 중단(dominated)이 걸린다.
 func propagate(adj *traversalAdjacency, roots []string, maxDepth int) propagation {
-	p := propagation{levels: map[string]map[int]int{}}
+	p := propagation{levels: map[string]heldRoots{}}
 	owners := rootOwners(roots)
 	frontier := map[string][]int{}
 	for i, r := range roots {
-		p.levels[r] = map[int]int{i: 0}
+		p.levels[r] = heldRoots{{index: i, level: 0}}
 		frontier[r] = []int{i}
 	}
 	for level := 1; level <= maxDepth && len(frontier) > 0; level++ {
 		following := map[string][]int{}
-		for _, node := range sortedKeys(frontier) {
-			for _, nb := range adj.next[node] {
-				owner, isRoot := owners[nb]
-				if !isRoot {
-					owner = -1
-				}
-				p.pruned = spread(p.levels, owner, nb, frontier[node], level, following) || p.pruned
+		for nb, arrived := range arrivals(adj, frontier) {
+			owner, isRoot := owners[nb]
+			if !isRoot {
+				owner = -1
 			}
+			spread(p.levels, owner, nb, arrived, level, following)
 		}
 		frontier = following
 	}
 	p.depthCut = hasDepthCut(adj, p.levels, owners, frontier)
 	return p
+}
+
+// arrivals는 이번 단계에 이웃마다 도착하는 root 인덱스다(오름차순, 중복 없음). 한 단계 안에서
+// 이웃끼리는 서로의 보유 상태를 읽지 않으므로 이웃을 어떤 순서로 처리해도 결과가 같다.
+func arrivals(adj *traversalAdjacency, frontier map[string][]int) map[string][]int {
+	out := map[string][]int{}
+	for node, roots := range frontier {
+		for _, nb := range adj.next[node] {
+			out[nb] = append(out[nb], roots...)
+		}
+	}
+	for nb, roots := range out {
+		slices.Sort(roots)
+		out[nb] = slices.Compact(roots)
+	}
+	return out
 }
 
 // rootOwners는 root id → 인덱스다(root id는 유일하다고 호출자가 보장한다).
@@ -215,54 +267,45 @@ func rootOwners(roots []string) map[string]int {
 	return owners
 }
 
-// spread는 한 간선으로 root 인덱스들을 이웃에 넘긴다. 전파를 멈춘 쌍이 있으면 참이다.
-func spread(levels map[string]map[int]int, owner int, nb string, roots []int, level int,
-	following map[string][]int) bool {
+// spread는 한 단계에 이웃에 도착한 root 인덱스들(오름차순, 중복 없음)을 받아들인다. 오름차순이라
+// 처음 막힌 root 뒤의 root는 모두 막힌다(더 작은 인덱스가 줄지 않는다) — 거기서 멈춘다. 그래서
+// 정점은 단계마다 root를 dominatingRoots개까지만 더 받는다.
+func spread(levels map[string]heldRoots, owner int, nb string, roots []int, level int,
+	following map[string][]int) {
 	held := levels[nb]
-	if held == nil {
-		held = map[int]int{}
-		levels[nb] = held
-	}
-	pruned := false
 	for _, r := range roots {
-		if _, ok := held[r]; ok {
+		at, ok := held.search(r)
+		if ok {
 			continue
 		}
-		if dominated(held, owner, r) {
-			pruned = true
-			continue
+		if dominated(held, owner, r, dominatingRoots) {
+			break
 		}
-		held[r] = level
+		held = slices.Insert(held, at, heldRoot{index: r, level: level})
 		following[nb] = append(following[nb], r)
 	}
-	return pruned
+	levels[nb] = held
 }
 
-// dominated는 정점이 자기 아닌 root 중 r보다 작은 인덱스를 이미 65개 이상 가졌는지 본다.
-func dominated(held map[int]int, owner, r int) bool {
-	count := len(held)
-	if _, ok := held[owner]; ok {
-		count--
-	}
-	if count < dominatingRoots {
+// dominated는 정점이 자기 아닌 root 중 r보다 작은 인덱스를 이미 need개 이상 가졌는지 본다.
+// 보유 목록이 인덱스 오름차순이라 r이 들어갈 자리가 곧 r보다 작은 인덱스 수다.
+func dominated(held heldRoots, owner, r, need int) bool {
+	smaller, _ := held.search(r)
+	if smaller < need {
 		return false
 	}
-	smaller := 0
-	for idx := range held {
-		if idx != owner && idx < r {
-			smaller++
-			if smaller >= dominatingRoots {
-				return true
-			}
-		}
+	if _, ownerHeld := held.search(owner); ownerHeld && owner < r {
+		smaller--
 	}
-	return false
+	return smaller >= need
 }
 
 // hasDepthCut은 마지막 단계 경계에서 아직 그 root를 갖지 않은 이웃이 있으면 참이다 —
-// 깊이 상한이 도달 집합을 잘랐다는 뜻이다. 이웃이 그 root를 이미 전파 중단한
-// (dominated) 경우는 뺀다 — 한 걸음 더 가도 그 root는 실리지 않으므로 잘린 것이 아니다.
-func hasDepthCut(adj *traversalAdjacency, levels map[string]map[int]int, owners map[string]int,
+// 깊이 상한이 도달 집합을 잘랐다는 뜻이다. 이웃이 그 root보다 작은 자기 아닌 root를
+// decisiveRoots개 이상 가졌으면 뺀다 — 한 걸음 더 가도 그 이웃의 행은 바뀌지 않는다. 전파가 그
+// 개수를 정확히 지키므로(dominatingRoots) 최단 경로에서 막혔다가 더 긴 경로로 마지막 단계에 늦게
+// 닿은 root를 잘림으로 오인하지 않는다.
+func hasDepthCut(adj *traversalAdjacency, levels map[string]heldRoots, owners map[string]int,
 	frontier map[string][]int) bool {
 	for node, roots := range frontier {
 		for _, nb := range adj.next[node] {
@@ -270,8 +313,9 @@ func hasDepthCut(adj *traversalAdjacency, levels map[string]map[int]int, owners 
 			if !isRoot {
 				owner = -1
 			}
+			held := levels[nb]
 			for _, r := range roots {
-				if _, ok := levels[nb][r]; !ok && !dominated(levels[nb], owner, r) {
+				if _, ok := held.search(r); !ok && !dominated(held, owner, r, decisiveRoots) {
 					return true
 				}
 			}
@@ -281,7 +325,7 @@ func hasDepthCut(adj *traversalAdjacency, levels map[string]map[int]int, owners 
 }
 
 // reachedRows는 단계 기록에서 도달 행을 만든다. (depth, UTF-16 id) 순이다.
-func reachedRows(adj *traversalAdjacency, levels map[string]map[int]int, roots []string) []TraversalReached {
+func reachedRows(adj *traversalAdjacency, levels map[string]heldRoots, roots []string) []TraversalReached {
 	owners := rootOwners(roots)
 	var rows []TraversalReached
 	for node, held := range levels {
@@ -299,29 +343,28 @@ func reachedRows(adj *traversalAdjacency, levels map[string]map[int]int, roots [
 	return rows
 }
 
-// reachedRow는 정점 하나의 행이다. 자기 아닌 root가 없으면 false다.
-func reachedRow(adj *traversalAdjacency, levels map[string]map[int]int, node string,
-	held map[int]int, owners map[string]int) (TraversalReached, bool) {
+// reachedRow는 정점 하나의 행이다. 자기 아닌 root가 없으면 false다. 보유 목록이 인덱스
+// 오름차순이라 처음 만난 가장 짧은 단계의 root가 가장 가까운 root(같으면 작은 인덱스)다.
+func reachedRow(adj *traversalAdjacency, levels map[string]heldRoots, node string,
+	held heldRoots, owners map[string]int) (TraversalReached, bool) {
 	owner, isRoot := owners[node]
 	var idx []int
-	for r := range held {
-		if !isRoot || r != owner {
-			idx = append(idx, r)
+	depth, nearest := 0, -1
+	for _, h := range held {
+		if isRoot && h.index == owner {
+			continue
+		}
+		idx = append(idx, h.index)
+		if nearest < 0 || h.level < depth {
+			depth, nearest = h.level, h.index
 		}
 	}
 	if len(idx) == 0 {
 		return TraversalReached{}, false
 	}
-	sort.Ints(idx)
-	depth, nearest := held[idx[0]], idx[0]
-	for _, r := range idx[1:] {
-		if held[r] < depth {
-			depth, nearest = held[r], r
-		}
-	}
 	via := ""
 	for _, pred := range adj.prev[node] {
-		if lv, ok := levels[pred][nearest]; ok && lv == depth-1 {
+		if lv, ok := levels[pred].level(nearest); ok && lv == depth-1 {
 			via = pred
 			break
 		}
@@ -335,7 +378,7 @@ func reachedRow(adj *traversalAdjacency, levels map[string]map[int]int, node str
 // root는 두 등급에서 같게 닿으므로 비교에서 뺀다. 비트 집합이 메모리 상한을 넘으면
 // 약하게 적을 수는 있어도 부풀리지 않는 근사로 바꾼다.
 func evidenceTiers(d *graph.Document, req TraversalRequest, full *traversalAdjacency,
-	levels map[string]map[int]int) (func(string) string, bool) {
+	levels map[string]heldRoots) (func(string) string, bool) {
 	sources := map[string]bool{}
 	for _, key := range full.weak {
 		sources[key.from] = true
@@ -443,7 +486,7 @@ func ensureBits(m map[string][]uint64, node string, words int) []uint64 {
 // approximateEvidence는 메모리 상한을 넘을 때의 보수적 등급이다. root에서 닿은 출발점을
 // 가진 팬아웃 간선의 도착점에서 깊이 제한 없이 닿는 정점을 candidate로 표시한다. 어느
 // 표시에도 들지 않는 정점은 모든 root에서 팬아웃 간선 없이 닿으므로 정확히 direct다.
-func approximateEvidence(full *traversalAdjacency, levels map[string]map[int]int) func(string) string {
+func approximateEvidence(full *traversalAdjacency, levels map[string]heldRoots) func(string) string {
 	marked := map[string]bool{}
 	var stack []string
 	for _, key := range full.weak {

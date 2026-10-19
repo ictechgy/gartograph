@@ -51,6 +51,20 @@ type mcpServer struct {
 	dir      string
 	cfgPath  string
 	protocol string
+	// index는 doc 위의 질의 색인(ID 색인·인접 목록)이다. 문서는 기동 때 한 번 수확하고 바꾸지
+	// 않으므로, 처음 쓰는 도구 호출이 만든 색인을 다음 호출이 그대로 쓴다 — 호출마다 다시 만들면
+	// 답이 몇 줄이어도 호출마다 문서 크기만큼 기다린다. serve가 요청을 한 줄씩 차례로 처리하므로
+	// 잠금이 필요 없고, 문서가 바뀌지 않으니 무효화도 없다.
+	index *analysis.Index
+}
+
+// queries는 질의 색인을 돌려준다. 처음 부를 때 doc으로 만든다 — 서버를 만든 뒤 doc을 채우는
+// 테스트도 첫 도구 호출에서 그 doc의 색인을 얻는다.
+func (s *mcpServer) queries() *analysis.Index {
+	if s.index == nil {
+		s.index = analysis.NewIndex(s.doc)
+	}
+	return s.index
 }
 
 // cmdMcp는 MCP stdio 서버를 띄운다. EOF까지 stdin을 읽는다.
@@ -201,7 +215,7 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		if err := json.Unmarshal(args, &a); err != nil || a.ID == "" {
 			return "", fmt.Errorf("query needs an \"id\" argument")
 		}
-		res, err := analysis.Query(s.doc, a.ID, a.Depth, a.Max)
+		res, err := s.queries().Query(a.ID, a.Depth, a.Max)
 		if err != nil {
 			return "", err
 		}
@@ -215,7 +229,7 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		if err := json.Unmarshal(args, &a); err != nil || a.ID == "" {
 			return "", fmt.Errorf("impact needs an \"id\" argument")
 		}
-		res, err := analysis.FindImpact(s.doc, a.ID, a.Depth, a.Max)
+		res, err := s.queries().FindImpact(a.ID, a.Depth, a.Max)
 		if err != nil {
 			return "", err
 		}
@@ -228,7 +242,7 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		if err := json.Unmarshal(args, &a); err != nil || a.From == "" || a.To == "" {
 			return "", fmt.Errorf("path needs \"from\" and \"to\" arguments")
 		}
-		res, err := analysis.Path(s.doc, a.From, a.To)
+		res, err := s.queries().Path(a.From, a.To)
 		if err != nil {
 			return "", err
 		}
@@ -240,7 +254,7 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		if err := json.Unmarshal(args, &a); err != nil || len(a.Roots) < 2 {
 			return "", fmt.Errorf("shared needs at least two \"roots\" vertex IDs")
 		}
-		res, err := analysis.Shared(s.doc, a.Roots)
+		res, err := s.queries().Shared(a.Roots)
 		if err != nil {
 			return "", err
 		}
@@ -275,8 +289,8 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 			Roots        []string `json:"roots"`
 		}
 		_ = json.Unmarshal(args, &a)
-		roots, unknown := analysis.RetentionRoots(s.doc, a.RetainPublic, a.Roots)
-		reachable := analysis.Reachable(s.doc, roots)
+		roots, unknown := s.queries().RetentionRoots(a.RetainPublic, a.Roots)
+		reachable := s.queries().Reachable(roots)
 		findings := analysis.Dead(s.doc, reachable)
 		limitations := append(append([]string(nil), s.doc.Limitations...),
 			initializerRootsLimitation(s.doc, findings)...)

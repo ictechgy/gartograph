@@ -1,10 +1,15 @@
 package config
 
 import (
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ictechgy/gartograph/graph"
+	"github.com/ictechgy/gartograph/internal/testutil"
 )
 
 // writeRules는 규칙 파일을 임시 디렉터리에 쓰고 경로를 돌려준다.
@@ -105,6 +110,181 @@ func TestComponentOfGlob(t *testing.T) {
 	}
 	if _, ok := f.ComponentOf("gen/ax"); ok {
 		t.Fatal("mid-glob must not match a shorter name")
+	}
+}
+
+// linearComponentOf는 색인 전의 ComponentOf다 — 모든 컴포넌트의 모든 패턴을 graph.MatchPath로
+// 맞추고 더 긴 패턴, 길이가 같으면 더 작은 이름을 고른다. 느려도 대조 기준으로 그대로 둔다.
+func linearComponentOf(components map[string][]string, relPath string) (string, bool) {
+	best, bestLen := "", -1
+	for name, pats := range components {
+		for _, pat := range pats {
+			if !graph.MatchPath(pat, relPath) {
+				continue
+			}
+			if len(pat) > bestLen || (len(pat) == bestLen && name < best) {
+				best, bestLen = name, len(pat)
+			}
+		}
+	}
+	return best, best != ""
+}
+
+// tiedNames는 경로에 맞는 가장 긴 패턴을 가진 서로 다른 컴포넌트 수다 — 2 이상이면
+// 이름 순 tie-break가 답을 정한다.
+func tiedNames(components map[string][]string, relPath string) int {
+	bestLen, names := -1, map[string]bool{}
+	for name, pats := range components {
+		for _, pat := range pats {
+			switch {
+			case !graph.MatchPath(pat, relPath) || len(pat) < bestLen:
+			case len(pat) > bestLen:
+				bestLen, names = len(pat), map[string]bool{name: true}
+			default:
+				names[name] = true
+			}
+		}
+	}
+	return len(names)
+}
+
+// TestComponentOfMatchesLinearScan은 색인한 해석이 모든 패턴을 훑던 선형 해석과 같은 컴포넌트를
+// 고르는지 무작위 설정으로 확인한다 — 정확 일치·`x/**`·글롭이 한 경로에 함께 맞고, 같은 길이
+// 패턴이 여러 이름에 걸리는 tie-break(빈 이름 포함)까지 같아야 한다. Load를 거치지 않은 File은
+// 검증 전 패턴(`?`, 중간 `**`, `/**`, 빈 세그먼트)도 담을 수 있어 그것도 섞는다.
+func TestComponentOfMatchesLinearScan(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	segments := []string{"a", "b", "ab", "*", "a*", "*b", "**", "?", "", "."}
+	randomPath := func(maxSegments int) string {
+		parts := make([]string, 1+rng.Intn(maxSegments))
+		for i := range parts {
+			parts[i] = segments[rng.Intn(len(segments))]
+		}
+		return strings.Join(parts, "/")
+	}
+	// pathNear는 패턴에서 경로를 만든다 — `*`를 채우고 `/**` 아래로 내려가야 무작위 경로보다
+	// 훨씬 자주 맞고, 여러 패턴이 한 경로에 겹친다.
+	pathNear := func(pattern string) string {
+		path, recursive := strings.CutSuffix(pattern, "/**")
+		path = strings.ReplaceAll(path, "*", []string{"", "a", "ab"}[rng.Intn(3)])
+		if recursive && rng.Intn(2) == 0 {
+			path += "/" + randomPath(2)
+		}
+		return path
+	}
+	names := []string{"", "a", "b", "c", "ab"}
+	var matched, unmatched, ties int
+	for round := 0; round < 400; round++ {
+		components := map[string][]string{}
+		var patterns []string
+		for n := rng.Intn(6); n >= 0; n-- {
+			name := names[rng.Intn(len(names))]
+			for k := rng.Intn(3); k >= 0; k-- {
+				pattern := randomPath(3)
+				if rng.Intn(3) == 0 {
+					pattern += "/**"
+				}
+				// 다른 이름이 같은 패턴을 갖게 해 같은 길이 후보(tie)를 자주 만든다.
+				if len(patterns) > 0 && rng.Intn(4) == 0 {
+					pattern = patterns[rng.Intn(len(patterns))]
+				}
+				components[name] = append(components[name], pattern)
+				patterns = append(patterns, pattern)
+			}
+		}
+		literal := &File{Components: components}
+		for q := 0; q < 50; q++ {
+			path := randomPath(4)
+			if q%2 == 0 {
+				path = pathNear(patterns[rng.Intn(len(patterns))])
+			}
+			wantName, wantOK := linearComponentOf(components, path)
+			if gotName, gotOK := literal.ComponentOf(path); gotName != wantName || gotOK != wantOK {
+				t.Fatalf("components %q, path %q: ComponentOf = (%q, %v), linear scan = (%q, %v)",
+					components, path, gotName, gotOK, wantName, wantOK)
+			}
+			if wantOK {
+				matched++
+			} else {
+				unmatched++
+			}
+			if tiedNames(components, path) > 1 {
+				ties++
+			}
+		}
+	}
+	t.Logf("matched %d, unmatched %d, ties %d", matched, unmatched, ties)
+	if matched < 5000 || unmatched < 5000 || ties < 1000 {
+		t.Fatalf("random configs must exercise matches, misses and ties: %d matched, %d unmatched, %d ties",
+			matched, unmatched, ties)
+	}
+}
+
+// TestLoadIndexesComponentPatterns는 Load가 정확 일치·`x/**` 패턴을 경로로 바로 찾는 색인에
+// 담고 글롭만 하나씩 맞추게 남기는지 확인한다 — init이 만든 "패키지당 `rel/**`" 설정에서 경로
+// 하나를 해석할 때 모든 패턴을 훑으면 비용이 컴포넌트 수에 비례해, 2만 패키지 문서의
+// rules·metrics·mapping이 각각 10~16초 걸렸다. 답은 선형 해석과 같아야 한다.
+func TestLoadIndexesComponentPatterns(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("components:\n  root: [\".\"]\n  gen: [\"gen/*\"]\n  p007x: [\"p007/xyz\"]\n")
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&b, "  p%03d: [\"p%03d/**\"]\n", i, i)
+	}
+	f, err := Load(writeRules(t, b.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := f.components
+	if idx == nil {
+		t.Fatal("Load must build the component index")
+	}
+	if len(idx.exact) != 2 || len(idx.recursive) != 300 || len(idx.globs) != 1 {
+		t.Fatalf("Load must index exact and \"dir/**\" patterns and leave only the glob to scan, "+
+			"got %d exact, %d recursive, %d globs", len(idx.exact), len(idx.recursive), len(idx.globs))
+	}
+	// 더 긴 패턴이 이긴다 — "p007/xyz"(8자)는 "p007/**"(7자)를 이기지만 그 아래 경로는 못 맞춘다.
+	for path, want := range map[string]string{
+		".": "root", "gen/x": "gen", "p007": "p007", "p007/xyz": "p007x", "p007/xyz/q": "p007",
+		"p123/a/b": "p123", "p299": "p299", "p300": "", "p1234/x": "", "gen/x/y": "",
+	} {
+		got, ok := f.ComponentOf(path)
+		if got != want || ok != (want != "") {
+			t.Errorf("ComponentOf(%q) = (%q, %v), want %q", path, got, ok, want)
+		}
+		if linear, linearOK := linearComponentOf(f.Components, path); got != linear || ok != linearOK {
+			t.Errorf("ComponentOf(%q) = (%q, %v), linear scan = (%q, %v)", path, got, ok, linear, linearOK)
+		}
+	}
+}
+
+// BenchmarkComponentOfScaffold는 init이 만든 모양(패키지당 `rel/**` 하나)의 2만 컴포넌트 설정을
+// 읽고 2만 경로를 모두 해석한다 — 경로마다 모든 패턴을 훑으면 한 번에 4억 번 비교다.
+func BenchmarkComponentOfScaffold(b *testing.B) {
+	const n = 20000
+	components := make(map[string][]string, n)
+	paths := make([]string, n)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("p%05d", i)
+		components[paths[i]] = []string{paths[i] + "/**"}
+	}
+	data, err := Render(&File{Components: components})
+	if err != nil {
+		b.Fatal(err)
+	}
+	rules := filepath.Join(b.TempDir(), ".gartograph.yml")
+	if err := os.WriteFile(rules, data, 0o644); err != nil {
+		b.Fatal(err)
+	}
+	f, err := Load(rules)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		for _, p := range paths {
+			if name, ok := f.ComponentOf(p + "/sub"); !ok || name != p {
+				b.Fatalf("%s/sub resolved to %q", p, name)
+			}
+		}
 	}
 }
 
@@ -356,6 +536,58 @@ func TestExcluded(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsUnsupportedPatterns는 components·exclude·fileRules.from의 패턴을 로드 시점에
+// MatchPath 문법으로 검증하는지 확인한다. path.Match만 보던 exclude는 `?`·`[...]`를, 검증이
+// 없던 components·fileRules는 무엇이든 받아서 영원히 맞지 않는 규칙이 rules --strict를 조용히
+// 통과시켰다. 오류는 섹션·항목·패턴과 지원 문법을 담아야 고칠 곳이 보인다.
+func TestLoadRejectsUnsupportedPatterns(t *testing.T) {
+	sections := []struct {
+		name   string
+		config func(pattern string) string
+		where  string // 오류가 가리켜야 할 섹션과 항목
+	}{
+		{"components", func(p string) string {
+			return "components: {a: [\"" + p + "\"], b: [b]}\n"
+		}, `components "a": pattern`},
+		{"exclude", func(p string) string {
+			return "components: {a: [a]}\nexclude: [gen, \"" + p + "\"]\n"
+		}, "exclude: entry 1"},
+		{"fileRules", func(p string) string {
+			return "components: {a: [a], b: [b]}\nfileRules: [{name: r, from: \"" + p + "\", to: b}]\n"
+		}, `fileRules "r": from pattern`},
+	}
+	for _, s := range sections {
+		for _, p := range []string{"app/**/*.go", "app/su?", "a/[ab]", "**", "a/*_*"} {
+			_, err := Load(writeRules(t, s.config(p)))
+			if err == nil {
+				t.Errorf("%s: Load accepted %q, which MatchPath can never match as written", s.name, p)
+				continue
+			}
+			if msg := err.Error(); !strings.Contains(msg, s.where) || !strings.Contains(msg, `"`+p+`"`) ||
+				!strings.Contains(msg, "supported patterns") {
+				t.Errorf("%s %q: error must name the entry, the pattern, and the supported syntax: %v",
+					s.name, p, err)
+			}
+		}
+		for _, p := range []string{"app/**", "*_test.go", "internal/*/api", "cli", "github.com/aws/**"} {
+			if _, err := Load(writeRules(t, s.config(p))); err != nil {
+				t.Errorf("%s: supported pattern %q rejected: %v", s.name, p, err)
+			}
+		}
+	}
+	// fileRules의 앞 `!` 하나는 반전 표시라 떼고 검증한다 — 이 저장소의 "!*_test.go"가 그대로
+	// 읽혀야 하고, 반전이 지원하지 않는 패턴을 가려서도 안 된다.
+	negated := func(from string) string {
+		return "components: {a: [a], b: [b]}\nfileRules: [{name: r, from: \"" + from + "\", to: b}]\n"
+	}
+	if _, err := Load(writeRules(t, negated("!*_test.go"))); err != nil {
+		t.Errorf("negated file pattern rejected: %v", err)
+	}
+	if _, err := Load(writeRules(t, negated("!app/**/*.go"))); err == nil {
+		t.Error("negation must not hide an unsupported pattern")
+	}
+}
+
 // TestLimitsValidation은 limits 항목의 검증을 확인한다 —
 // 정의되지 않은 컴포넌트·빈 상한·음수는 죽은 설정이라 로드 시점에 거부한다.
 func TestLimitsValidation(t *testing.T) {
@@ -381,5 +613,56 @@ func TestLimitsValidation(t *testing.T) {
 	}
 	if len(f.Limits) != 1 || *f.Limits[0].MaxIn != 0 || *f.Limits[0].MaxOut != 0 {
 		t.Fatalf("limits must round-trip: %+v", f.Limits)
+	}
+}
+
+// TestLoadRejectsNonRegular는 규칙 파일이 정규 파일(또는 그것을 가리키는 링크)이 아니면
+// 읽지 않고 원인을 담은 오류를 내는지 확인한다. .gartograph.yml은 분석 대상 저장소가 고르는
+// 경로라 /dev/zero 링크(끝없는 읽기)나 FIFO(open에서 무한 대기)일 수 있다 — 장치는
+// /dev/null로 대신 검증한다. 회귀하면 /dev/zero는 테스트 프로세스의 메모리를 다 쓴다.
+func TestLoadRejectsNonRegular(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo.yml")
+	testutil.MakeFIFO(t, fifo)
+	device := filepath.Join(dir, "device.yml")
+	if err := os.Symlink(os.DevNull, device); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{device, t.TempDir(), fifo} {
+		var err error
+		testutil.FinishWithin(t, testutil.BlockDeadline, func() { _, err = Load(path) })
+		if err == nil || !strings.Contains(err.Error(), "is not a regular file") ||
+			!strings.Contains(err.Error(), path) {
+			t.Fatalf("%s: want a not-a-regular-file error naming the path, got %v", path, err)
+		}
+	}
+	// 링크를 따라간 대상이 정규 파일이면 지금처럼 읽는다 — 공유 설정을 링크로 두는 저장소가 있다.
+	link := filepath.Join(dir, ".gartograph.yml")
+	if err := os.Symlink(writeRules(t, "components: {a: [a]}\n"), link); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := Load(link); err != nil || len(f.Components) != 1 {
+		t.Fatalf("a link to a regular rules file must load: %+v %v", f, err)
+	}
+}
+
+// TestLoadSizeLimit은 규칙 파일을 상한까지만 읽는지 확인한다. 상한은 --roots-from과 같은
+// 16 MiB다 — init이 큰 저장소에서 만든 설정은 받고, 그보다 큰 파일은 읽다가 메모리를 다
+// 쓰기 전에 거부한다.
+func TestLoadSizeLimit(t *testing.T) {
+	head := "components: {a: [a]}\n"
+	atLimit := writeRules(t, head+strings.Repeat("\n", maxRulesFileSize-len(head)))
+	if _, err := Load(atLimit); err != nil {
+		t.Fatalf("a rules file of exactly %d bytes must load: %v", maxRulesFileSize, err)
+	}
+	over := filepath.Join(t.TempDir(), ".gartograph.yml")
+	if err := os.WriteFile(over, []byte(head), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(over, maxRulesFileSize+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(over); err == nil || !strings.Contains(err.Error(), "larger than 16 MiB") {
+		t.Fatalf("an oversized rules file must be rejected with its limit, got %v", err)
 	}
 }

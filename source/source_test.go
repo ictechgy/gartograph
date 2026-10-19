@@ -1,6 +1,9 @@
 package source
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -134,6 +137,158 @@ func Shout() {}
 	}
 	if !noted {
 		t.Fatalf("variant merge must be noted: %v", doc.Limitations)
+	}
+}
+
+// testsCountFixture는 --tests 수치 비교용 모듈이다. lib은 reflect를 import하고 //go:linkname과
+// 모듈 밖 참조를 가지며, 빌드 제약으로 빠진 파일 하나와 _test.go 하나를 둔다. extra가 있으면
+// lib에 그 내용의 extra.go를 더한다.
+func testsCountFixture(t *testing.T, extra string) string {
+	t.Helper()
+	files := map[string]string{
+		"lib/lib.go": `package lib
+
+import (
+	"fmt"
+	"reflect"
+	_ "unsafe"
+)
+
+//go:linkname runtimeNano runtime.nanotime
+func runtimeNano() int64
+
+// Describe는 값을 찍고 타입 이름을 돌려준다.
+func Describe(v any) string {
+	fmt.Println(v)
+	return reflect.TypeOf(v).String()
+}
+`,
+		"lib/lib_other.go": "//go:build never\n\npackage lib\n\nfunc Other() {}\n",
+		"lib/lib_test.go":  "package lib\n\nimport \"testing\"\n\nfunc TestDescribe(t *testing.T) { t.Log(Describe(1)) }\n",
+	}
+	if extra != "" {
+		files["lib/extra.go"] = extra
+	}
+	return testutil.WriteModule(t, files)
+}
+
+// extraLibFile은 testsCountFixture의 lib에 더하는 파일이다 — 모듈 밖 import 하나(strings), 모듈
+// 밖 참조 둘, //go:linkname 하나를 더한다.
+const extraLibFile = `package lib
+
+import (
+	"strings"
+	_ "unsafe"
+)
+
+//go:linkname runtimeFastrand runtime.fastrand
+func runtimeFastrand() uint32
+
+// Shout은 앞뒤 공백을 지우고 대문자로 바꾼다.
+func Shout(s string) string { return strings.ToUpper(strings.TrimSpace(s)) }
+`
+
+// limitationCount는 phrase를 담은 limitation의 앞 숫자다. 없으면 0이다 — 알릴 것이 없으면
+// 문장도 없다.
+func limitationCount(t *testing.T, doc *graph.Document, phrase string) int {
+	t.Helper()
+	for _, l := range doc.Limitations {
+		if !strings.Contains(l, phrase) {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(l, "%d ", &n); err != nil {
+			t.Fatalf("limitation %q has no leading count: %v", l, err)
+		}
+		return n
+	}
+	return 0
+}
+
+// TestTestsCountsEachFileOnce는 --tests 수확의 limitation 수치가 테스트 변형("p [p.test]")이 다시
+// 담은 원 패키지 파일을 두 번 세지 않는지 확인한다 — 정점은 PkgPath로 합쳐지는데 수치만 변형마다
+// 더하면 실제의 두세 배가 된다. 합성 test main의 기여는 go 버전마다 달라 값으로 박지 않고, 원
+// 패키지에 파일 하나를 더했을 때의 증가분이 --tests 유무와 같은지로 본다.
+func TestTestsCountsEachFileOnce(t *testing.T) {
+	harvest := func(dir string, tests bool) *graph.Document {
+		doc, err := Load(Options{Dir: dir, Level: graph.LevelSymbol, Tests: tests})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doc
+	}
+	base, more := testsCountFixture(t, ""), testsCountFixture(t, extraLibFile)
+	plainBase, plainMore := harvest(base, false), harvest(more, false)
+	testsBase, testsMore := harvest(base, true), harvest(more, true)
+	for _, phrase := range []string{
+		"imports of packages outside the module were omitted",
+		"references to symbols outside the module were omitted",
+		"//go:linkname directives found",
+	} {
+		plain := limitationCount(t, plainMore, phrase) - limitationCount(t, plainBase, phrase)
+		tests := limitationCount(t, testsMore, phrase) - limitationCount(t, testsBase, phrase)
+		if plain == 0 || tests != plain {
+			t.Errorf("%q: one base file adds %d without --tests but %d with it", phrase, plain, tests)
+		}
+	}
+	// 제외 파일과 reflect를 쓰는 패키지는 테스트가 늘리지 않는다 — 합성 test main이 import하는
+	// reflect는 go 도구의 코드라 세지 않는다.
+	for _, phrase := range []string{
+		"source files were excluded by build constraints",
+		"packages import reflect",
+	} {
+		if plain, tests := limitationCount(t, plainBase, phrase), limitationCount(t, testsBase, phrase); plain != 1 || tests != 1 {
+			t.Errorf("%q: %d without --tests and %d with it, want 1 and 1", phrase, plain, tests)
+		}
+	}
+}
+
+// TestTestsCountsLoadErrorsOnce는 원 패키지의 타입 오류를 테스트 변형이 다시 싣더라도 한 번만
+// 세는지 확인한다 — 같은 패키지의 같은 오류다.
+func TestTestsCountsLoadErrorsOnce(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"lib/lib.go":      "package lib\n\nfunc broken() int { return undefinedName }\n",
+		"lib/lib_test.go": "package lib\n\nimport \"testing\"\n\nfunc TestBroken(t *testing.T) { _ = broken() }\n",
+	})
+	for _, tests := range []bool{false, true} {
+		doc, err := Load(Options{Dir: dir, Level: graph.LevelType, Tests: tests})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := limitationCount(t, doc, "packages reported load errors"); n != 1 {
+			t.Errorf("tests=%v: %d load errors counted, want 1: %v", tests, n, doc.Limitations)
+		}
+	}
+}
+
+// TestLoadErrorsCountPackages는 로드 오류 limitation이 문구("N packages reported load errors")대로
+// 패키지 수를 세는지 확인한다 — 타입 오류가 둘인 패키지는 하나로 센다. 오류 문장을 세면 같은 문구의
+// unused-deps(PkgPath 수)와 다른 것을 센다.
+func TestLoadErrorsCountPackages(t *testing.T) {
+	twoErrors := "package a\n\nvar x int = \"x\"\nvar y string = 1\n"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  int
+	}{
+		{"one package with two errors",
+			map[string]string{"a/a.go": twoErrors, "c/c.go": "package c\n\nfunc C() {}\n"}, 1},
+		{"two broken packages",
+			map[string]string{"a/a.go": twoErrors, "b/b.go": "package b\n\nvar z int = \"z\"\n"}, 2},
+	} {
+		dir := testutil.WriteModule(t, tc.files)
+		for _, level := range []graph.Level{graph.LevelType, graph.LevelSymbol} {
+			for _, tests := range []bool{false, true} {
+				doc, err := Load(Options{Dir: dir, Level: level, Tests: tests})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n := limitationCount(t, doc, "packages reported load errors"); n != tc.want {
+					t.Errorf("%s level=%s tests=%v: %d packages counted, want %d: %v",
+						tc.name, level, tests, n, tc.want, doc.Limitations)
+				}
+			}
+		}
 	}
 }
 
@@ -637,5 +792,46 @@ func Mentioned() {}
 		if r == "example.com/fixture/lib.Mentioned" {
 			t.Fatalf("quoted directive must not become a root: %v", doc.Roots)
 		}
+	}
+}
+
+// TestIsGeneratedFileReadsOnlyRegularFiles는 생성 표지 판정이 정규 파일만 읽는지 확인한다.
+// 쓰는 쪽이 없는 FIFO는 보통의 open에서 영원히 막히므로 판정하지 않고 false다. 링크를 따라간
+// 정규 파일은 그대로 판정한다 — 링크로 둔 정상 .go 파일의 generated가 바뀌면 안 된다.
+func TestIsGeneratedFileReadsOnlyRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe.go")
+	testutil.MakeFIFO(t, fifo)
+	gen := filepath.Join(dir, "gen.go")
+	if err := os.WriteFile(gen, []byte(generatedHeader), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.go")
+	if err := os.Symlink(gen, link); err != nil {
+		t.Fatal(err)
+	}
+	if !isGeneratedFile(gen) || !isGeneratedFile(link) {
+		t.Fatal("a generated file must stay generated, directly or through a link")
+	}
+	var fifoGenerated bool
+	testutil.FinishWithin(t, testutil.BlockDeadline, func() { fifoGenerated = isGeneratedFile(fifo) })
+	if fifoGenerated {
+		t.Fatal("a FIFO is not a generated Go file")
+	}
+}
+
+// generatedHeader는 생성 표지가 패키지 절 앞에 있는 파일 머리다.
+const generatedHeader = "// Code generated by fixture. DO NOT EDIT.\n\npackage p\n"
+
+// TestIsGeneratedFileHeaderLimit은 생성 표지를 찾을 때 파일 앞부분을 상한까지만 읽는지
+// 확인한다 — 패키지 절이 끝내 나오지 않는 입력에서도 판정이 끝나야 한다.
+func TestIsGeneratedFileHeaderLimit(t *testing.T) {
+	deep := filepath.Join(t.TempDir(), "deep.go")
+	padding := strings.Repeat("//\n", maxGeneratedHeader/len("//\n")+1)
+	if err := os.WriteFile(deep, []byte(padding+generatedHeader), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isGeneratedFile(deep) {
+		t.Fatalf("a marker after the first %d header bytes must not be read", maxGeneratedHeader)
 	}
 }

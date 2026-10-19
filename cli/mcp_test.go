@@ -3,8 +3,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math/rand"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -164,6 +167,168 @@ deps: {}
 	}
 	if !strings.Contains(texts[7], `"app"`) {
 		t.Fatalf("mapping missing components over MCP: %s", texts[7])
+	}
+}
+
+// TestMcpReusesQueryIndex는 MCP 서버가 첫 도구 호출에서 만든 질의 색인(ID 색인·인접 목록)을 다음
+// 호출에 다시 쓰는지 본다. 문서는 기동 때 한 번 수확하고 바뀌지 않으므로(README) 호출마다 색인을 다시
+// 만들 이유가 없다 — 다시 만들면 답이 몇 줄이어도 호출마다 문서 크기만큼 기다린다. 재사용을 밖에서
+// 보려고 첫 호출들 뒤 문서에 간선(c→b)을 더한다: 색인을 다시 쓰면 두 번째 답이 첫 답과 같고, 호출마다
+// 만들면 새 간선이 답에 나타난다. 실제 서버의 문서는 바뀌지 않는다.
+func TestMcpReusesQueryIndex(t *testing.T) {
+	srv := &mcpServer{protocol: "2024-11-05", doc: &graph.Document{
+		Level: graph.LevelSymbol,
+		Vertices: []graph.Vertex{
+			{ID: "pkg.a", Kind: graph.KindFunc},
+			{ID: "pkg.b", Kind: graph.KindFunc},
+			{ID: "pkg.c", Kind: graph.KindFunc},
+		},
+		Edges: []graph.Edge{{From: "pkg.a", To: "pkg.b", Kind: graph.EdgeCall}},
+	}}
+	calls := []struct{ tool, args string }{
+		{"gartograph_query", `{"id":"pkg.b"}`},
+		{"gartograph_impact", `{"id":"pkg.b"}`},
+		{"gartograph_path", `{"from":"pkg.c","to":"pkg.b"}`},
+		{"gartograph_shared", `{"roots":["pkg.a","pkg.c"]}`},
+		{"gartograph_dead", `{"roots":["pkg.c"]}`},
+	}
+	first := make([]string, len(calls))
+	for i, c := range calls {
+		text, err := srv.runTool(c.tool, json.RawMessage(c.args))
+		if err != nil {
+			t.Fatalf("%s: %v", c.tool, err)
+		}
+		first[i] = text
+	}
+	srv.doc.Edges = append(srv.doc.Edges, graph.Edge{From: "pkg.c", To: "pkg.b", Kind: graph.EdgeCall})
+	for i, c := range calls {
+		text, err := srv.runTool(c.tool, json.RawMessage(c.args))
+		if err != nil || text != first[i] {
+			t.Fatalf("%s must answer from the index built on the first call, not rebuild it per call:\n"+
+				"first  %s\nsecond %s (err %v)", c.tool, first[i], text, err)
+		}
+	}
+}
+
+// TestMcpIndexMatchesFreshServer는 한 서버가 질의 색인을 나눠 쓰며 답한 세션과, 요청마다 새 서버(새
+// 색인)로 답한 결과가 같은지 본다. 도구 순서를 섞어 한 도구가 만든 색인을 다른 도구가 그대로 쓰게
+// 하고, 외부 인터페이스 디스패치·인터페이스 팬아웃·빈 식별자 루트가 있는 실제 수확 문서와 없는
+// 정점·없는 루트의 답도 넣는다 — 색인을 나눠 쓰는 것은 비용만 줄여야 한다.
+func TestMcpIndexMatchesFreshServer(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func main() { lib.Run(lib.New()) }
+
+func init() { helper() }
+
+func helper() {}
+
+func unused() {}
+`,
+		"lib/lib.go": `package lib
+
+type Store interface{ Get() string }
+
+type mem struct{ v string }
+
+func (m *mem) Get() string { return m.v }
+
+func (m *mem) Error() string { return m.v }
+
+func New() Store { return &mem{} }
+
+func Run(s Store) { _ = s.Get() }
+
+var _ Store = (*mem)(nil)
+
+func Orphan() {}
+`,
+	})
+	doc, err := source.Load(source.Options{Dir: dir, Level: graph.LevelSymbol})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const m, lib = "example.com/fixture.", "example.com/fixture/lib."
+	for _, id := range []string{m + "main", m + "helper", m + "unused", lib + "Run", lib + "Store",
+		lib + "(mem).Get", lib + "Orphan"} {
+		if !doc.HasVertex(id) {
+			t.Fatalf("fixture lacks vertex %s", id)
+		}
+	}
+	call := func(id int, tool, args string) string {
+		return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":%s}}`,
+			id, tool, args)
+	}
+	lines := []string{
+		call(1, "gartograph_query", `{"id":"`+m+`main"}`),
+		call(2, "gartograph_impact", `{"id":"`+lib+`(mem).Get"}`),
+		call(3, "gartograph_path", `{"from":"`+m+`main","to":"`+lib+`(mem).Get"}`),
+		call(4, "gartograph_shared", `{"roots":["`+m+`main","`+lib+`Run"]}`),
+		call(5, "gartograph_dead", `{}`),
+		call(6, "gartograph_dead", `{"retainPublic":true,"roots":["`+m+`unused","ghost"]}`),
+		call(7, "gartograph_query", `{"id":"`+lib+`Store","depth":2,"max":1}`),
+		call(8, "gartograph_impact", `{"id":"ghost"}`),
+		call(9, "gartograph_path", `{"from":"`+m+`main","to":"ghost"}`),
+		call(10, "gartograph_shared", `{"roots":["`+m+`helper","ghost"]}`),
+		call(11, "gartograph_impact", `{"id":"`+lib+`(mem).Get","depth":1,"max":1}`),
+		call(12, "gartograph_query", `{"id":"`+lib+`Run","depth":3}`),
+		call(13, "gartograph_dead", `{"roots":["`+lib+`Orphan"]}`),
+		call(14, "gartograph_path", `{"from":"`+lib+`Orphan","to":"`+m+`main"}`),
+		call(15, "gartograph_shared", `{"roots":["`+m+`main","`+m+`helper","`+lib+`Store"]}`),
+		call(16, "gartograph_cycles", `{}`),
+	}
+	reused := mcpSession(t, &mcpServer{doc: doc, protocol: "2024-11-05"}, lines...)
+	if len(reused) != len(lines) {
+		t.Fatalf("expected %d responses, got %d", len(lines), len(reused))
+	}
+	sawError := false
+	for i, line := range lines {
+		fresh := mcpSession(t, &mcpServer{doc: doc, protocol: "2024-11-05"}, line)
+		if !reflect.DeepEqual(reused[i], fresh[0]) {
+			t.Fatalf("call %d answered differently with a reused index:\nreused %v\nfresh  %v", i+1, reused[i], fresh[0])
+		}
+		sawError = sawError || reused[i]["result"].(map[string]any)["isError"] == true
+	}
+	if !sawError {
+		t.Fatal("the session must include error answers for missing vertices")
+	}
+}
+
+// benchmarkMcpDocument는 반복 질의 벤치마크용 합성 심볼 문서다(패키지 200개 × 함수 100개, 함수마다
+// 호출 3개). 대형 testdata 파일 대신 고정 시드로 매번 같은 문서를 만든다.
+func benchmarkMcpDocument() *graph.Document {
+	r := rand.New(rand.NewSource(1))
+	d := &graph.Document{Version: graph.Version, Tool: graph.Tool, Level: graph.LevelSymbol,
+		Module: "example.com/big"}
+	fn := func(p, s int) string { return fmt.Sprintf("example.com/big/p%03d.Fn%03d", p, s) }
+	for p := 0; p < 200; p++ {
+		pkg := fmt.Sprintf("example.com/big/p%03d", p)
+		d.Vertices = append(d.Vertices, graph.Vertex{ID: pkg, Kind: graph.KindPackage})
+		for s := 0; s < 100; s++ {
+			d.Vertices = append(d.Vertices, graph.Vertex{ID: fn(p, s), Kind: graph.KindFunc, Package: pkg})
+			d.Edges = append(d.Edges, graph.Edge{From: pkg, To: fn(p, s), Kind: graph.EdgeContains})
+			for c := 0; c < 3; c++ {
+				d.Edges = append(d.Edges, graph.Edge{From: fn(p, s), To: fn(r.Intn(p+1), r.Intn(100)),
+					Kind: graph.EdgeCall})
+			}
+		}
+	}
+	d.Sort()
+	return d
+}
+
+// BenchmarkMcpQuery는 한 MCP 서버에 depth 1 query를 거듭 묻는다(약 2만 정점). 호출마다 이웃 목록을
+// 다시 만들면 호출당 비용이 문서 크기를 따르고, 첫 호출의 색인을 다시 쓰면 답의 크기를 따른다.
+func BenchmarkMcpQuery(b *testing.B) {
+	srv := &mcpServer{doc: benchmarkMcpDocument()}
+	args := json.RawMessage(`{"id":"example.com/big/p100.Fn050","depth":1}`)
+	for b.Loop() {
+		if _, err := srv.runTool("gartograph_query", args); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

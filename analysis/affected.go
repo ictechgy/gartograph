@@ -29,12 +29,14 @@ type Affected struct {
 // AffectedByFiles는 files에 선언된 정점과 extraRoots를 합쳐 역방향 BFS를 돌린다.
 // extraRoots에 문서에 없는 정점이 있으면 ErrNotFound다 — 없는 루트를 조용히
 // 버리면 소비자가 "영향 없음"으로 오독한다.
+// 파일의 패키지 정점, 추가 루트, 의존자의 정점 종류는 한 번 만든 ID 색인 하나로 찾는다.
 func AffectedByFiles(d *graph.Document, files, extraRoots []string,
 	depth, maxEntries int) (*Affected, error) {
-	roots, unmapped := VerticesForFiles(d, files)
+	byID := graph.VertexIndex(d)
+	roots, unmapped := verticesForFiles(d, byID, files)
 	var missing []string
 	for _, r := range extraRoots {
-		if d.HasVertex(r) {
+		if byID[r] != nil {
 			roots = append(roots, r)
 		} else {
 			missing = append(missing, r)
@@ -44,7 +46,7 @@ func AffectedByFiles(d *graph.Document, files, extraRoots []string,
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, strings.Join(missing, ", "))
 	}
 	roots = dedupeSorted(roots)
-	dep, trunc := impactFrom(d, roots, depth, maxEntries)
+	dep, trunc := impactFrom(graph.KindedIncoming(d), byID, roots, depth, maxEntries)
 	return &Affected{
 		Files: dedupeSorted(append([]string(nil), files...)),
 		Roots: roots, UnmappedFiles: unmapped,
@@ -58,6 +60,14 @@ func AffectedByFiles(d *graph.Document, files, extraRoots []string,
 // 패키지 정점까지 루트에 넣어야 파일 수준 변경이 import 의존자에게도 전이된다.
 // 상대 경로는 문서의 Root 기준으로 절대화한다 — Position.File은 절대 경로다.
 func VerticesForFiles(d *graph.Document, files []string) (roots, unmapped []string) {
+	return verticesForFiles(d, graph.VertexIndex(d), files)
+}
+
+// verticesForFiles는 VerticesForFiles의 본체로, 패키지 정점의 존재를 미리 만든 ID 색인(byID)으로 본다 —
+// 파일마다 정점 목록을 훑으면 변경 파일이 수천 개인 diff에서 비용이 파일 수 × 정점 수가 된다.
+// AffectedByFiles는 추가 루트 확인과 영향 BFS에도 같은 색인을 쓴다.
+func verticesForFiles(d *graph.Document, byID map[string]*graph.Vertex,
+	files []string) (roots, unmapped []string) {
 	byFile := map[string][]string{}
 	for _, v := range d.Vertices {
 		if v.Position != nil {
@@ -90,7 +100,7 @@ func VerticesForFiles(d *graph.Document, files []string) (roots, unmapped []stri
 			}
 			matched = true
 		}
-		if pkg := packageForFile(d, abs); pkg != "" && d.HasVertex(pkg) {
+		if pkg := packageForFile(d, abs); pkg != "" && byID[pkg] != nil {
 			if !seen[pkg] {
 				seen[pkg] = true
 				roots = append(roots, pkg)

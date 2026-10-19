@@ -106,6 +106,10 @@ gartograph query 'github.com/ictechgy/gartograph/graph.(Document).Sort'
 gartograph impact github.com/ictechgy/gartograph/graph --depth 2
 
 # Diff-aware impact: what breaks given the files changed since a revision
+# (needs git 2.24+; a value that starts with '-' or holds control characters
+# is a usage error). git runs with fsmonitor hooks off but trusts the rest of
+# the work tree's .git/config (filters etc.); in a tree of unknown origin pass
+# --files instead.
 gartograph impact --since origin/main...HEAD          # or --files cli/cli.go
 
 # Shortest dependency path: why does 'from' reach 'to'
@@ -115,6 +119,10 @@ gartograph path github.com/ictechgy/gartograph/cmd/gartograph github.com/ictechg
 gartograph shared example.com/a example.com/b
 
 # go.mod hygiene: requirements no package imports (test imports count)
+# like go mod tidy, imports in files excluded by build constraints (not //go:build ignore)
+# and imports that failed to load count too; limitations count the load errors and the
+# excluded files importing packages this run did not load (std-only files are silent).
+# A package with no file for this platform is not loaded: check it with --goos
 gartograph unused-deps --strict
 
 # Compare two saved documents: structure drift and breaking signals
@@ -168,6 +176,10 @@ Exit codes: `0` ok · `1` `--strict` violation · `2` usage/analysis error.
 module root. Components map module-relative package paths; `deps` is an
 **allowlist** — a component with no entry may depend on nothing outside
 itself.
+
+The rules file must be a regular file, or a symlink to one, of at most 16 MiB.
+Every harvesting command reads it for `exclude`, so a device, named pipe, or
+larger file is an error (exit 2) instead of an endless read.
 
 ```yaml
 components:
@@ -288,10 +300,18 @@ gartograph dead   --baseline .dead-baseline.json --strict
 Baselined violations are reported under `baselined`; entries that stop
 occurring come back as `staleBaseline` — regenerate when they pile up.
 SARIF output and `--strict` see only fresh violations.
+Entries match on what they name, never on line numbers or the checkout path
+(a `fileRules` violation matches by rule, import edge, and file name),
+so a baseline committed from one machine still matches in CI.
 
 Patterns: exact match, `x/**` recursive prefix, `*` segment glob. Packages
 matching no component are reported as `unmapped` — a mapping gap is "rules
 don't know this area", not "no rules apply".
+Loading the rules file rejects any other syntax in components, `exclude`, and
+`fileRules.from` (exit 2): `?`, `[...]`, `{...}`, `\`, more than one `*` in a
+segment, `**` anywhere but a trailing `/**`, a `*` before that `/**`, and
+empty segments — such a pattern could never match, so a rule built on it
+would pass silently.
 
 `rules`, `cycles`, and `dead` all accept `--format sarif` for CI code
 scanning — cycles report as `dependency-cycle` errors, unreachable symbols
@@ -344,6 +364,16 @@ as `unreachable-symbol` warnings (a fact, not a deletion verdict).
   limitation instead. Dispatch through reflection or generic interfaces is
   still invisible and the report says so.
 - Optional fields are omitted when empty (`omitempty`).
+- Text output (`--format text` reports, `diff`, `metrics`, `mapping`,
+  `unused-deps`, `dead --explain`) escapes control characters in IDs, paths,
+  reasons, and limitations — C0/C1, DEL, U+2028/U+2029, and invalid UTF-8 —
+  as `\xNN`/`\uNNNN`, so a crafted file name, rule `reason`, or saved
+  document cannot start a new output line (a GitHub Actions `::` workflow
+  command) or send terminal escape sequences. The two command forms the
+  Actions runner reads within a line are escaped the same way: a leading
+  `::` after any whitespace (NBSP included) becomes `\x3a:`, and every `##[`
+  becomes `\x23#[`. Other strings print unchanged; JSON and SARIF keep the
+  original strings, JSON-escaped.
 
 ## Graph document
 
@@ -498,7 +528,8 @@ document over the same dependency edges as `impact`:
   through function values and reflection are not counted, so the document
   carries neither `dispatch` nor `unresolvedCalls` (no completeness claim).
 - `--depth` (1–128, default 128) and `--max` (1–100000 reached, default
-  100000) cut with `truncationReasons` `depth`/`max-reached`.
+  100000) cut with `truncationReasons` `depth`/`max-reached`. `rootsTruncated`
+  describes the listed symbols only: symbols dropped by `--max` do not set it.
 - `project` is the same realpath `schema` writes; `revision` is `--revision` or
   git `HEAD` when the work tree is clean (omitted with `--graph`);
   `graphRevision` is the SHA-256 of the graph JSON; `--generated-at` fixes the

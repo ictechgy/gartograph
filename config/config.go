@@ -6,8 +6,8 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -83,6 +83,10 @@ type File struct {
 	Limits      []LimitRule            `yaml:"limits"`
 	Exclude     []string               `yaml:"exclude"`
 	Stability   bool                   `yaml:"stability"`
+
+	// components는 Load가 만든 컴포넌트 패턴 색인이다(yaml이 채우지 않는 비공개 필드).
+	// 설정은 읽은 뒤 바뀌지 않는다는 전제다 — Load 뒤에 Components를 고치면 색인이 낡는다.
+	components *componentIndex
 }
 
 // DenyEntry는 deny 목록의 한 항목이다.
@@ -137,6 +141,11 @@ type FileRule struct {
 // 파일 후보 이름 — 두 확장자를 다 받는다.
 var candidates = []string{".gartograph.yml", ".gartograph.yaml"}
 
+// maxRulesFileSize는 규칙 파일의 최대 바이트 수다. --roots-from 입력 상한(16 MiB)과 같다 —
+// init이 큰 저장소에서 만든 설정(컴포넌트 2만 개면 수 MB)은 받고, /dev/zero처럼 끝없이
+// 읽히는 입력은 메모리를 다 쓰기 전에 거부한다.
+const maxRulesFileSize = 16 << 20
+
 // Find는 dir 아래에서 규칙 파일을 찾는다.
 func Find(dir string) (string, bool) {
 	for _, name := range candidates {
@@ -151,9 +160,9 @@ func Find(dir string) (string, bool) {
 // Load는 규칙 파일을 읽어 검증한다.
 // 컴포넌트가 하나도 없으면 규칙 검사 자체가 무의미하므로 에러다.
 func Load(path string) (*File, error) {
-	data, err := os.ReadFile(path)
+	data, err := readRulesFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading rules file: %w", err)
+		return nil, err
 	}
 	var f File
 	if err := yaml.Unmarshal(data, &f); err != nil {
@@ -165,16 +174,56 @@ func Load(path string) (*File, error) {
 	if err := f.checkRefs(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	f.components = newComponentIndex(f.Components)
 	return &f, nil
+}
+
+// readRulesFile은 규칙 파일을 상한까지 읽는다. .gartograph.yml은 분석 대상 저장소가 고르는
+// 경로라 /dev/zero나 FIFO를 가리키는 링크일 수 있다 — os.ReadFile은 그런 입력에서 메모리를
+// 다 쓰거나 open에서 영원히 막히고, 수확 명령은 전부 exclude를 읽으려고 이 파일을 연다.
+// 그래서 막히지 않게 열고(readFlags) 연 파일이 정규 파일인지 fstat로 본 뒤 읽는다.
+// 링크 자체는 막지 않는다 — 대상이 정규 파일이면 공유 설정을 링크로 두는 저장소가 그대로 돈다.
+func readRulesFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, readFlags, 0)
+	if err != nil {
+		return nil, fmt.Errorf("reading rules file: %w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("reading rules file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("rules file %s is not a regular file (mode %s); "+
+			"replace it with a YAML file or a link to one", path, info.Mode())
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxRulesFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading rules file: %w", err)
+	}
+	if len(data) > maxRulesFileSize {
+		return nil, fmt.Errorf("rules file %s is larger than %d MiB; "+
+			"check that it is the intended YAML rules file", path, maxRulesFileSize>>20)
+	}
+	return data, nil
 }
 
 // checkRefs는 규칙이 참조하는 컴포넌트명이 components에 정의됐는지 확인한다.
 // 정의되지 않은 이름은 영원히 매칭되지 않는 죽은 규칙이다 — 오타를 조용히
 // 삼키면 "규칙이 있다"는 착각을 만든다. 정의됐지만 정점에 매칭 안 되는
 // 컴포넌트는 여기서가 아니라 unmatchedComponents로 보고된다.
+// components·exclude·fileRules.from의 패턴도 같은 이유로 graph.ValidatePattern에
+// 맞춘다 — 매처가 해석하지 않는 문법(`?`·`[...]`·중간 `**`)은 영원히 맞지 않는다.
 func (f *File) checkRefs() error {
 	// 진단은 결정적이어야 한다 — 맵 순회 순서에 맡기면 같은 설정이
 	// 실행마다 다른 첫 오류를 낸다. 섹션별로 키를 정렬해 검사한다.
+	for _, name := range sortedKeys(f.Components) {
+		for _, pat := range f.Components[name] {
+			if err := graph.ValidatePattern(pat); err != nil {
+				return fmt.Errorf("components %q: pattern %q: %w", name, pat, err)
+			}
+		}
+	}
 	defined := func(name string) bool { _, ok := f.Components[name]; return ok }
 	check := func(section, side, name string) error {
 		if name == "" {
@@ -251,10 +300,10 @@ func (f *File) checkRefs() error {
 		if strings.TrimSpace(pat) == "" {
 			return fmt.Errorf("exclude: entry %d is an empty pattern", i)
 		}
-		// 문법이 깨진 글롭은 영원히 아무것도 매칭하지 않는 죽은 설정이다 —
-		// checkRefs와 같은 이유로 로드 시점에 거부한다.
-		if _, err := path.Match(pat, "probe"); err != nil {
-			return fmt.Errorf("exclude: entry %d %q is not a valid glob", i, pat)
+		// 매처가 해석하지 않는 문법은 영원히 아무것도 빼지 않는 죽은 설정이다 —
+		// path.Match로는 `?`·`[...]`가 통과하므로 매처와 같은 문법으로 거부한다.
+		if err := graph.ValidatePattern(pat); err != nil {
+			return fmt.Errorf("exclude: entry %d %q: %w", i, pat, err)
 		}
 	}
 	names := map[string]bool{}
@@ -268,6 +317,10 @@ func (f *File) checkRefs() error {
 		names[r.Name] = true
 		if r.From == "" {
 			return fmt.Errorf("fileRules %q: empty from file pattern", r.Name)
+		}
+		// 앞의 `!` 하나는 반전 표시라 MatchFile처럼 떼고 패턴만 본다.
+		if err := graph.ValidatePattern(strings.TrimPrefix(r.From, "!")); err != nil {
+			return fmt.Errorf("fileRules %q: from pattern %q: %w", r.Name, r.From, err)
 		}
 		if err := check("fileRules", "to", r.To); err != nil {
 			return err
@@ -338,23 +391,99 @@ func Render(f *File) ([]byte, error) {
 }
 
 // ComponentOf는 모듈 상대 경로를 컴포넌트로 해석한다.
-// 패턴은 정확 일치, `x/**` 재귀 접두사, path.Match 글롭 순으로 본다.
+// 패턴 문법은 graph.MatchPath다 — 정확 일치, `x/**` 재귀 접두사, 세그먼트당 `*` 하나인
+// 세그먼트 글롭.
 // 여러 컴포넌트가 맞으면 더 긴 패턴이 이긴다 — 구체적 규칙이 우선한다.
 // 길이까지 같으면 이름이 작은 쪽이 이긴다 — 맵 순회 순서에 맡기면
 // 같은 설정이 실행마다 다른 컴포넌트를 골라 baseline이 흔들린다.
+// Load가 만든 색인으로 찾는다. Load를 거치지 않은 File(테스트가 직접 만든 값, init 초안)은
+// 색인이 없어 호출마다 만든다 — 그런 값은 작고, 만든 뒤 Components를 고쳐도 답이 맞는다.
 func (f *File) ComponentOf(relPath string) (string, bool) {
-	best, bestLen := "", -1
-	for name, pats := range f.Components {
+	index := f.components
+	if index == nil {
+		index = newComponentIndex(f.Components)
+	}
+	return index.lookup(relPath)
+}
+
+// componentIndex는 컴포넌트 패턴을 graph.MatchPath의 분기별로 나눈 색인이다.
+// 정확 일치와 `x/**`는 경로와 그 상위 디렉터리로 바로 찾고 글롭만 하나씩 맞춘다 — init이 만든
+// "패키지당 `rel/**`" 설정에서 경로마다 모든 패턴을 비교하면 비용이 패키지 수 × 컴포넌트 수가
+// 되어, 2만 패키지 저장소의 rules·metrics·mapping이 각각 10~16초 걸렸다.
+// 같은 키의 패턴은 길이가 같으므로 키마다 이름이 가장 작은 컴포넌트만 남겨도 답이 같다.
+type componentIndex struct {
+	exact     map[string]string  // 패턴 → 컴포넌트명(`*`·`?`가 없고 `/**`로 끝나지 않는 패턴)
+	recursive map[string]string  // `x/**`의 x → 컴포넌트명
+	globs     []componentPattern // 나머지 — graph.MatchPath로 하나씩 맞춘다
+}
+
+// componentPattern은 색인 키로 찾을 수 없는 패턴 하나와 그 컴포넌트다.
+type componentPattern struct{ name, pattern string }
+
+// newComponentIndex는 components를 MatchPath의 분기와 같은 기준으로 나눠 담는다.
+// 검증 전 패턴(Load를 거치지 않은 File)도 MatchPath와 같은 답을 내도록 분류만 하고 고치지 않는다.
+func newComponentIndex(components map[string][]string) *componentIndex {
+	index := &componentIndex{exact: map[string]string{}, recursive: map[string]string{}}
+	for name, pats := range components {
 		for _, pat := range pats {
-			if !matchPath(pat, relPath) {
-				continue
-			}
-			if len(pat) > bestLen || (len(pat) == bestLen && name < best) {
-				best, bestLen = name, len(pat)
+			switch {
+			case strings.HasSuffix(pat, "/**"):
+				keepSmallestName(index.recursive, strings.TrimSuffix(pat, "/**"), name)
+			case strings.ContainsAny(pat, "*?"):
+				index.globs = append(index.globs, componentPattern{name: name, pattern: pat})
+			default:
+				keepSmallestName(index.exact, pat, name)
 			}
 		}
 	}
-	return best, best != ""
+	return index
+}
+
+// keepSmallestName은 key에 이름이 가장 작은 컴포넌트를 남긴다 — 길이가 같은 후보의 tie-break다.
+func keepSmallestName(names map[string]string, key, name string) {
+	if current, ok := names[key]; !ok || name < current {
+		names[key] = name
+	}
+}
+
+// lookup은 relPath에 맞는 패턴 중 가장 긴 것(같으면 이름이 작은 것)의 컴포넌트를 고른다.
+// `x/**`는 x 자신과 그 아래를 맞추므로 relPath 자신과 `/` 앞에서 끊은 모든 접두사가 후보 키다.
+func (index *componentIndex) lookup(relPath string) (string, bool) {
+	best := componentMatch{length: -1}
+	if name, ok := index.exact[relPath]; ok {
+		best.consider(name, len(relPath))
+	}
+	if name, ok := index.recursive[relPath]; ok {
+		best.consider(name, len(relPath)+len("/**"))
+	}
+	for i := 0; i < len(relPath); i++ {
+		if relPath[i] != '/' {
+			continue
+		}
+		if name, ok := index.recursive[relPath[:i]]; ok {
+			best.consider(name, i+len("/**"))
+		}
+	}
+	for _, g := range index.globs {
+		if matchPath(g.pattern, relPath) {
+			best.consider(g.name, len(g.pattern))
+		}
+	}
+	return best.name, best.name != ""
+}
+
+// componentMatch는 지금까지 이긴 후보다 — 더 긴 패턴이 이기고, 길이가 같으면 이름이 작은 쪽이
+// 이긴다. 후보를 보는 순서와 무관한 답이라 색인 출처·맵 순회 순서가 결과를 흔들지 않는다.
+type componentMatch struct {
+	name   string
+	length int
+}
+
+// consider는 길이 length인 패턴으로 맞은 컴포넌트 name을 후보로 본다.
+func (m *componentMatch) consider(name string, length int) {
+	if length > m.length || (length == m.length && name < m.name) {
+		m.name, m.length = name, length
+	}
 }
 
 // Allowed는 from 컴포넌트가 to 컴포넌트에 의존할 수 있는지 본다.

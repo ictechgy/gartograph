@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ictechgy/gartograph/export"
+	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
 )
 
@@ -365,6 +369,81 @@ func TestTraversalRootNotFound(t *testing.T) {
 	for _, r := range doc.Reached {
 		if !slices.Equal(r.Roots, []int{1}) {
 			t.Fatalf("reached roots must point at index 1: %+v", r)
+		}
+	}
+}
+
+// TestTraversalLocationResolvesEachFileOnce는 저장 문서의 위치가 심링크 root(/tmp ↔ /private/tmp
+// 같은) 아래에 있을 때 project 상대 위치를 그대로 싣고, 심링크 해석은 위치 파일마다 한 번만 하는지
+// 본다. 한 파일에 심볼이 수십~수백 개라 행마다 풀면 경로 구성요소마다 lstat가 반복된다. 풀 수 없는
+// 파일(지운 파일)도 한 번만 시도하고, 적힌 경로가 문서 root 아래면 그 상대 위치를 싣는다.
+func TestTraversalLocationResolvesEachFileOnce(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.go", "sub/b.go"} {
+		if err := os.WriteFile(filepath.Join(real, name), []byte("package p\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	const pkg = "example.com/linked"
+	at := func(name string, line int) *graph.Position {
+		return &graph.Position{File: filepath.Join(link, name), Line: line}
+	}
+	doc := &graph.Document{Version: graph.Version, Tool: graph.Tool, Level: graph.LevelSymbol, Root: link,
+		Vertices: []graph.Vertex{
+			{ID: pkg + ".Root", Kind: graph.KindFunc, Position: at("a.go", 1)},
+			{ID: pkg + ".A1", Kind: graph.KindFunc, Position: at("a.go", 2)},
+			{ID: pkg + ".A2", Kind: graph.KindFunc, Position: at("a.go", 3)},
+			{ID: pkg + ".B1", Kind: graph.KindFunc, Position: at("sub/b.go", 1)},
+			{ID: pkg + ".B2", Kind: graph.KindFunc, Position: at("sub/b.go", 2)},
+			{ID: pkg + ".Gone1", Kind: graph.KindFunc, Position: at("gone.go", 1)},
+			{ID: pkg + ".Gone2", Kind: graph.KindFunc, Position: at("gone.go", 2)},
+			{ID: pkg + ".Outside", Kind: graph.KindFunc,
+				Position: &graph.Position{File: filepath.Join(base, "other", "x.go"), Line: 1}},
+		}}
+	for _, v := range doc.Vertices[1:] {
+		doc.Edges = append(doc.Edges, graph.Edge{From: pkg + ".Root", To: v.ID, Kind: graph.EdgeCall})
+	}
+	file := filepath.Join(t.TempDir(), "g.json")
+	if err := export.SaveFile(doc, file); err != nil {
+		t.Fatal(err)
+	}
+	calls := map[string]int{}
+	resolve := evalSymlinks
+	evalSymlinks = func(path string) (string, error) {
+		calls[path]++
+		return resolve(path)
+	}
+	defer func() { evalSymlinks = resolve }()
+	code, out, errb := run(t, "reach", "--graph", file, pkg+".Root")
+	if code != 0 {
+		t.Fatalf("reach: %d %s", code, errb)
+	}
+	got := map[string]string{}
+	for _, r := range parseTraversal(t, out).Reached {
+		got[r.Symbol.Usr] = ""
+		if loc := r.Symbol.Location; loc != nil {
+			got[r.Symbol.Usr] = fmt.Sprintf("%s:%d", loc.Path, loc.Line)
+		}
+	}
+	want := map[string]string{pkg + ".A1": "a.go:2", pkg + ".A2": "a.go:3", pkg + ".B1": "sub/b.go:1",
+		pkg + ".B2": "sub/b.go:2", pkg + ".Gone1": "gone.go:1", pkg + ".Gone2": "gone.go:2", pkg + ".Outside": ""}
+	if !maps.Equal(got, want) {
+		t.Fatalf("locations = %v, want %v", got, want)
+	}
+	if len(calls) != 4 {
+		t.Errorf("resolved %d distinct files %v, want a.go, sub/b.go, gone.go and the outside file", len(calls), calls)
+	}
+	for path, n := range calls {
+		if n != 1 {
+			t.Errorf("%s resolved %d times, want once per file", path, n)
 		}
 	}
 }

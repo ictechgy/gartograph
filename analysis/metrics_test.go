@@ -1,6 +1,11 @@
 package analysis
 
 import (
+	"fmt"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/ictechgy/gartograph/config"
@@ -113,6 +118,168 @@ func TestMetricsBlankRootKeepsOrphan(t *testing.T) {
 	rep := Metrics(d, metricsCfg())
 	if len(rep.Orphans) != 1 || rep.Orphans[0] != "example.com/m/util" {
 		t.Fatalf("a blank-declaration root must not hide the orphan: %+v", rep.Orphans)
+	}
+}
+
+// TestRootSetMatchesScan은 무작위 문서에서 rootSet이 루트마다 정점 목록을 훑던 구현(scanRootSet)과
+// 같은 집합을 내는지 확인한다. 빈 식별자 루트(pkg._), 패키지 없는 루트, 문서에 없는 루트, 겹친
+// 정점 ID(VertexByID처럼 앞의 정점이 쓰인다)를 섞는다.
+func TestRootSetMatchesScan(t *testing.T) {
+	r := rand.New(rand.NewSource(19))
+	sawBlank, sawGhost, sawDuplicate := false, false, false
+	for trial := 0; trial < 500; trial++ {
+		d := randomDependencyDocument(r)
+		for i := range d.Vertices {
+			if r.Intn(2) == 0 {
+				d.Vertices[i].Package = fmt.Sprintf("m/p%d", r.Intn(3))
+			}
+			if r.Intn(5) == 0 {
+				d.Vertices[i].Kind, d.Vertices[i].Name = graph.KindVar, "_"
+			}
+		}
+		if r.Intn(3) == 0 {
+			dup := d.Vertices[r.Intn(len(d.Vertices))]
+			dup.Kind, dup.Name, dup.Package = graph.KindFunc, "f", "m/other"
+			d.Vertices = append(d.Vertices, dup)
+			r.Shuffle(len(d.Vertices), func(i, j int) { d.Vertices[i], d.Vertices[j] = d.Vertices[j], d.Vertices[i] })
+			sawDuplicate = true
+		}
+		for k := r.Intn(6); k > 0; k-- {
+			id := d.Vertices[r.Intn(len(d.Vertices))].ID
+			if r.Intn(4) == 0 {
+				id = fmt.Sprintf("m.ghost%d", r.Intn(3))
+				sawGhost = true
+			}
+			if v, _ := d.VertexByID(id); v != nil && v.Kind == graph.KindVar && v.Name == "_" {
+				sawBlank = true
+			}
+			d.Roots = append(d.Roots, id)
+		}
+		if got, want := rootSet(d), scanRootSet(d); !reflect.DeepEqual(got, want) {
+			t.Fatalf("trial %d roots %v: got %v, want %v", trial, d.Roots, got, want)
+		}
+	}
+	if !sawBlank || !sawGhost || !sawDuplicate {
+		t.Fatalf("random documents must exercise blank (%v), missing (%v) and duplicated (%v) roots",
+			sawBlank, sawGhost, sawDuplicate)
+	}
+}
+
+// scanRootSet은 색인을 쓰기 전의 rootSet이다 — 루트마다 VertexByID로 정점 목록을 훑는다.
+// 느려도 출력 대조 기준으로 그대로 둔다.
+func scanRootSet(d *graph.Document) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range d.Roots {
+		v, ok := d.VertexByID(r)
+		if ok && v.Kind == graph.KindVar && v.Name == "_" {
+			continue
+		}
+		if ok && v.Package != "" {
+			out[v.Package] = true
+		} else {
+			out[r] = true
+		}
+	}
+	return out
+}
+
+// BenchmarkMetrics는 보존 루트 2만 개인 약 3만 정점 합성 문서의 결합도를 계산한다(설정 없음).
+// 루트마다 정점 목록을 훑던 rootSet이 이 규모에서 호출당 초 단위였다.
+func BenchmarkMetrics(b *testing.B) {
+	d := rootedSyntheticDocument(20000)
+	for b.Loop() {
+		if rep := Metrics(d, nil); len(rep.Components) != 300 {
+			b.Fatalf("metrics: %d components", len(rep.Components))
+		}
+	}
+}
+
+// TestMetricsPackagesFollowMapping은 컴포넌트별 Packages가 MapComponents의 해석과 같은 정렬된
+// 목록이고, 겹친 정점 ID(손으로 합친 문서)는 한 번만 싣는지 확인한다 — Metrics는 매핑 결과를
+// 그대로 쓰고 컴포넌트마다 패키지 전체를 다시 훑지 않는다. 매칭이 없는 컴포넌트는 예전처럼
+// 빈 목록이 아니라 nil(JSON null)이다.
+func TestMetricsPackagesFollowMapping(t *testing.T) {
+	d := metricsDoc()
+	d.Vertices = append(d.Vertices,
+		graph.Vertex{ID: "example.com/m/web/api", Kind: graph.KindPackage, Name: "api"},
+		graph.Vertex{ID: "example.com/m/svc", Kind: graph.KindPackage, Name: "svc"},
+	)
+	cfg := &config.File{Components: map[string][]string{
+		"web": {"web/**"}, "svc": {"svc"}, "db": {"db"}, "util": {"util"}, "ghost": {"nowhere"},
+	}}
+	want := map[string][]string{
+		"web":   {"example.com/m/web", "example.com/m/web/api"},
+		"svc":   {"example.com/m/svc"},
+		"db":    {"example.com/m/db"},
+		"util":  {"example.com/m/util"},
+		"ghost": nil,
+	}
+	rep := Metrics(d, cfg)
+	if len(rep.Components) != len(want) {
+		t.Fatalf("expected %d components, got %+v", len(want), rep.Components)
+	}
+	for _, m := range rep.Components {
+		if !reflect.DeepEqual(m.Packages, want[m.Name]) {
+			t.Errorf("%s packages = %q, want %q", m.Name, m.Packages, want[m.Name])
+		}
+	}
+}
+
+// TestMetricsPackagesSortedForUnsortedDocument는 정점이 정렬되지 않았고 같은 ID가 떨어져 있는 문서에서도
+// 컴포넌트별 Packages가 정렬·중복 없는 목록인지 확인한다. Metrics는 MapComponents가 컴포넌트마다 목록을
+// 정렬해 돌려준다는 계약에 기대어 인접 중복만 지운다(slices.Compact) — 정렬이 빠지면 떨어진 중복이
+// 보고에 남는다. 그래서 MapComponents의 정렬 계약과 Metrics의 결과를 함께 고정한다.
+func TestMetricsPackagesSortedForUnsortedDocument(t *testing.T) {
+	d := &graph.Document{Module: "example.com/m", Vertices: []graph.Vertex{
+		{ID: "example.com/m/web/z", Kind: graph.KindPackage, Name: "z"},
+		{ID: "example.com/m/web", Kind: graph.KindPackage, Name: "web"},
+		{ID: "example.com/m/web/a", Kind: graph.KindPackage, Name: "a"},
+		// 손으로 합친 문서처럼 같은 ID가 떨어진 자리에 다시 나온다.
+		{ID: "example.com/m/web/z", Kind: graph.KindPackage, Name: "z"},
+	}}
+	cfg := &config.File{Components: map[string][]string{"web": {"web/**"}}}
+	mapped := []string{"example.com/m/web", "example.com/m/web/a", "example.com/m/web/z", "example.com/m/web/z"}
+	if got := MapComponents(d, cfg).Components["web"]; !reflect.DeepEqual(got, mapped) {
+		t.Fatalf("MapComponents must return each component's packages sorted: got %q, want %q", got, mapped)
+	}
+	rep := Metrics(d, cfg)
+	want := []string{"example.com/m/web", "example.com/m/web/a", "example.com/m/web/z"}
+	if len(rep.Components) != 1 || !reflect.DeepEqual(rep.Components[0].Packages, want) {
+		t.Fatalf("metrics packages must be sorted and listed once: got %+v, want %q", rep.Components, want)
+	}
+}
+
+// BenchmarkMetricsScaffold는 init이 만든 설정(패키지당 컴포넌트 하나, 2만 개)을 읽어 2만 패키지
+// 문서의 결합도를 계산한다 — 패키지마다 모든 패턴을 맞추고 컴포넌트마다 패키지 전체를 다시
+// 훑으면 둘 다 패키지 수 × 컴포넌트 수가 되어 호출당 초 단위였다.
+func BenchmarkMetricsScaffold(b *testing.B) {
+	const n = 20000
+	d := &graph.Document{Module: "example.com/big"}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("p%05d", i)
+		d.Vertices = append(d.Vertices, graph.Vertex{ID: d.Module + "/" + name, Kind: graph.KindPackage, Name: name})
+		if i > 0 {
+			d.Edges = append(d.Edges, graph.Edge{
+				From: d.Module + "/" + name, To: fmt.Sprintf("%s/p%05d", d.Module, i-1), Kind: graph.EdgeImport,
+			})
+		}
+	}
+	data, err := config.Render(ScaffoldConfig(d))
+	if err != nil {
+		b.Fatal(err)
+	}
+	path := filepath.Join(b.TempDir(), ".gartograph.yml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		b.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		if rep := Metrics(d, cfg); len(rep.Components) != n || len(rep.Unmapped) != 0 {
+			b.Fatalf("metrics: %d components, %d unmapped", len(rep.Components), len(rep.Unmapped))
+		}
 	}
 }
 

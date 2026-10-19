@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +44,64 @@ func TestAdjacencyExcludesContains(t *testing.T) {
 	if len(inc["sym"]) != 0 {
 		t.Fatalf("contains edge leaked into incoming: %v", inc["sym"])
 	}
+}
+
+// TestKindedAdjacency는 종류 포함 이웃 목록이 contains를 빼고 (ID, Kind) 순으로
+// 정렬돼 한 이웃의 관계 종류가 연속 구간을 이루는지 확인한다. 질의는 이 구간에서
+// 두 정점 사이의 관계 종류를 읽으므로, 정렬이 어긋나면 종류가 갈라지거나 사라진다.
+// 정렬되지 않은 문서와 중복 간선도 Adjacency·Incoming·EdgeKinds와 같은 사실을 담아야 한다.
+func TestKindedAdjacency(t *testing.T) {
+	doc := &Document{
+		Edges: []Edge{
+			{From: "a", To: "c", Kind: EdgeReferences},
+			{From: "a", To: "b", Kind: EdgeImport},
+			{From: "pkg", To: "a", Kind: EdgeContains},
+			{From: "a", To: "c", Kind: EdgeCall},
+			{From: "b", To: "c", Kind: EdgeCall},
+			{From: "a", To: "a", Kind: EdgeCall},
+			{From: "a", To: "c", Kind: EdgeCall},
+		},
+	}
+	out := KindedAdjacency(doc)
+	wantOut := map[string][]Neighbor{
+		"a": {{ID: "a", Kind: EdgeCall}, {ID: "b", Kind: EdgeImport},
+			{ID: "c", Kind: EdgeCall}, {ID: "c", Kind: EdgeCall}, {ID: "c", Kind: EdgeReferences}},
+		"b": {{ID: "c", Kind: EdgeCall}},
+	}
+	if !reflect.DeepEqual(out, wantOut) {
+		t.Fatalf("outgoing kinded adjacency:\ngot  %v\nwant %v", out, wantOut)
+	}
+	in := KindedIncoming(doc)
+	wantIn := map[string][]Neighbor{
+		"a": {{ID: "a", Kind: EdgeCall}},
+		"b": {{ID: "a", Kind: EdgeImport}},
+		"c": {{ID: "a", Kind: EdgeCall}, {ID: "a", Kind: EdgeCall},
+			{ID: "a", Kind: EdgeReferences}, {ID: "b", Kind: EdgeCall}},
+	}
+	if !reflect.DeepEqual(in, wantIn) {
+		t.Fatalf("incoming kinded adjacency:\ngot  %v\nwant %v", in, wantIn)
+	}
+	// 이웃 순서는 Adjacency·Incoming과 같아야 기존 질의의 출력 순서가 그대로다.
+	adj, inc := Adjacency(doc), Incoming(doc)
+	for key, ns := range out {
+		if ids := neighborIDs(ns); !reflect.DeepEqual(ids, adj[key]) {
+			t.Fatalf("outgoing order of %s differs from Adjacency: %v", key, ids)
+		}
+	}
+	for key, ns := range in {
+		if ids := neighborIDs(ns); !reflect.DeepEqual(ids, inc[key]) {
+			t.Fatalf("incoming order of %s differs from Incoming: %v", key, ids)
+		}
+	}
+}
+
+// neighborIDs는 종류 포함 이웃 목록에서 ID만 꺼낸다.
+func neighborIDs(ns []Neighbor) []string {
+	ids := make([]string, len(ns))
+	for i, n := range ns {
+		ids[i] = n.ID
+	}
+	return ids
 }
 
 // TestEdgeKinds는 한 쌍의 모든 관계 종류가 돌아오는지 확인한다.
@@ -117,6 +177,30 @@ func TestVertexByID(t *testing.T) {
 	}
 }
 
+// TestVertexIndex는 ID 색인이 VertexByID와 같은 정점(원소 자체)을 가리키는지 확인한다.
+// 같은 ID가 겹친 문서(손으로 합친 저장 문서)에서도 앞의 정점이어야 조회를 색인으로 바꿔도 답이 같다.
+func TestVertexIndex(t *testing.T) {
+	doc := &Document{Vertices: []Vertex{
+		{ID: "p.a", Kind: KindFunc}, {ID: "p.b", Kind: KindType}, {ID: "p.a", Kind: KindVar},
+	}}
+	byID := VertexIndex(doc)
+	if len(byID) != 2 {
+		t.Fatalf("index must hold one entry per ID, got %v", byID)
+	}
+	for _, id := range []string{"p.a", "p.b", "missing"} {
+		want, ok := doc.VertexByID(id)
+		if got := byID[id]; got != want || (got != nil) != ok {
+			t.Fatalf("index[%s] = %+v, VertexByID = %+v %v", id, got, want, ok)
+		}
+	}
+	if byID["p.a"] != &doc.Vertices[0] {
+		t.Fatal("index must point at the document's own vertex, the first of a repeated ID")
+	}
+	if len(VertexIndex(&Document{})) != 0 {
+		t.Fatal("empty document must yield an empty index")
+	}
+}
+
 // TestSortMergesCandidate는 같은 관계를 합칠 때 한 지점이라도 확정이면 확정으로
 // 남는지 확인한다 — 팬아웃 표시가 확정 지점을 덮으면 근거 등급이 약해진다.
 func TestSortMergesCandidate(t *testing.T) {
@@ -129,5 +213,106 @@ func TestSortMergesCandidate(t *testing.T) {
 	doc.Sort()
 	if len(doc.Edges) != 2 || doc.Edges[0].Candidate || !doc.Edges[1].Candidate {
 		t.Fatalf("candidate merge wrong: %+v", doc.Edges)
+	}
+}
+
+// TestValidatePattern은 설정 패턴 검증이 MatchPath가 적힌 그대로 맞출 수 있는 문법만 받는지
+// 확인한다 — `?`·`[...]`·중간 `**`처럼 다른 글롭 도구의 문법은 MatchPath에서 글롭이 아니라서,
+// 받아 주면 그 규칙은 영원히 아무것도 맞지 않는다. 거부 사유와 지원 문법이 오류에 실려야
+// 설정 작성자가 무엇을 고칠지 안다.
+func TestValidatePattern(t *testing.T) {
+	valid := []string{
+		"cli", ".", "app/**", "github.com/aws/**", "*_test.go", "internal/*/api",
+		"*", "*/api", "gen/*-x", "a.b/c_d/e-f~g+h/**",
+	}
+	for _, p := range valid {
+		if err := ValidatePattern(p); err != nil {
+			t.Errorf("ValidatePattern(%q) = %v, want nil", p, err)
+		}
+		// 받은 패턴은 실제로 맞는 경로가 있어야 한다 — 검증의 목적이 죽은 패턴 거르기다.
+		witness := strings.ReplaceAll(strings.TrimSuffix(p, "/**"), "*", "x")
+		if !MatchPath(p, witness) {
+			t.Errorf("accepted pattern %q must match %q", p, witness)
+		}
+	}
+	invalid := []struct{ pattern, cause string }{
+		{"", "empty pattern"},
+		{"app/**/*.go", `"**" may only end a pattern`},
+		{"**/x", `"**" may only end a pattern`},
+		{"**", `"**" may only end a pattern`},
+		{"a/**/**", `"**" may only end a pattern`},
+		{"app/su?", `"?"`},
+		{"a/[ab]", `"["`},
+		{"a/b]", `"]"`},
+		{"a/{b,c}", `"{"`},
+		{"x}", `"}"`},
+		{`a\b`, `"\\"`},
+		{"a/*_*", `at most one "*"`},
+		{"a/**x", `at most one "*"`},
+		{"internal/*/**", `before "/**"`},
+		{"*/**", `before "/**"`},
+		{"app/", "empty segment"},
+		{"/app", "empty segment"},
+		{"a//b", "empty segment"},
+		{"/**", "empty segment"},
+	}
+	for _, c := range invalid {
+		err := ValidatePattern(c.pattern)
+		if err == nil {
+			t.Errorf("ValidatePattern(%q) = nil, want an error", c.pattern)
+			continue
+		}
+		if msg := err.Error(); !strings.Contains(msg, c.cause) || !strings.Contains(msg, "supported patterns") {
+			t.Errorf("ValidatePattern(%q) = %q, want the cause (%s) and the supported syntax",
+				c.pattern, msg, c.cause)
+		}
+	}
+}
+
+// TestMatchPathRecursivePrefix는 `x/**` 판정이 접두사 비교를 할당 없이 하면서 예전 판정
+// (path == x 또는 x+"/" 접두사)과 같은 답을 내는지 확인한다. 컴포넌트 해석은 패키지마다
+// 패턴을 맞추므로, 판정마다 x+"/"를 만들면 init이 만든 설정(패키지당 `rel/**`)에서 패키지 수
+// × 컴포넌트 수만큼 문자열을 만든다 — 32바이트를 넘는 접두사는 힙에 잡힌다.
+func TestMatchPathRecursivePrefix(t *testing.T) {
+	const prefix = "github.com/example/project/internal/service"
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{prefix, true},
+		{prefix + "/api", true},
+		{prefix + "/api/v1", true},
+		{prefix + "/**", true},
+		{prefix + "/", true},
+		{prefix + "s", false}, // 접두사가 같은 이웃 디렉터리
+		{prefix + "s/api", false},
+		{prefix[:len(prefix)-1], false},
+		{"other/" + prefix, false},
+	}
+	for _, c := range cases {
+		if got := MatchPath(prefix+"/**", c.path); got != c.want {
+			t.Errorf("MatchPath(%q, %q) = %v, want %v", prefix+"/**", c.path, got, c.want)
+		}
+	}
+	pattern := prefix + "/**"
+	allocs := testing.AllocsPerRun(100, func() {
+		for _, c := range cases {
+			if MatchPath(pattern, c.path) != c.want {
+				panic("MatchPath answer changed inside AllocsPerRun")
+			}
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("a \"dir/**\" match must not allocate, got %v allocations per run", allocs)
+	}
+	// 짧은 알파벳의 모든 접두사·경로 쌍에서 예전 판정과 같아야 한다.
+	words := []string{"", "a", "b", "a/", "/a", "a/b", "ab", "a/a", "b/a/b", "/"}
+	for _, x := range words {
+		for _, p := range words {
+			want := p == x || strings.HasPrefix(p, x+"/")
+			if got := MatchPath(x+"/**", p); got != want {
+				t.Errorf("MatchPath(%q, %q) = %v, want %v", x+"/**", p, got, want)
+			}
+		}
 	}
 }

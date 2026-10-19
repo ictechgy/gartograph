@@ -177,7 +177,30 @@ func analyzeRTA(opts Options, namer rtaNamer) (*rta.Result, error) {
 			rootFns = append(rootFns, namer.packageRootFns(sp)...)
 		}
 	}
-	return rta.Analyze(rootFns, true), nil
+	// 타입 검사된 패키지가 하나라도 있으면 그 합성 init이 늘 루트라 비지 않는다. 비었다면 모든
+	// 패키지가 타입·로드 오류로 SSA가 없거나 패턴이 아무것도 고르지 않은 것이다 — rta.Analyze는
+	// 이때 nil을 돌려주고, 그 결과를 역참조하면 원인 없이 패닉한다.
+	if len(rootFns) == 0 {
+		return nil, noRTARootsError(pkgs)
+	}
+	res := rta.Analyze(rootFns, true)
+	if res == nil {
+		return nil, noRTARootsError(pkgs)
+	}
+	return res, nil
+}
+
+// noRTARootsError는 RTA를 실행할 루트가 없다는 분석 오류다. 원인(타입·로드 오류 패키지 수)과
+// 해결 방향(빌드 오류를 고치거나 CHA로 돌리기)을 함께 담는다 — CLI가 exit 2로 옮긴다. 패키지는
+// PkgPath로 센다 — --tests의 테스트 변형은 원 패키지와 같은 패키지다.
+func noRTARootsError(pkgs []*packages.Package) error {
+	broken := map[string]bool{}
+	for _, p := range pkgs {
+		if p.IllTyped || len(p.Errors) > 0 {
+			broken[p.PkgPath] = true
+		}
+	}
+	return fmt.Errorf("rta: no well-typed packages to analyze (%d loaded packages have type or load errors, or the pattern matched nothing) — fix the build errors or run dead without --algo rta", len(broken))
 }
 
 // packageRootFns는 SSA 패키지에서 루트 정점에 해당하는 함수와 합성 init을 고른다.

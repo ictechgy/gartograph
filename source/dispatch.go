@@ -104,10 +104,7 @@ func (h *harvester) markTypeDispatch(named *types.Named, ifaces []externalIface,
 	if mset.Len() == 0 {
 		return
 	}
-	have := make(map[string]bool, mset.Len())
-	for i := 0; i < mset.Len(); i++ {
-		have[mset.At(i).Obj().Name()] = true
-	}
+	have := methodNameSet(mset)
 	for _, ext := range ifaces {
 		if !hasAllNames(have, ext.names) || !types.Implements(ptr, ext.iface) {
 			continue
@@ -171,7 +168,8 @@ func receiverTypeID(fn *types.Func) (string, bool) {
 }
 
 // hasAllNames는 타입의 메서드 이름 집합이 인터페이스 메서드 이름을 전부
-// 포함하는지 본다 — Implements 전의 값싼 사전 필터다.
+// 포함하는지 본다 — Implements 전의 값싼 사전 필터다. 외부 인터페이스
+// (markTypeDispatch)와 모듈 인터페이스(implementsEdges)가 같이 쓴다.
 func hasAllNames(have map[string]bool, names []string) bool {
 	for _, n := range names {
 		if !have[n] {
@@ -179,6 +177,26 @@ func hasAllNames(have map[string]bool, names []string) bool {
 		}
 	}
 	return true
+}
+
+// methodNameSet은 메서드 집합의 메서드 이름 집합이다 — hasAllNames의 have.
+// 패키지를 빼고 이름만 담으므로 비공개 메서드는 필터를 통과해도 판정에서
+// 패키지까지 맞춰 본다(필요조건만 거른다).
+func methodNameSet(mset *types.MethodSet) map[string]bool {
+	have := make(map[string]bool, mset.Len())
+	for i := 0; i < mset.Len(); i++ {
+		have[mset.At(i).Obj().Name()] = true
+	}
+	return have
+}
+
+// methodNames는 인터페이스 메서드 이름 목록이다 — hasAllNames의 names.
+func methodNames(iface *types.Interface) []string {
+	names := make([]string, iface.NumMethods())
+	for i := range names {
+		names[i] = iface.Method(i).Name()
+	}
+	return names
 }
 
 // concreteTypes는 모듈 안 패키지 스코프의 인터페이스가 아닌 명명 타입을 모은다.
@@ -254,11 +272,7 @@ func isInternalPath(path string) bool {
 
 // newExternalIface는 사전 필터용 메서드 이름을 채운 externalIface를 만든다.
 func newExternalIface(name string, iface *types.Interface) externalIface {
-	names := make([]string, iface.NumMethods())
-	for i := range names {
-		names[i] = iface.Method(i).Name()
-	}
-	return externalIface{name: name, iface: iface, names: names}
+	return externalIface{name: name, iface: iface, names: methodNames(iface)}
 }
 
 // importClosure는 모듈 패키지에서 출발한 types 레벨 import 전이 폐포를

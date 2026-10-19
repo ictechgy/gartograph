@@ -1,6 +1,10 @@
 package analysis
 
 import (
+	"fmt"
+	"math/rand"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -45,6 +49,109 @@ func TestRetentionRoots(t *testing.T) {
 	}
 	if !hasDead {
 		t.Fatalf("retainPublic must retain exported symbols, got %v", roots)
+	}
+}
+
+// TestRetentionRootsMatchesScan은 무작위 문서에서 RetentionRoots가 루트·추가 지정마다 정점 목록을
+// 훑던 구현(scanRetentionRoots)과 같은 roots·unknown을 내는지 확인한다. 문서에 없는 루트, 겹친
+// 루트·추가 지정, 공개 심볼 보존을 섞는다 — 존재 확인을 색인으로 바꾼 것은 비용만 줄여야 한다.
+func TestRetentionRootsMatchesScan(t *testing.T) {
+	r := rand.New(rand.NewSource(17))
+	sawUnknown, sawPublic := false, false
+	for trial := 0; trial < 500; trial++ {
+		d := randomDependencyDocument(r)
+		pick := func() string {
+			if r.Intn(4) == 0 {
+				return fmt.Sprintf("m.ghost%d", r.Intn(3))
+			}
+			return d.Vertices[r.Intn(len(d.Vertices))].ID
+		}
+		for i := range d.Vertices {
+			d.Vertices[i].Exported = r.Intn(2) == 0
+		}
+		for k := r.Intn(6); k > 0; k-- {
+			d.Roots = append(d.Roots, pick())
+		}
+		var extra []string
+		for k := r.Intn(5); k > 0; k-- {
+			extra = append(extra, pick())
+		}
+		retainPublic := r.Intn(2) == 0
+		roots, unknown := RetentionRoots(d, retainPublic, extra)
+		wantRoots, wantUnknown := scanRetentionRoots(d, retainPublic, extra)
+		if !reflect.DeepEqual(roots, wantRoots) || !reflect.DeepEqual(unknown, wantUnknown) {
+			t.Fatalf("trial %d roots=%v extra=%v public=%v:\ngot  %v %v\nwant %v %v",
+				trial, d.Roots, extra, retainPublic, roots, unknown, wantRoots, wantUnknown)
+		}
+		sawUnknown = sawUnknown || len(unknown) > 0
+		sawPublic = sawPublic || retainPublic && len(roots) > len(d.Roots)+len(extra)
+	}
+	if !sawUnknown || !sawPublic {
+		t.Fatalf("random documents must exercise unknown roots (%v) and retained public symbols (%v)",
+			sawUnknown, sawPublic)
+	}
+}
+
+// scanRetentionRoots는 색인을 쓰기 전의 RetentionRoots다 — 문서 루트와 추가 지정마다 HasVertex로
+// 정점 목록을 훑는다. 느려도 출력 대조 기준으로 그대로 둔다.
+func scanRetentionRoots(d *graph.Document, retainPublic bool, extra []string) (roots, unknown []string) {
+	seen := map[string]bool{}
+	add := func(id string) {
+		if !seen[id] {
+			seen[id] = true
+			roots = append(roots, id)
+		}
+	}
+	var live []string
+	for _, r := range d.Roots {
+		if d.HasVertex(r) {
+			live = append(live, r)
+		}
+	}
+	sort.Strings(live)
+	for _, r := range live {
+		add(r)
+	}
+	if retainPublic {
+		for _, v := range d.Symbols() {
+			if v.Exported {
+				add(v.ID)
+			}
+		}
+	}
+	for _, e := range extra {
+		if d.HasVertex(e) {
+			add(e)
+		} else {
+			unknown = append(unknown, e)
+		}
+	}
+	sort.Strings(roots)
+	sort.Strings(unknown)
+	return roots, unknown
+}
+
+// rootedSyntheticDocument는 약 3만 정점 합성 문서(syntheticSymbolDocument)의 함수 앞 n개를 보존
+// 루트로 둔다 — --tests로 수확해 Test·Benchmark·Example·Fuzz 함수가 모두 루트가 된 대형 문서의 모양이다.
+func rootedSyntheticDocument(n int) *graph.Document {
+	d := syntheticSymbolDocument(300, 100, 250)
+	for _, v := range d.Vertices {
+		if v.Kind == graph.KindFunc && len(d.Roots) < n {
+			d.Roots = append(d.Roots, v.ID)
+		}
+	}
+	return d
+}
+
+// BenchmarkRetentionRoots는 보존 루트 2만 개의 루트 집합을 만든다. 루트마다 정점 목록을 훑던 구현은
+// 이 규모에서 호출당 초 단위였다 — 루트 수 × 정점 수 비용이 돌아오면 이 벤치마크가 드러낸다.
+func BenchmarkRetentionRoots(b *testing.B) {
+	d := rootedSyntheticDocument(20000)
+	for b.Loop() {
+		roots, unknown := RetentionRoots(d, false, []string{d.Roots[0], "m.ghost"})
+		if len(roots) != 20000 || len(unknown) != 1 {
+			b.Fatalf("retention roots: %d roots, unknown %v", len(roots), unknown)
+		}
 	}
 }
 

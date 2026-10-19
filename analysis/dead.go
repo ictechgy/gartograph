@@ -43,8 +43,15 @@ const ReasonUnreachable = "not reachable from retention roots"
 // 문서가 기록한 루트(main·init) + retainPublic이면 공개 심볼 전부 + 추가 지정.
 // 지정했는데 문서에 없는 루트는 unknown으로 돌려준다 — 조용히 무시하면
 // 소비자가 "루트로 썼다"고 오해한다.
+// 추가 지정의 존재는 한 번 만든 ID 색인으로 본다 — 지정마다 정점 목록을 훑지 않는다.
 func RetentionRoots(d *graph.Document, retainPublic bool,
 	extra []string) (roots []string, unknown []string) {
+	return NewIndex(d).RetentionRoots(retainPublic, extra)
+}
+
+// RetentionRoots는 색인 위의 RetentionRoots다 — 같은 Index로 거듭 물으면 살아 있는 문서 루트와
+// ID 색인을 다시 만들지 않는다. ID 색인은 추가 지정이 있을 때만 만든다.
+func (x *Index) RetentionRoots(retainPublic bool, extra []string) (roots []string, unknown []string) {
 	seen := map[string]bool{}
 	add := func(id string) {
 		if !seen[id] {
@@ -52,18 +59,18 @@ func RetentionRoots(d *graph.Document, retainPublic bool,
 			roots = append(roots, id)
 		}
 	}
-	for _, r := range d.RootIDs() {
+	for _, r := range x.liveRoots() {
 		add(r)
 	}
 	if retainPublic {
-		for _, v := range d.Symbols() {
+		for _, v := range x.doc.Symbols() {
 			if v.Exported {
 				add(v.ID)
 			}
 		}
 	}
 	for _, e := range extra {
-		if d.HasVertex(e) {
+		if x.vertices()[e] != nil {
 			add(e)
 		} else {
 			unknown = append(unknown, e)
@@ -137,6 +144,11 @@ func Reachable(d *graph.Document, roots []string) map[string]bool {
 	return reachFrom(ReachAdjacency(d), roots)
 }
 
+// Reachable은 색인 위의 Reachable이다 — 같은 Index로 거듭 물으면 도달성 인접 맵을 다시 만들지 않는다.
+func (x *Index) Reachable(roots []string) map[string]bool {
+	return reachFrom(x.reachAdjacency(), roots)
+}
+
 // DependencyReachable은 문서의 의존 간선만 따르는 도달 집합이다.
 // shared처럼 "무엇에 의존하나"를 묻는 질의용이다 — 외부 디스패치는
 // 의존이 아니라 도달 가능성 규칙이라 path·impact와 답이 갈라지면 안 된다.
@@ -198,7 +210,7 @@ func Dead(d *graph.Document, reachable map[string]bool) []Finding {
 // 넓어진다는 점이 사유와 limitation으로 구분되어야 한다.
 func DeadRTA(d *graph.Document, graphReach, rtaReach map[string]bool) []Finding {
 	var out []Finding
-	byID := indexByID(d)
+	byID := graph.VertexIndex(d)
 	usedAbstract := abstractMethodsUsedBy(d, byID, liveSources(byID, graphReach, rtaReach))
 	for _, v := range d.Symbols() {
 		callable := v.Kind == graph.KindFunc || v.Kind == graph.KindMethod
@@ -250,7 +262,7 @@ func isAbstractMethod(byID map[string]*graph.Vertex, id string) bool {
 func WithAbstractCalls(d *graph.Document, adj map[string][]string,
 	graphReach, rtaReach map[string]bool) map[string][]string {
 	touched := map[string]bool{}
-	byID := indexByID(d)
+	byID := graph.VertexIndex(d)
 	for _, e := range abstractCallEdges(d, byID, liveSources(byID, graphReach, rtaReach)) {
 		adj[e.From] = append(adj[e.From], e.To)
 		touched[e.From] = true
@@ -294,15 +306,6 @@ func abstractCallEdges(d *graph.Document, byID map[string]*graph.Vertex, live fu
 			isAbstractMethod(byID, e.To) {
 			out = append(out, e)
 		}
-	}
-	return out
-}
-
-// indexByID는 정점 ID → 정점 색인이다.
-func indexByID(d *graph.Document) map[string]*graph.Vertex {
-	out := make(map[string]*graph.Vertex, len(d.Vertices))
-	for i := range d.Vertices {
-		out[d.Vertices[i].ID] = &d.Vertices[i]
 	}
 	return out
 }
