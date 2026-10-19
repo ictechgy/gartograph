@@ -2,6 +2,7 @@ package source
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -41,4 +42,50 @@ func TestRTARootsEverySyntheticInit(t *testing.T) {
 	if !slices.Contains(adj["example.com/fixture/r"+PackageInitSuffix], target) {
 		t.Fatalf("synthetic init without an init root must appear as pkg#init, adj=%v", adj)
 	}
+}
+
+// TestRTAWithoutWellTypedPackages는 RTA가 출발할 루트가 없을 때 패닉 대신 원인과 해결 방향을 담은
+// 오류를 돌려주는지 확인한다. 유일한 패키지에 타입 오류가 있으면 SSA가 그 함수를 만들지 않고,
+// 패턴이 아무것도 고르지 않으면 패키지가 없다 — 어느 쪽이든 루트가 비어 rta.Analyze가 nil을 돌려주고,
+// 그 결과를 역참조하면 dead --algo rta가 스택만 남기고 죽는다.
+func TestRTAWithoutWellTypedPackages(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc helper() int { return undefinedName }\n\nfunc main() { _ = helper() }\n",
+	})
+	doc := loadSymbol(t, dir)
+	roots := map[string]bool{}
+	for _, r := range doc.Roots {
+		roots[r] = true
+	}
+	for name, opts := range map[string]Options{
+		"ill-typed":       {Dir: dir, Level: graph.LevelSymbol},
+		"pattern-nothing": {Dir: dir, Level: graph.LevelSymbol, Patterns: []string{"./nothing/..."}},
+	} {
+		reachErr := callWithoutPanic(t, name+" RTAReachable", func() error {
+			_, err := RTAReachable(opts, doc, roots)
+			return err
+		})
+		adjErr := callWithoutPanic(t, name+" RTAAdjacency", func() error {
+			_, _, err := RTAAdjacency(opts, doc, roots)
+			return err
+		})
+		for _, err := range []error{reachErr, adjErr} {
+			if err == nil || !strings.Contains(err.Error(), "rta: no well-typed packages to analyze") ||
+				!strings.Contains(err.Error(), "without --algo rta") {
+				t.Errorf("%s: want the cause and the way out, got %v", name, err)
+			}
+		}
+	}
+}
+
+// callWithoutPanic은 fn을 부르고 패닉을 테스트 실패로 바꾼다 — 패닉이 테스트 바이너리를 죽이면
+// 같은 실행의 다른 결과까지 잃는다.
+func callWithoutPanic(t *testing.T, what string, fn func() error) (err error) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("%s panicked instead of returning an error: %v", what, r)
+		}
+	}()
+	return fn()
 }

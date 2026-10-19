@@ -1782,6 +1782,41 @@ func TestDeadExplainRTA(t *testing.T) {
 	}
 }
 
+// TestDeadRTAWithoutWellTypedPackages는 RTA가 분석할 타입 검사된 패키지가 없을 때(유일한 패키지의
+// 타입 오류, 아무것도 고르지 않는 패턴) dead --algo rta와 --explain이 패닉 대신 원인과 해결 방향을
+// 담은 분석 오류(exit 2)를 내는지 확인한다. CHA 경로는 그대로 동작한다 — 타입 오류는 limitation이다.
+func TestDeadRTAWithoutWellTypedPackages(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc helper() int { return undefinedName }\n\nfunc main() { _ = helper() }\n",
+	})
+	for _, args := range [][]string{
+		{"dead", "--dir", dir, "--algo", "rta"},
+		{"dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/fixture.helper"},
+		{"dead", "--dir", dir, "--algo", "rta", "--pattern", "./nothing/..."},
+	} {
+		code, _, errb := runRecovered(t, args...)
+		if code != 2 || !strings.Contains(errb, "rta: no well-typed packages to analyze") ||
+			!strings.Contains(errb, "without --algo rta") {
+			t.Errorf("%v: want exit 2 with the cause and the way out, got %d %q", args[3:], code, errb)
+		}
+	}
+	if code, _, errb := run(t, "dead", "--dir", dir); code != 0 {
+		t.Fatalf("CHA dead must still work on an ill-typed package: %d %s", code, errb)
+	}
+}
+
+// runRecovered는 run과 같되 패닉을 테스트 실패로 바꾼다 — 패닉이 테스트 바이너리를 죽이면 같은
+// 실행의 다른 결과까지 잃는다.
+func runRecovered(t *testing.T, args ...string) (int, string, string) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("%v panicked instead of reporting an error: %v", args, r)
+		}
+	}()
+	return run(t, args...)
+}
+
 // TestExcludeConfig는 .gartograph.yml의 exclude가 수확에서 패키지를
 // 빼는지 확인한다 — 설정과 수확이 같은 해석을 써야 한다.
 func TestExcludeConfig(t *testing.T) {
