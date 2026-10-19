@@ -227,7 +227,15 @@ func applyConfigExclude(opts *source.Options) error {
 
 // requireLevel은 문서가 want 레벨 이상을 담았는지 확인한다.
 // 부족하면 어떻게 다시 수확할지를 메시지에 담는다.
+// module은 Rank가 가장 낮지만 더 세밀한 문서에 들어 있지 않다 — module 정점은
+// --level module 수확만 만든다. Rank만 비교하면 package·type·symbol 문서의 module
+// 투영이 빈 결과로 성공해, 모듈 순환이 있어도 "순환 없음"으로 읽힌다.
+// CLI cycles와 MCP gartograph_cycles가 이 함수를 같이 쓴다.
 func requireLevel(doc *graph.Document, want graph.Level) error {
+	if want == graph.LevelModule && doc.Level != graph.LevelModule {
+		return fmt.Errorf("document level is %q; module projection needs a module-level document: "+
+			"re-harvest with --level module", doc.Level)
+	}
 	if doc.Level.Rank() < want.Rank() {
 		return fmt.Errorf("document level is %q; re-harvest with --level %s",
 			doc.Level, want)
