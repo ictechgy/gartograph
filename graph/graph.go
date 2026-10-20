@@ -108,6 +108,12 @@ type Vertex struct {
 	// 수확된 의존이나 중첩 모듈 패키지. 경로 접두사 추론은 중첩 모듈에서
 	// 틀리므로 수확 시점의 모듈 소속 사실을 그대로 옮긴다.
 	External bool `json:"external,omitempty"`
+	// Module은 go.work 워크스페이스에서 패키지 정점이 속한 주 모듈의 경로다 — 문서 Module이 아닌 주 모듈
+	// (형제 워크스페이스 모듈)의 패키지에만 싣는다. 컴포넌트·exclude 패턴은 패키지마다 그 패키지가 속한 모듈
+	// 기준 상대 경로로 맞추는데, 문서 Module 하나로 벗기면 형제 모듈 패키지가 전체 경로로 남아 패턴에 맞지
+	// 않는다. 경로 접두사로는 소속을 알 수 없어(모듈 경로가 서로의 접두사일 수 있다) 수확 사실을 옮긴다.
+	// 부재의 뜻은 문서의 WorkspaceModules가 가른다.
+	Module string `json:"module,omitempty"`
 	// Generated는 `// Code generated ... DO NOT EDIT.` 마커 파일 출신이다.
 	// 생성 코드를 그래프에서 숨기면 사실이 사라진다 — 표시만 하고
 	// 제외 여부는 소비자가 정한다.
@@ -189,6 +195,13 @@ type Document struct {
 	// 하위 디렉터리를 가리킬 때 Root와 ModuleDir이 갈라지므로, 파일→패키지
 	// 해석은 ModuleDir을 기준으로 해야 한다. 없으면 Root가 그 역할이다.
 	ModuleDir string `json:"moduleDir,omitempty"`
+	// WorkspaceModules는 go.work 워크스페이스에서 그래프에 패키지 정점이 있는 주 모듈들(문서 Module 포함)의
+	// 경로와 go.mod 디렉터리다. 경로순이고, 그런 모듈이 둘 이상일 때만 싣는다 — 단일 모듈 문서는 Module
+	// 하나로 모든 패키지를 해석할 수 있어 바이트가 그대로여야 한다. 이 목록이 있는 문서는 패키지 정점의 모듈
+	// 소속을 담는다: 정점 Module이 있으면 그 모듈, 없으면 문서 Module이고, External은 빠짐없이 수확한
+	// 사실이다. 파일→패키지 해석과 fileRules의 파일 경로는 파일을 담는 모듈 디렉터리를 기준으로 한다.
+	// 목록이 없는 문서(단일 모듈, 이 사실을 수확하기 전의 옛 문서)는 Module 하나를 기준으로 해석한다.
+	WorkspaceModules []WorkspaceModule `json:"workspaceModules,omitempty"`
 	// Roots는 수확 시점의 보존 루트(main·init)다 — 루트는 입력 사실이라 문서에 남긴다.
 	Roots       []string `json:"roots,omitempty"`
 	Vertices    []Vertex `json:"vertices"`
@@ -213,6 +226,12 @@ type Document struct {
 	// 있으면 Candidate가 없는 간선은 확정 관계이고, 없는 옛 문서에서는 팬아웃 간선과
 	// 확정 간선을 구분할 수 없다 — 순회가 근거 등급을 싣지 않는 근거다.
 	DispatchEvidence bool `json:"dispatchEvidence,omitempty"`
+}
+
+// WorkspaceModule은 워크스페이스 주 모듈 하나의 경로와 go.mod 디렉터리(Dir, 절대 경로)다.
+type WorkspaceModule struct {
+	Path string `json:"path"`
+	Dir  string `json:"dir,omitempty"`
 }
 
 // Limitation은 분석이 보지 못한 것을 그 입력에서 실제로 세어 적는다.

@@ -190,12 +190,13 @@ independent: [web, cli]   # web과 cli는 어느 방향으로도 서로 도달 �
   간선 하나의 위반이 아니라 컴포넌트 수준의 사실입니다 — 위반은
   `rule: "limit"`, `name: "maxIn"|"maxOut"`, 실제 수치를 싣습니다.
 - `exclude`는 규칙이 아니라 수확 필터입니다 — 패턴에 맞는 패키지
-  (컴포넌트와 같은 글롭 의미론 — 주 모듈은 상대 경로, 외부는 전체 경로)는
-  정점이 되지 않고, 그쪽으로의 import는 `limitations`에 셉니다.
+  (컴포넌트와 같은 글롭 의미론 — 주 모듈 패키지는 그 패키지가 속한 모듈 기준 상대 경로,
+  외부는 전체 경로)는 정점이 되지 않고, 그쪽으로의 import는 `limitations`에 셉니다.
   생성 코드나 vendored 트리에 씁니다:
 - `fileRules`는 import가 일어나는 **파일**로 금지 범위를 좁힙니다 —
   dependency-cruiser의 `not-to-dev-dep` 계약입니다. `from`은 `/`가 없으면
-  파일명에, 있으면 모듈 상대 경로에 맞는 글롭이고, `!` 접두사는 반전입니다.
+  파일명에, 있으면 그 파일이 속한 모듈 기준 상대 경로에 맞는 글롭이고, `!` 접두사는
+  반전입니다.
   위반은 `rule: "fileScope"`, 규칙 `name`, 해당 지점을 싣습니다.
   지점이 없는 간선은 검사할 수 없어 `fileScopeUnchecked`로 셉니다.
 - 규칙이 참조하는 모든 이름은 정의된 컴포넌트여야 합니다 — `Load`가
@@ -230,6 +231,15 @@ deps:
 않은 컴포넌트는 `unmatchedComponents`로 보고됩니다 — 외부 패턴을 쓰고
 `--deps`를 빼먹었다는(또는 패턴이 stale하다는) 신호입니다. 컴포넌트에 매칭
 되지 않은 외부 패키지는 `unmappedExternal`로 따로 보고됩니다.
+
+**go.work 워크스페이스.** 수확에 둘 이상의 워크스페이스 모듈 패키지가 있으면(`use ./a`·`use ./b`를
+`--dir a`로, 또는 워크스페이스 루트에서 `--pattern ./a/... --pattern ./b/...`로 수확) 컴포넌트·`exclude`·
+`fileRules` 패턴은 패키지·파일마다 그것이 속한 모듈 기준 상대 경로입니다 — `util`은 `example.com/a/util`과
+`example.com/b/util`에 함께 맞고, `impact --dir a --files ../b/util/util.go`는 `example.com/b/util`로
+해석됩니다. 다른 워크스페이스 모듈의 패키지는 내부입니다 — `rules`는 그쪽 import를 검사하고, `mapping`·
+`metrics`는 그 패키지를 `unmappedExternal`이 아니라 매핑·`unmapped`·`orphans`로 세며, `init`은 그 패키지의
+컴포넌트를 만들고 두 모듈이 함께 쓰는 경로에는 컴포넌트 하나를 둡니다. 전체 import 경로로 맞는 것은 `--deps`
+의존뿐이므로 형제 모듈 패키지는 `example.com/b/util`이 아니라 모듈 상대 경로(`util`)로 적으세요.
 
 **Baseline.** 기존 레포에 규칙을 도입할 때: 오늘의 위반을 한 번 기록하고,
 이후에는 새 위반만 `--strict`에서 실패합니다. 같은 플래그가 `cycles`와
@@ -436,6 +446,13 @@ breaking으로 분류하는 재료입니다.
 `contains`·`implements`·모듈 간선처럼 단일 지점이 없는 관계는 생략합니다.
 `dead --algo rta`는 수확한 CHA 간선 대신 SSA 기반 RTA를 씁니다 —
 더 좁지만 소스가 필요하고 과소 근사이므로 그 사실이 `limitations`에 실립니다.
+
+`moduleDir`는 `module`의 `go.mod`가 있는 디렉터리이고, 주 모듈 밖의 패키지 정점(`--deps` 의존, 중첩 모듈)은
+`external: true`를 답니다. 둘 이상의 워크스페이스 모듈 패키지를 수확한 go.work 문서는 `workspaceModules`(모듈마다
+`path`·`dir`, 경로순)를 싣고, 문서 `module`이 아닌 워크스페이스 모듈의 패키지 정점에 `module`을 답니다 — rules·
+`mapping`·`metrics`·`init`·`impact --files`는 이 사실로 패턴과 파일을 패키지마다 그 모듈 기준으로 읽습니다.
+`workspaceModules`가 없는 문서(단일 모듈 수확, 이전 판이 저장한 워크스페이스 문서)는 `module` 하나를 기준으로
+읽으므로, 옛 워크스페이스 문서는 다시 수확하세요.
 
 ## isthmus 교환 — `schema` usr와 순회 문서
 

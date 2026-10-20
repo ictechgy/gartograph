@@ -28,6 +28,9 @@ func (d *Document) Sort() {
 	d.Edges = dedupeEdges(d.Edges)
 	sort.Strings(d.Limitations)
 	sort.Strings(d.Roots)
+	sort.Slice(d.WorkspaceModules, func(i, j int) bool {
+		return d.WorkspaceModules[i].Path < d.WorkspaceModules[j].Path
+	})
 }
 
 // positionLess는 사용 지점의 결정적 순서다 — 파일, 줄, 열 순.

@@ -87,6 +87,41 @@ func TestAffectedSubdirRoot(t *testing.T) {
 	}
 }
 
+// TestAffectedWorkspaceFiles는 go.work 워크스페이스 문서에서 파일→패키지 해석이 파일을 담는 워크스페이스
+// 모듈 기준인지 본다 — 형제 모듈 b의 파일은 b의 패키지로, 모듈 a의 디렉터리 안에 놓인 워크스페이스 모듈 c의
+// 파일은 c의 패키지로 간다. 상대 경로는 지금처럼 Root(--dir) 기준이다. 모듈 소속 사실이 없는 옛 문서는 지금처럼
+// moduleDir 밖의 파일을 unmapped로 둔다. 의존자는 형제 모듈 패키지를 import한 패키지까지 모인다.
+func TestAffectedWorkspaceFiles(t *testing.T) {
+	d := workspaceDoc()
+	d.WorkspaceModules = append(d.WorkspaceModules, graph.WorkspaceModule{Path: "example.com/c", Dir: "/w/a/c"})
+	d.Vertices = append(d.Vertices, graph.Vertex{ID: "example.com/c", Kind: graph.KindPackage, Module: "example.com/c"})
+	cases := []struct {
+		file, want string
+	}{
+		{"../b/util/util.go", "example.com/b/util"},
+		{"/w/b/util/util_test.go", "example.com/b/util"},
+		{"app/app.go", "example.com/a/app"},
+		{"c/c.go", "example.com/c"},
+	}
+	for _, c := range cases {
+		roots, unmapped := VerticesForFiles(d, []string{c.file})
+		if !reflect.DeepEqual(roots, []string{c.want}) || len(unmapped) != 0 {
+			t.Errorf("%s: want root %s, got roots=%v unmapped=%v", c.file, c.want, roots, unmapped)
+		}
+	}
+	res, err := AffectedByFiles(d, []string{"../b/util/util.go"}, nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Dependers) != 1 || res.Dependers[0].ID != "example.com/a/app" {
+		t.Fatalf("the sibling package's importer must be affected: %+v", res.Dependers)
+	}
+	if roots, unmapped := VerticesForFiles(oldWorkspaceDoc(), []string{"../b/util/util.go"}); len(roots) != 0 ||
+		len(unmapped) != 1 {
+		t.Fatalf("an old document must keep files outside moduleDir unmapped: %v %v", roots, unmapped)
+	}
+}
+
 // TestAffectedUnmapped는 매칭되지 않는 파일이 unmappedFiles로 보고되는지,
 // 없는 추가 루트가 ErrNotFound인지 확인한다.
 func TestAffectedUnmapped(t *testing.T) {

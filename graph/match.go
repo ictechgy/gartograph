@@ -31,6 +31,23 @@ func MatchPath(pattern, path string) bool {
 	}
 }
 
+// ModuleRelative는 패키지 경로를 modulePath 기준 상대 경로로 바꾼다 — 컴포넌트·exclude 패턴이 맞추는
+// 경로다. 모듈 루트 패키지는 "."이다. modulePath가 비었거나(외부·모듈 없는 패키지) 경로가 그 모듈 밖이면
+// 전체 import 경로를 그대로 돌려준다. 접두사는 세그먼트 경계에서만 벗긴다(example.com/mx는 example.com/m
+// 밖이다). 수확(exclude)과 분석(컴포넌트·init)이 이 함수 하나를 쓴다 — 둘이 따로 벗기던 때는 go.work
+// 워크스페이스에서 exclude는 패키지마다 자기 모듈을, 컴포넌트는 문서의 첫 모듈만 벗겨 같은 패턴이 다른
+// 패키지를 가리켰다.
+func ModuleRelative(pkgPath, modulePath string) string {
+	switch {
+	case modulePath == "":
+		return pkgPath
+	case pkgPath == modulePath:
+		return "."
+	default:
+		return strings.TrimPrefix(pkgPath, modulePath+"/")
+	}
+}
+
 // patternSyntax는 오류에 덧붙이는 지원 문법 안내다 — 무엇이 거부됐는지와 함께 무엇을
 // 쓰면 되는지가 보여야 설정 작성자가 바로 고칠 수 있다.
 const patternSyntax = `supported patterns are an exact path, "dir/**" (dir and everything below it), ` +

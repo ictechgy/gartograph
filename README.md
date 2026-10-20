@@ -242,16 +242,16 @@ independent: [web, cli]   # web and cli must not reach each other either way
   component-level fact, not an edge violation — violations carry
   `rule: "limit"`, `name: "maxIn"|"maxOut"`, and the observed count.
 - `exclude` is a harvest-time filter, not a rule: packages matching its
-  patterns (same glob semantics as components — module-relative for the
-  main module, full import path otherwise) never become vertices, and
+  patterns (same glob semantics as components — relative to the package's
+  own main module, full import path otherwise) never become vertices, and
   imports to them are counted in `limitations`. Use it for generated or
   vendored trees:
 - `fileRules` scopes a ban to the *file* where the import happens —
   dependency-cruiser's `not-to-dev-dep` contract. `from` is a glob matched
-  against the file basename, or the module-relative path when it contains
-  `/`; a leading `!` inverts it. Violations carry `rule: "fileScope"`, the
-  rule `name`, and the offending position. Edges without positions can't
-  be checked and are counted in `fileScopeUnchecked`.
+  against the file basename, or the path relative to the file's own module
+  root when it contains `/`; a leading `!` inverts it. Violations carry
+  `rule: "fileScope"`, the rule `name`, and the offending position. Edges
+  without positions can't be checked and are counted in `fileScopeUnchecked`.
 - `deny` entries accept a `reason` — it lands on the violation so the
   reader knows what to do instead.
 - Every name referenced by a rule must be a defined component — `Load`
@@ -288,6 +288,19 @@ zero packages is reported in `unmatchedComponents` — the signal that an
 external pattern ran without `--deps` (or the pattern is stale). External
 packages matching no component are reported separately as
 `unmappedExternal`.
+
+**go.work workspaces.** When a harvest holds packages from two or more
+workspace modules (`use ./a` and `use ./b`, run with `--dir a`, or from the
+workspace root with `--pattern ./a/... --pattern ./b/...`), component,
+`exclude`, and `fileRules` patterns are relative to the module each package or
+file belongs to: `util` matches `example.com/b/util` as well as
+`example.com/a/util`, and `impact --dir a --files ../b/util/util.go` resolves to
+`example.com/b/util`. Packages of the other workspace modules are internal —
+`rules` checks imports into them, `mapping` and `metrics` count them as
+mapped, `unmapped`, or `orphans` rather than `unmappedExternal`, and `init`
+scaffolds them, giving one component to a path that two modules share. Only
+`--deps` dependencies match by full import path, so name a sibling module's
+package by its module-relative path (`util`), not `example.com/b/util`.
 
 **Baseline.** Adopting rules on an existing repo: record today's violations
 once, then only new violations fail `--strict`. The same flags work on
@@ -483,6 +496,17 @@ reports an exported constraint whose type set changed (narrowing breaks
 instantiations, widening can break generic code relying on the allowed
 operations); an empty set renders as `any`. Equivalent rewrites of a
 multi-element intersection may still be reported.
+
+`moduleDir` is the directory of `module`'s `go.mod`, and package vertices
+outside the main modules (`--deps` dependencies, nested modules) carry
+`external: true`. A go.work harvest with packages from two or more workspace
+modules also carries `workspaceModules` (each module's `path` and `dir`, sorted
+by path) and `module` on package vertices of the workspace modules other than
+the document's `module`; rules, `mapping`, `metrics`, `init`, and
+`impact --files` read patterns and files against each package's own module
+with them. Documents without `workspaceModules` — single-module harvests and
+workspace documents saved by earlier versions — are read against `module`
+alone, so re-harvest an old workspace document.
 
 A canonical spelling — one type, or one method signature — is capped at
 64 KiB (65536 bytes). Real code stays far below it (the longest spelling in

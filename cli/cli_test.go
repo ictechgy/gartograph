@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ictechgy/gartograph/analysis"
+	"github.com/ictechgy/gartograph/config"
 	"github.com/ictechgy/gartograph/export"
 	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
@@ -3266,6 +3267,229 @@ func TestConfigFlagSetsHarvestScope(t *testing.T) {
 			}
 		})
 	}
+}
+
+// workspaceFixture는 go.work 워크스페이스(모듈 a·b)를 만들고 그 루트를 돌려준다. a/app은 b의 루트 패키지와
+// b/util·b/gen을, b/util은 a/lib를 import한다. extra는 더 쓸 파일(루트 기준 경로 → 내용)이고 같은 경로면 기본
+// 파일을 덮는다. 루트는 심링크를 푼 경로다 — go가 알리는 모듈 디렉터리와 파일 위치는 심링크를 푼 경로라서,
+// --dir 기준 상대 경로(--files)가 같은 파일을 가리키게 한다.
+func workspaceFixture(t *testing.T, extra map[string]string) string {
+	t.Helper()
+	root := resolvedPath(t, t.TempDir())
+	files := map[string]string{
+		"go.work":  "go 1.27\n\nuse ./a\nuse ./b\n",
+		"a/go.mod": "module example.com/a\n\ngo 1.27\n",
+		"b/go.mod": "module example.com/b\n\ngo 1.27\n",
+		"a/app/app.go": "package app\n\nimport (\n\t\"example.com/b\"\n\t\"example.com/b/gen\"\n\t\"example.com/b/util\"\n)\n\n" +
+			"func Run() int { return b.N + util.U() + gen.G() }\n",
+		"a/lib/lib.go":   "package lib\n\nfunc L() int { return 1 }\n",
+		"b/b.go":         "package b\n\nconst N = 0\n",
+		"b/util/util.go": "package util\n\nimport \"example.com/a/lib\"\n\nfunc U() int { return lib.L() }\n",
+		"b/gen/gen.go":   "package gen\n\nfunc G() int { return 2 }\n",
+	}
+	for name, content := range extra {
+		files[name] = content
+	}
+	for name, content := range files {
+		writeTestFile(t, filepath.Join(root, name), content, 0o644)
+	}
+	return root
+}
+
+// workspaceConfig는 workspaceFixture의 규칙이다. gen은 수확에서 빼고, app은 아무것도 쓸 수 없으며(app→b와
+// app→util이 allow 위반), util 패키지 파일이 lib를 import하면 fileScope 위반이다. 패턴은 모두 패키지·파일이
+// 속한 모듈 기준 상대 경로다 — 모듈 루트 패키지(".")·util·gen은 모듈 b, app·lib는 모듈 a에 있다.
+const workspaceConfig = `exclude: [gen]
+components:
+  app: [app]
+  util: [util]
+  lib: [lib]
+  broot: ["."]
+deps:
+  app: []
+  util: [lib]
+  lib: []
+  broot: []
+fileRules:
+  - name: util-files-no-lib
+    from: "util/*.go"
+    to: lib
+`
+
+// decodeCLIReport는 종료 코드 0으로 끝난 CLI JSON 보고를 v로 읽는다.
+func decodeCLIReport(t *testing.T, v any, args ...string) {
+	t.Helper()
+	out := cliReport(t, args...)
+	if err := json.Unmarshal([]byte(out), v); err != nil {
+		t.Fatalf("%v: not JSON: %v\n%s", args, err, out)
+	}
+}
+
+// TestWorkspacePatternsUseEachPackagesModule은 go.work 워크스페이스에서 components·exclude·fileRules 패턴과
+// impact --files가 패키지(파일)마다 그것이 속한 모듈 기준 상대 경로로 해석되는지 본다(DECISIONS gartograph
+// "go.work의 exclude·components"). 예전에는 exclude만 패키지마다 자기 모듈을 벗기고 컴포넌트·fileRules·
+// --files는 문서의 첫 모듈만 기준으로 했다. 그래서 util 컴포넌트가 example.com/b/util에 맞지 않았고(형제 모듈
+// 패키지는 외부로 분류됐다) rules --strict가 app→util 위반을 두고 0으로 끝났다. 첫 모듈이 a인 수확(--dir a)과
+// b인 수확(워크스페이스 루트에서 ./b/...를 먼저 준 --pattern — 의존이 없는 b 루트 패키지가 먼저 로드된다)이
+// 같은 답을 내야 한다. MCP도 같은 보고를 낸다.
+func TestWorkspacePatternsUseEachPackagesModule(t *testing.T) {
+	root := workspaceFixture(t, map[string]string{
+		"a/.gartograph.yml": workspaceConfig,
+		".gartograph.yml":   workspaceConfig,
+	})
+	cases := []struct {
+		name          string
+		flags         []string
+		first         string // 문서 module(수확이 처음 만난 주 모듈)
+		siblingFile   string // 첫 모듈이 아닌 모듈의 파일(--dir 기준)
+		siblingPkg    string // 그 파일의 패키지
+		siblingImport string // 그 패키지를 import하는 다른 모듈의 패키지
+	}{
+		{"first module a", []string{"--dir", filepath.Join(root, "a")}, "example.com/a",
+			"../b/util/util.go", "example.com/b/util", "example.com/a/app"},
+		{"first module b", []string{"--dir", root, "--pattern", "./b/...", "--pattern", "./a/..."}, "example.com/b",
+			"a/lib/lib.go", "example.com/a/lib", "example.com/b/util"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var doc graph.Document
+			decodeCLIReport(t, &doc, append([]string{"graph", "--level", "package"}, c.flags...)...)
+			if doc.Module != c.first {
+				t.Fatalf("premise: the harvest must start at %s, got %q", c.first, doc.Module)
+			}
+			var mapping analysis.Mapping
+			decodeCLIReport(t, &mapping, append([]string{"mapping", "--format", "json"}, c.flags...)...)
+			want := map[string][]string{"app": {"example.com/a/app"}, "lib": {"example.com/a/lib"},
+				"util": {"example.com/b/util"}, "broot": {"example.com/b"}}
+			if !reflect.DeepEqual(mapping.Components, want) || len(mapping.Unmapped) != 0 ||
+				len(mapping.UnmappedExternal) != 0 || len(mapping.UnmatchedComponents) != 0 {
+				t.Fatalf("components must match each package's module-relative path: %+v", mapping)
+			}
+			code, out, errb := run(t, append([]string{"rules", "--strict", "--format", "json"}, c.flags...)...)
+			var rep struct {
+				Violations  []analysis.Violation `json:"violations"`
+				Limitations []string             `json:"limitations"`
+			}
+			if err := json.Unmarshal([]byte(out), &rep); err != nil || code != 1 {
+				t.Fatalf("rules --strict must fail on the sibling-module violations: %d %v\n%s%s", code, err, out, errb)
+			}
+			var got []string
+			for _, v := range rep.Violations {
+				got = append(got, v.From+" -> "+v.To+" "+v.Rule+" "+v.Name)
+			}
+			wantViolations := []string{
+				"example.com/a/app -> example.com/b allow ",
+				"example.com/a/app -> example.com/b/util allow ",
+				"example.com/b/util -> example.com/a/lib fileScope util-files-no-lib",
+			}
+			if !reflect.DeepEqual(got, wantViolations) ||
+				!strings.HasSuffix(filepath.ToSlash(rep.Violations[2].Position.File), "b/util/util.go") {
+				t.Fatalf("want %q, got %q (%+v)", wantViolations, got, rep.Violations)
+			}
+			// exclude [gen]도 같은 기준이다 — 모듈 b의 gen이 수확에서 빠진다.
+			if !hasLimitation(rep.Limitations, "1 packages matched exclude patterns", "") ||
+				hasLimitation(rep.Limitations, "", "external packages") {
+				t.Fatalf("exclude must drop b/gen and no sibling package may count as external: %q", rep.Limitations)
+			}
+			var affected analysis.Affected
+			decodeCLIReport(t, &affected, append([]string{"impact", "--files", c.siblingFile, "--format", "json"},
+				c.flags...)...)
+			var dependers []string
+			for _, d := range affected.Dependers {
+				dependers = append(dependers, d.ID)
+			}
+			if !slices.Contains(affected.Roots, c.siblingPkg) || len(affected.UnmappedFiles) != 0 ||
+				!slices.Contains(dependers, c.siblingImport) {
+				t.Fatalf("impact --files must resolve a sibling-module file to its package: %+v", affected)
+			}
+			for _, tool := range []string{"rules", "mapping"} {
+				answers := runMcpTools(t, append([]string{"--level", "package"}, c.flags...),
+					mcpCall(1, "gartograph_"+tool, `{}`))
+				requireCLIReport(t, tool, answers[0],
+					cliReport(t, append([]string{tool, "--format", "json"}, c.flags...)...))
+			}
+		})
+	}
+}
+
+// TestWorkspaceSavedDocuments는 저장 문서(--graph)의 워크스페이스 해석을 본다. 새 수확을 저장한 문서는 모듈
+// 소속 사실이 따라가 수확과 같은 답을 낸다. 그 사실(workspaceModules·정점 module)이 없는 옛 문서는 예전처럼
+// 문서 module 하나로 해석한다 — 형제 모듈 패키지는 외부로, util 컴포넌트는 매칭 없음으로 남는다.
+func TestWorkspaceSavedDocuments(t *testing.T) {
+	root := workspaceFixture(t, map[string]string{"a/.gartograph.yml": workspaceConfig})
+	dir := filepath.Join(root, "a")
+	saved := filepath.Join(t.TempDir(), "graph.json")
+	writeTestFile(t, saved, cliReport(t, "graph", "--dir", dir, "--level", "package"), 0o644)
+	if code, out, errb := run(t, "rules", "--dir", dir, "--graph", saved, "--strict"); code != 1 {
+		t.Fatalf("a saved workspace document must keep the module facts: %d %s%s", code, out, errb)
+	}
+	var doc map[string]any
+	data, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc, "workspaceModules")
+	for _, v := range doc["vertices"].([]any) {
+		delete(v.(map[string]any), "module")
+	}
+	old, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(t.TempDir(), "old.json")
+	writeTestFile(t, oldPath, string(old), 0o644)
+	var mapping analysis.Mapping
+	decodeCLIReport(t, &mapping, "mapping", "--dir", dir, "--graph", oldPath, "--format", "json")
+	if len(mapping.Components["util"]) != 0 ||
+		!reflect.DeepEqual(mapping.UnmatchedComponents, []string{"broot", "util"}) ||
+		!reflect.DeepEqual(mapping.UnmappedExternal, []string{"example.com/b", "example.com/b/util"}) {
+		t.Fatalf("a document without module facts must keep the module-prefix fallback: %+v", mapping)
+	}
+}
+
+// TestWorkspaceInitScaffoldsSiblingModules는 go.work 워크스페이스의 init이 형제 모듈 패키지에도 컴포넌트를 만들고,
+// 두 모듈의 같은 상대 경로(a/util·b/util)는 같은 패턴에 맞으므로 한 컴포넌트로 묶어 첫 rules --strict가
+// 통과하는지 본다. 예전에는 형제 모듈 패키지를 외부로 보고 컴포넌트를 만들지 않았다.
+func TestWorkspaceInitScaffoldsSiblingModules(t *testing.T) {
+	root := workspaceFixture(t, map[string]string{"a/util/util.go": "package util\n\nfunc A() int { return 3 }\n"})
+	dir := filepath.Join(root, "a")
+	if code, out, errb := run(t, "init", "--dir", dir); code != 0 || !strings.Contains(out, "(5 components)") {
+		t.Fatalf("init must scaffold app, lib, util, gen, and b's root package: %d %s%s", code, out, errb)
+	}
+	cfg, err := config.Load(filepath.Join(dir, ".gartograph.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantComponents := map[string][]string{"app": {"app/**"}, "gen": {"gen/**"}, "lib": {"lib/**"},
+		"root": {"."}, "util": {"util/**"}}
+	wantDeps := map[string][]string{"app": {"gen", "root", "util"}, "gen": nil, "lib": nil, "root": nil,
+		"util": {"lib"}}
+	if !reflect.DeepEqual(cfg.Components, wantComponents) || !reflect.DeepEqual(depsOrNil(cfg.Deps), wantDeps) {
+		t.Fatalf("scaffold: components %v deps %v", cfg.Components, cfg.Deps)
+	}
+	if code, out, errb := run(t, "rules", "--dir", dir, "--strict"); code != 0 {
+		t.Fatalf("a scaffolded workspace config must pass its first check: %d %s%s", code, out, errb)
+	}
+	var mapping analysis.Mapping
+	decodeCLIReport(t, &mapping, "mapping", "--dir", dir, "--format", "json")
+	if !reflect.DeepEqual(mapping.Components["util"], []string{"example.com/a/util", "example.com/b/util"}) {
+		t.Fatalf("one component must hold both modules' util: %+v", mapping)
+	}
+}
+
+// depsOrNil은 deps의 빈 목록을 nil로 맞춘다 — 규칙 파일을 읽은 빈 목록과 비교 기대값의 nil을 같게 본다.
+func depsOrNil(deps map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	for k, v := range deps {
+		if len(v) == 0 {
+			v = nil
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // TestConfigMustBeRegularFile은 분석 대상의 .gartograph.yml이 정규 파일이 아니면 명령이

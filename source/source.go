@@ -133,23 +133,26 @@ func dropExcluded(pkgs []*packages.Package, patterns []string) ([]*packages.Pack
 }
 
 // excludeMatch는 패키지가 exclude 패턴 중 하나에 맞는지 본다.
-// 주 모듈 패키지는 모듈 상대 경로로 맞춘다 — 컴포넌트 패턴과 같은 기준이어야
-// 설정이 이식 가능하다. 외부·모듈 없는 패키지는 전체 경로로 맞춘다.
+// 주 모듈 패키지(go.work 워크스페이스면 각 워크스페이스 모듈의 패키지)는 그 패키지가 속한 모듈 기준 상대
+// 경로로 맞춘다 — 컴포넌트 패턴과 같은 함수(graph.ModuleRelative)로 같은 기준을 써야 설정이 이식 가능하다.
+// 외부·모듈 없는 패키지는 전체 경로로 맞춘다.
 func excludeMatch(p *packages.Package, patterns []string) bool {
-	rel := p.PkgPath
-	if p.Module != nil && p.Module.Main {
-		if p.PkgPath == p.Module.Path {
-			rel = "."
-		} else {
-			rel = strings.TrimPrefix(p.PkgPath, p.Module.Path+"/")
-		}
-	}
+	rel := graph.ModuleRelative(p.PkgPath, mainModulePath(p))
 	for _, pat := range patterns {
 		if graph.MatchPath(pat, rel) {
 			return true
 		}
 	}
 	return false
+}
+
+// mainModulePath는 패키지가 주 모듈(go.work 워크스페이스면 워크스페이스 모듈 중 하나) 소속이면 그 모듈
+// 경로를, 외부·모듈 없는 패키지면 ""를 돌려준다 — graph.ModuleRelative가 상대 경로의 기준으로 받는 값이다.
+func mainModulePath(p *packages.Package) string {
+	if p == nil || p.Module == nil || !p.Module.Main {
+		return ""
+	}
+	return p.Module.Path
 }
 
 // LoadPackageGraph는 패키지 레벨 의존 그래프를 수확한다.
@@ -261,6 +264,7 @@ func buildDocument(root string, reachable []*packages.Package,
 			}
 		}
 	}
+	recordWorkspaceModules(doc, kept)
 
 	var merged int
 	for _, p := range reachable {
@@ -333,6 +337,35 @@ func buildDocument(root string, reachable []*packages.Package,
 	}
 	doc.Sort()
 	return doc, kept
+}
+
+// recordWorkspaceModules는 go.work 워크스페이스 수확에서 패키지 정점의 모듈 소속을 문서에 싣는다.
+// 그래프에 패키지가 있는 주 모듈이 둘 이상일 때만 싣는다 — 단일 모듈 문서는 Module 하나로 모든 패키지를
+// 해석할 수 있어 바이트가 그대로여야 한다. 문서에는 모듈마다 go.mod 디렉터리(WorkspaceModules)를, 문서
+// Module이 아닌 모듈의 패키지 정점에는 그 모듈 경로(Module)를 싣는다. 분석이 컴포넌트·fileRules 패턴과
+// 파일→패키지 해석을 패키지마다 그 모듈 기준으로 하는 재료다 — exclude는 수확 때 이미 그렇게 맞췄다.
+// doc.Vertices는 아직 kept의 패키지 정점뿐이다(심볼 수확 전).
+func recordWorkspaceModules(doc *graph.Document, kept map[string]*packages.Package) {
+	dirs := map[string]string{}
+	for _, p := range kept {
+		if path := mainModulePath(p); path != "" {
+			dirs[path] = p.Module.Dir
+		}
+	}
+	if len(dirs) < 2 {
+		return
+	}
+	for path, dir := range dirs {
+		doc.WorkspaceModules = append(doc.WorkspaceModules, graph.WorkspaceModule{Path: path, Dir: dir})
+	}
+	sort.Slice(doc.WorkspaceModules, func(i, j int) bool {
+		return doc.WorkspaceModules[i].Path < doc.WorkspaceModules[j].Path
+	})
+	for i := range doc.Vertices {
+		if path := mainModulePath(kept[doc.Vertices[i].ID]); path != "" && path != doc.Module {
+			doc.Vertices[i].Module = path
+		}
+	}
 }
 
 // internalPackages는 로드된 루트 중 모듈 내부이고 그래프에 남은 것만 골라낸다.

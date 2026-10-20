@@ -16,6 +16,7 @@ func TestSort(t *testing.T) {
 			{From: "a", To: "b", Kind: EdgeImport},
 			{From: "a", To: "b", Kind: EdgeImport},
 		},
+		WorkspaceModules: []WorkspaceModule{{Path: "example.com/b", Dir: "/w/b"}, {Path: "example.com/a", Dir: "/w/a"}},
 	}
 	doc.Sort()
 	if doc.Vertices[0].ID != "a" {
@@ -23,6 +24,10 @@ func TestSort(t *testing.T) {
 	}
 	if len(doc.Edges) != 2 {
 		t.Fatalf("expected 2 deduped edges, got %d", len(doc.Edges))
+	}
+	// 워크스페이스 모듈 목록도 경로순이다 — 손으로 만든 문서도 같은 바이트로 정규화된다.
+	if doc.WorkspaceModules[0].Path != "example.com/a" {
+		t.Fatalf("workspace modules not sorted: %+v", doc.WorkspaceModules)
 	}
 }
 
@@ -265,6 +270,25 @@ func TestValidatePattern(t *testing.T) {
 		if msg := err.Error(); !strings.Contains(msg, c.cause) || !strings.Contains(msg, "supported patterns") {
 			t.Errorf("ValidatePattern(%q) = %q, want the cause (%s) and the supported syntax",
 				c.pattern, msg, c.cause)
+		}
+	}
+}
+
+// TestModuleRelative는 모듈 경로 벗기기의 경계 조건을 확인한다(analysis의 옛 relPath와 같은 답).
+// 모듈 루트 패키지는 "."이 되고, 모듈이 없으면 경로가 그대로다.
+func TestModuleRelative(t *testing.T) {
+	cases := []struct{ pkg, module, want string }{
+		{"example.com/m", "example.com/m", "."},
+		{"x/y", "", "x/y"},
+		{"example.com/m/a/b", "example.com/m", "a/b"},
+		// 모듈 접두사가 우연히 겹치는 경로(example.com/mx)는 벗기면 안 된다.
+		{"example.com/mx/p", "example.com/m", "example.com/mx/p"},
+		// 모듈 밖 경로는 전체 경로 그대로다.
+		{"github.com/aws/s3", "example.com/m", "github.com/aws/s3"},
+	}
+	for _, c := range cases {
+		if got := ModuleRelative(c.pkg, c.module); got != c.want {
+			t.Errorf("ModuleRelative(%q, %q) = %q, want %q", c.pkg, c.module, got, c.want)
 		}
 	}
 }

@@ -96,3 +96,19 @@
   붙인다. GitHub code scanning은 상대 URI를 저장소 루트 기준으로 읽으므로, `go.mod`가 저장소의 하위 디렉터리에
   있으면 업로드 전에 그 디렉터리를 URI 앞에 붙인다(README의 `jq` 예). 물리 위치가 하나도 없는 로그는 바이트가
   같다.
+- **Breaking**: `rules`·`mapping`·`metrics`·`init`·`impact --files`(go.work 워크스페이스): 컴포넌트·`fileRules`
+  패턴과 파일→패키지 해석이 `exclude`처럼 패키지(파일)마다 그것이 속한 워크스페이스 모듈 기준 상대 경로를 쓴다.
+  예전에는 `exclude`만 패키지마다 자기 모듈을 벗기고 나머지는 문서의 첫 모듈만 기준으로 했다. 그래서 `use ./a`·
+  `use ./b`를 `--dir a`로 수확하면 `util` 컴포넌트가 `example.com/b/util`에 맞지 않았고, 형제 모듈 패키지가
+  외부(`unmappedExternal`)로 분류돼 `rules --strict`가 그쪽으로의 금지 의존을 두고 0으로 끝났으며,
+  `impact --files ../b/util/util.go`는 그 파일을 `unmappedFiles`로 냈다. 이제 형제 모듈 패키지는 내부라서
+  `rules`가 그 의존을 검사하고(새 위반이 나올 수 있다), `mapping`·`metrics`는 그 패키지를 매핑·`unmapped`·
+  `orphans`로 세고, `init`은 그 패키지의 컴포넌트를 만든다. 두 모듈의 같은 상대 경로(`a/util`·`b/util`)는 같은
+  패턴에 맞고 `init`도 한 컴포넌트로 묶는다. 형제 모듈 패키지를 전체 import 경로(`example.com/b/util`)로 적은
+  컴포넌트 패턴은 더는 맞지 않으므로 모듈 상대 경로(`util`)로 바꾼다. 전체 import 경로로 맞는 것은 `--deps` 의존
+  (경로가 워크스페이스 모듈 밑에 있는 중첩 모듈 포함)뿐이다. 주 모듈이 하나인 수확의 출력은 같다.
+- `graph`(go.work 워크스페이스): 그래프에 패키지가 있는 워크스페이스 모듈이 둘 이상이면 문서에
+  `workspaceModules`(모듈마다 `path`·`dir`, 경로순)를, 문서 `module`이 아닌 모듈의 패키지 정점에 `module`을
+  싣는다. 형식 버전은 2 그대로다(선택 필드만 더했다). 이 목록이 없는 문서(단일 모듈, 이 판 이전에 저장한
+  워크스페이스 문서)는 예전처럼 문서 `module` 하나로 해석하므로, `--graph`로 읽는 옛 워크스페이스 문서는 다시
+  수확해야 새 해석을 쓴다.

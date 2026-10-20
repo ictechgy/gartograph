@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -69,24 +70,6 @@ func TestCheckRulesAllowed(t *testing.T) {
 	}
 }
 
-// TestRelPath는 모듈 경로 벗기기의 경계 조건을 확인한다.
-// 모듈 루트 패키지는 "."이 되고, 모듈이 없는 문서는 경로가 그대로다.
-func TestRelPath(t *testing.T) {
-	if got := relPath("example.com/m", "example.com/m"); got != "." {
-		t.Fatalf("module root must map to ., got %s", got)
-	}
-	if got := relPath("x/y", ""); got != "x/y" {
-		t.Fatalf("empty module must leave path alone, got %s", got)
-	}
-	if got := relPath("example.com/m/a/b", "example.com/m"); got != "a/b" {
-		t.Fatalf("nested package: got %s", got)
-	}
-	// 모듈 접두사가 우연이 겹치는 경로(example.com/mx)는 벗기면 안 된다.
-	if got := relPath("example.com/mx/p", "example.com/m"); got != "example.com/mx/p" {
-		t.Fatalf("prefix collision stripped wrongly: %s", got)
-	}
-}
-
 // TestCheckRulesDeny는 deny가 허용 목록보다 우선하는지 확인한다.
 // deps에 있어도 deny가 이겨야 "보통 허용, 이 조합은 금지"가 성립한다.
 func TestCheckRulesDeny(t *testing.T) {
@@ -143,6 +126,142 @@ func TestCheckRulesSignature(t *testing.T) {
 	violations = CheckRules(d, cfg).Violations
 	if len(violations) != 0 {
 		t.Fatalf("allowed signature dep reported: %+v", violations)
+	}
+}
+
+// workspaceDoc은 go.work 워크스페이스(모듈 a·b)를 첫 모듈 a로 수확한 모양의 문서다. 모듈 b의 패키지 정점은
+// module 사실을 싣는다. a/util과 b/util은 모듈 상대 경로가 같고, github.com/aws/s3는 --deps로 들어온 외부
+// 패키지, b/tool은 아무도 import하지 않는 형제 모듈 패키지다.
+func workspaceDoc() *graph.Document {
+	return &graph.Document{
+		Module: "example.com/a", ModuleDir: "/w/a", Root: "/w/a",
+		WorkspaceModules: []graph.WorkspaceModule{
+			{Path: "example.com/a", Dir: "/w/a"}, {Path: "example.com/b", Dir: "/w/b"}},
+		Vertices: []graph.Vertex{
+			{ID: "example.com/a/app", Kind: graph.KindPackage},
+			{ID: "example.com/a/lib", Kind: graph.KindPackage},
+			{ID: "example.com/a/util", Kind: graph.KindPackage},
+			{ID: "example.com/b/tool", Kind: graph.KindPackage, Module: "example.com/b"},
+			{ID: "example.com/b/util", Kind: graph.KindPackage, Module: "example.com/b"},
+			{ID: "github.com/aws/s3", Kind: graph.KindPackage, External: true},
+		},
+		Edges: []graph.Edge{
+			{From: "example.com/a/app", To: "example.com/a/util", Kind: graph.EdgeImport},
+			{From: "example.com/a/app", To: "example.com/b/util", Kind: graph.EdgeImport,
+				Positions: []graph.Position{{File: "/w/a/app/app.go", Line: 3}}},
+			{From: "example.com/a/app", To: "github.com/aws/s3", Kind: graph.EdgeImport},
+			{From: "example.com/b/util", To: "example.com/a/lib", Kind: graph.EdgeImport,
+				Positions: []graph.Position{{File: "/w/b/util/util.go", Line: 3}}},
+		},
+	}
+}
+
+// oldWorkspaceDoc은 workspaceDoc에서 모듈 소속 사실(workspaceModules·정점 module)을 뺀 문서다 — 그 사실을
+// 수확하기 전의 저장 문서 모양이다.
+func oldWorkspaceDoc() *graph.Document {
+	d := workspaceDoc()
+	d.WorkspaceModules = nil
+	for i := range d.Vertices {
+		d.Vertices[i].Module = ""
+	}
+	return d
+}
+
+// workspaceCfg는 컴포넌트 app·util·lib·aws와 "util 패키지 파일은 lib를 import하지 않는다"는 fileRules다.
+// app은 aws와 util을 쓸 수 있고 util은 lib를 쓸 수 있다.
+func workspaceCfg() *config.File {
+	return &config.File{
+		Components: map[string][]string{
+			"app": {"app"}, "util": {"util"}, "lib": {"lib"}, "aws": {"github.com/aws/**"},
+		},
+		Deps: map[string][]string{"app": {"aws"}, "util": {"lib"}},
+		FileRules: []config.FileRule{
+			{Name: "util-files-no-lib", From: "util/*.go", To: "lib"},
+		},
+	}
+}
+
+// TestWorkspacePackagesUseOwnModule은 워크스페이스 문서에서 컴포넌트 패턴이 패키지마다 그 패키지가 속한 모듈
+// 기준 상대 경로로 맞는지 본다(DECISIONS gartograph "go.work의 exclude·components"). b/util은 util 컴포넌트에
+// 들고 a/util과 같은 패턴을 공유한다. 형제 모듈 패키지는 외부가 아니라서 그쪽 의존을 검사하고(app→b/util은
+// deps에 util이 없어 위반), 미매핑 b/tool은 내부 unmapped다. --deps 외부 패키지는 지금처럼 전체 import 경로로
+// 맞는다. fileRules의 파일 경로도 파일이 속한 모듈(b) 기준이라 util/util.go가 "util/*.go"에 맞는다.
+func TestWorkspacePackagesUseOwnModule(t *testing.T) {
+	rep := CheckRules(workspaceDoc(), workspaceCfg())
+	var got []string
+	for _, v := range rep.Violations {
+		got = append(got, v.From+" -> "+v.To+" "+v.Rule)
+	}
+	want := []string{
+		"example.com/a/app -> example.com/a/util allow",
+		"example.com/a/app -> example.com/b/util allow",
+		"example.com/b/util -> example.com/a/lib fileScope",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+	m := MapComponents(workspaceDoc(), workspaceCfg())
+	if !reflect.DeepEqual(m.Components["util"], []string{"example.com/a/util", "example.com/b/util"}) ||
+		!reflect.DeepEqual(m.Components["aws"], []string{"github.com/aws/s3"}) ||
+		!reflect.DeepEqual(m.Unmapped, []string{"example.com/b/tool"}) ||
+		len(m.UnmappedExternal) != 0 || len(m.UnmatchedComponents) != 0 {
+		t.Fatalf("workspace mapping: %+v", m)
+	}
+	// --deps로 들어온 중첩 모듈 패키지(경로가 모듈 a 밑이지만 소속이 다르다)도 외부라 전체 import 경로로
+	// 맞는다 — exclude와 같은 기준이다. 옛 문서는 지금처럼 문서 module 접두사를 벗겨 맞춘다.
+	nested := func(d *graph.Document) *graph.Document {
+		d.Vertices = append(d.Vertices, graph.Vertex{ID: "example.com/a/plugin", Kind: graph.KindPackage, External: true})
+		return d
+	}
+	cfg := &config.File{Components: map[string][]string{
+		"plugin": {"plugin"}, "vendored": {"example.com/a/plugin"},
+	}}
+	if got := MapComponents(nested(workspaceDoc()), cfg).Components; !reflect.DeepEqual(got["vendored"],
+		[]string{"example.com/a/plugin"}) || len(got["plugin"]) != 0 {
+		t.Fatalf("an external package must match by its full import path in a workspace document: %v", got)
+	}
+	if got := MapComponents(nested(oldWorkspaceDoc()), cfg).Components; !reflect.DeepEqual(got["plugin"],
+		[]string{"example.com/a/plugin"}) {
+		t.Fatalf("an old document must keep stripping the document module: %v", got)
+	}
+}
+
+// TestWorkspacePatternsFallBackWithoutModuleFacts는 모듈 소속 사실이 없는 문서(단일 모듈과 옛 저장 문서)가
+// 예전 해석을 그대로 쓰는지 본다 — 문서 module 접두사가 없는 패키지는 외부이고, 패턴은 문서 module 하나를
+// 기준으로 맞추며, 파일 경로는 moduleDir 기준이다.
+func TestWorkspacePatternsFallBackWithoutModuleFacts(t *testing.T) {
+	rep := CheckRules(oldWorkspaceDoc(), workspaceCfg())
+	if len(rep.Violations) != 1 || rep.Violations[0].To != "example.com/a/util" {
+		t.Fatalf("an old document must check only module-prefixed packages: %+v", rep.Violations)
+	}
+	if !reflect.DeepEqual(rep.UnmappedExternal, []string{"example.com/b/tool", "example.com/b/util"}) ||
+		!reflect.DeepEqual(rep.UnmatchedComponents, []string(nil)) {
+		t.Fatalf("an old document must keep the module-prefix fallback: %+v", rep)
+	}
+	if got := relFile(oldWorkspaceDoc(), "/w/b/util/util.go"); got != "../b/util/util.go" {
+		t.Fatalf("an old document must resolve files against moduleDir: %q", got)
+	}
+}
+
+// TestRelFileUsesContainingModule은 워크스페이스 문서의 파일 경로가 파일을 담는 가장 깊은 워크스페이스 모듈
+// 기준인지 본다 — 다른 모듈 디렉터리 안에 놓인 워크스페이스 모듈(c: /w/a/c, 워크스페이스 루트 모듈 /w 안의 a
+// 안)의 파일은 c 기준이다. 목록 순서(경로순)와 무관하게 가장 깊은 모듈을 고른다. 어느 모듈에도 없는 파일(cgo가
+// 만든 빌드 캐시 파일 등)은 예전처럼 moduleDir 기준이다.
+func TestRelFileUsesContainingModule(t *testing.T) {
+	d := workspaceDoc()
+	d.WorkspaceModules = append(d.WorkspaceModules, graph.WorkspaceModule{Path: "example.com/c", Dir: "/w/a/c"},
+		graph.WorkspaceModule{Path: "example.com/root", Dir: "/w"})
+	cases := map[string]string{
+		"/w/a/app/app.go":   "app/app.go",
+		"/w/b/util/util.go": "util/util.go",
+		"/w/a/c/x/x.go":     "x/x.go",
+		"/w/ab/x.go":        "ab/x.go", // /w/a의 이웃 디렉터리 — 접두사가 같아도 a가 아니라 루트 모듈이 담는다.
+		"/cache/x.cgo1.go":  "../../cache/x.cgo1.go",
+	}
+	for file, want := range cases {
+		if got := relFile(d, file); got != want {
+			t.Errorf("relFile(%q) = %q, want %q", file, got, want)
+		}
 	}
 }
 
