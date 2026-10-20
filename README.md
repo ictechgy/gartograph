@@ -178,8 +178,12 @@ module root. Components map module-relative package paths; `deps` is an
 itself.
 
 The rules file must be a regular file, or a symlink to one, of at most 16 MiB.
-Every harvesting command reads it for `exclude`, so a device, named pipe, or
-larger file is an error (exit 2) instead of an endless read.
+Every harvesting command reads `.gartograph.yml` for `exclude`, so a device,
+named pipe, or larger file is an error (exit 2) instead of an endless read.
+`rules`, `metrics`, `mapping`, and `mcp` take `--config FILE` instead: that
+file supplies both the rules and the `exclude` that sets the harvest scope,
+and `.gartograph.yml` in `--dir` is not read — the rules and the packages
+they check come from one file.
 
 ```yaml
 components:
@@ -893,7 +897,12 @@ same document — under `--level package`, `gartograph_rules` carries the same
 document. The server keeps no baseline, so `baselined` and `staleBaseline`
 never appear. A malformed argument (`{"retainPublic": "true"}`) is an
 `isError` result that names it, not an answer built from the default.
-Example client config:
+
+`--config FILE` names the rules file of `gartograph_rules`,
+`gartograph_metrics`, and `gartograph_mapping`, and its `exclude` sets the
+harvest scope (see Rules configuration). When the server harvests, it reads
+that file at startup, so a missing or broken one stops it with exit 2; with
+`--graph`, the tools read it when called. Example client config:
 
 ```json
 {"mcpServers": {"gartograph": {

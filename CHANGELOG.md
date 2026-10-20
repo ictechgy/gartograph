@@ -72,3 +72,12 @@
 - MCP `gartograph_dead`·`gartograph_cycles`: 형식이 틀린 인자(`{"retainPublic": "true"}`, `{"level": 3}`)를 버리고
   기본값으로 답하지 않고, 원인을 담은 `invalid arguments: …` `isError` 결과로 거부한다. `arguments`가 없거나
   `null`인 호출은 빈 인자와 같다.
+- `rules`·`metrics`·`mapping`·`mcp`: `--config FILE`을 주면 그 파일의 `exclude`로 수확하고 `--dir`의
+  `.gartograph.yml`은 읽지 않는다. 예전에는 규칙은 `--config` 파일에서, 수확 범위는 `.gartograph.yml`에서 왔다.
+  그래서 `.gartograph.yml`이 뺀 패키지가 `--config` 규칙의 검사에서 조용히 빠졌고(`rules --strict`가 위반을 두고
+  0으로 끝났다), `--config` 파일의 `exclude`는 효과가 없었다. 두 파일의 `exclude`가 다르면 수확되는 패키지가
+  바뀌고, `--config`를 줄 때는 `--dir`의 `.gartograph.yml`이 깨져 있어도 오류가 아니다. `--config`가 없으면
+  지금처럼 `.gartograph.yml`이 규칙과 수확 범위를 함께 정한다.
+- `mcp`: 수확할 때는 규칙 파일(`--config`, 없으면 `--dir`의 `.gartograph.yml`)을 수확 전에 읽는다. 없거나 깨진
+  `--config`는 도구 호출 때의 `isError` 대신 기동 오류(종료 코드 2)가 된다. `--graph`로 저장 문서를 읽으면
+  지금처럼 도구를 부를 때 읽는다.

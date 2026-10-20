@@ -76,7 +76,8 @@ func cmdMcp(args []string, stdout, stderr io.Writer) int {
 func mcpRun(args []string, in io.Reader, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("mcp", stderr)
 	level := fs.String("level", string(graph.LevelSymbol), "harvest level: package|type|symbol")
-	configPath := fs.String("config", "", "rules file for the rules tool (default: .gartograph.yml in --dir)")
+	configPath := fs.String("config", "",
+		"rules file for the rules, metrics, and mapping tools; its exclude sets the harvest scope (default: .gartograph.yml in --dir)")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -85,18 +86,33 @@ func mcpRun(args []string, in io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	opts.Level = lvl
-	doc, err := loadDoc(opts, *graphPath)
+	cfgPath := *configPath
+	if cfgPath == "" {
+		if found, ok := config.Find(opts.Dir); ok {
+			cfgPath = found
+		}
+	}
+	rules, err := harvestRules(cfgPath, *graphPath)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	cfg := *configPath
-	if cfg == "" {
-		if found, ok := config.Find(opts.Dir); ok {
-			cfg = found
-		}
+	doc, err := loadDocWithRules(opts, *graphPath, rules)
+	if err != nil {
+		return fail(stderr, err)
 	}
-	srv := &mcpServer{doc: doc, dir: opts.Dir, cfgPath: cfg, protocol: "2024-11-05"}
+	srv := &mcpServer{doc: doc, dir: opts.Dir, cfgPath: cfgPath, protocol: "2024-11-05"}
 	return srv.serve(in, stdout, stderr)
+}
+
+// harvestRules는 mcp가 수확 범위(exclude)를 정하려고 기동 때 읽는 규칙 파일이다. 수확할 때만 읽는다 — 그 파일을
+// 읽지 못한 채 수확하면 범위가 틀린 문서를 세션 내내 서빙하므로, 없거나 깨진 파일은 기동 오류(종료 2)다.
+// 저장 문서(--graph)는 수확하지 않아 읽지 않는다(rules·metrics·mapping 도구가 호출 때 읽는다). 규칙 파일이
+// 없으면(cfgPath "") nil이다.
+func harvestRules(cfgPath, graphPath string) (*config.File, error) {
+	if cfgPath == "" || graphPath != "" {
+		return nil, nil
+	}
+	return config.Load(cfgPath)
 }
 
 // serve는 EOF까지 한 줄씩 JSON-RPC를 처리한다.

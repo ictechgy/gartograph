@@ -201,12 +201,29 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 // 어느 쪽이 쓰였는지 불분명해진다.
 // 수확 경로에서는 .gartograph.yml의 exclude도 함께 적용한다 — 수확 범위를
 // 좁히는 설정이 명령마다 다르게 동작하면 같은 저장소가 다른 그래프가 된다.
+// --config로 규칙 파일을 받는 명령은 loadDocWithRules로 그 파일의 exclude를 쓴다.
 func loadDoc(opts *source.Options, graphPath string) (*graph.Document, error) {
 	if graphPath != "" {
 		return export.LoadFile(graphPath)
 	}
 	if err := applyConfigExclude(opts); err != nil {
 		return nil, err
+	}
+	return source.Load(*opts)
+}
+
+// loadDocWithRules는 규칙 파일을 쓰는 명령(rules·metrics·mapping·mcp)의 loadDoc이다. 수확 exclude는 그 명령이
+// 쓰는 규칙 파일 cfg에서만 온다 — --config FILE을 줬으면 그 파일, 아니면 --dir의 .gartograph.yml이다.
+// --config를 줘도 .gartograph.yml에서 exclude를 읽던 때는 한 실행이 두 설정을 섞었다. .gartograph.yml이 뺀
+// 패키지가 --config 규칙의 검사에서 조용히 빠져(rules --strict가 위반을 두고 0으로 통과했다), --config 파일의
+// exclude는 읽히고도 효과가 없었다. cfg가 nil이면(설정이 선택인 metrics에서 파일이 없을 때) 제외 없이 수확한다.
+// 저장 문서(--graph)에는 loadDoc처럼 exclude가 듣지 않는다.
+func loadDocWithRules(opts *source.Options, graphPath string, cfg *config.File) (*graph.Document, error) {
+	if graphPath != "" {
+		return export.LoadFile(graphPath)
+	}
+	if cfg != nil {
+		opts.Exclude = append(opts.Exclude, cfg.Exclude...)
 	}
 	return source.Load(*opts)
 }
@@ -925,7 +942,7 @@ func rulesLimitations(doc *graph.Document, cfg *config.File, rep *analysis.RuleR
 // --write-baseline은 현재 위반 전부를 새 baseline으로 저장한다.
 func cmdRules(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("rules", stderr)
-	configPath := fs.String("config", "", "rules file (default: .gartograph.yml in --dir)")
+	configPath := fs.String("config", "", "rules file; its exclude sets the harvest scope (default: .gartograph.yml in --dir)")
 	format := fs.String("format", "text", "output format: text|json|sarif")
 	strict := fs.Bool("strict", false, "exit 1 when violations exist")
 	baselinePath := fs.String("baseline", "", "baseline file of known violations")
@@ -956,7 +973,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	if len(cfg.Signature) > 0 && *graphPath == "" {
 		opts.Level = graph.LevelSymbol
 	}
-	doc, err := loadDoc(opts, *graphPath)
+	doc, err := loadDocWithRules(opts, *graphPath, cfg)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -1355,13 +1372,18 @@ func sortNeighborsJSON(res *analysis.Neighbors) {
 // 저장 문서(--graph)가 패키지 레벨이면 A/D는 빠지고 limitation으로 남는다.
 func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("metrics", stderr)
-	configPath := fs.String("config", "", "rules file (default: .gartograph.yml in --dir)")
+	configPath := fs.String("config", "", "rules file; its exclude sets the harvest scope (default: .gartograph.yml in --dir)")
 	format := fs.String("format", "text", "output format: text|json")
 	if fs.Parse(args) != nil {
 		return 2
 	}
+	// 규칙 파일은 수확 전에 읽는다 — 그 파일의 exclude가 수확 범위다(loadDocWithRules).
+	cfg, configNotes, err := optionalConfig(opts.Dir, *configPath)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	opts.Level = graph.LevelType
-	doc, err := loadDoc(opts, *graphPath)
+	doc, err := loadDocWithRules(opts, *graphPath, cfg)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -1369,10 +1391,6 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr,
 			"error: metrics needs package-level data; document is %s level\n", doc.Level)
 		return 2
-	}
-	cfg, configNotes, err := optionalConfig(opts.Dir, *configPath)
-	if err != nil {
-		return fail(stderr, err)
 	}
 	rep := analysis.Metrics(doc, cfg)
 	limitations := metricsLimitations(doc, configNotes)
@@ -1457,7 +1475,7 @@ func optionalConfig(dir, explicit string) (*config.File, []string, error) {
 // "규칙이 왜 이 의존을 못 잡지"의 첫 진단 도구다.
 func cmdMapping(args []string, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("mapping", stderr)
-	configPath := fs.String("config", "", "rules file (default: .gartograph.yml in --dir)")
+	configPath := fs.String("config", "", "rules file; its exclude sets the harvest scope (default: .gartograph.yml in --dir)")
 	format := fs.String("format", "text", "output format: text|json")
 	if fs.Parse(args) != nil {
 		return 2
@@ -1476,7 +1494,7 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	opts.Level = graph.LevelPackage
-	doc, err := loadDoc(opts, *graphPath)
+	doc, err := loadDocWithRules(opts, *graphPath, cfg)
 	if err != nil {
 		return fail(stderr, err)
 	}

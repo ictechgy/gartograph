@@ -127,8 +127,11 @@ limitations에 남음), `--graph`(저장 문서 읽기).
 아니라 "규칙이 모르는 영역"입니다.
 
 규칙 파일은 16 MiB 이하의 일반 파일이거나 그런 파일을 가리키는 링크여야 합니다.
-수확하는 명령은 모두 `exclude`를 읽으려고 이 파일을 열기 때문에, 장치·이름 있는
+수확하는 명령은 모두 `exclude`를 읽으려고 `.gartograph.yml`을 열기 때문에, 장치·이름 있는
 파이프·그보다 큰 파일은 끝없이 읽는 대신 오류(종료 코드 2)가 됩니다.
+`rules`·`metrics`·`mapping`·`mcp`에 `--config FILE`을 주면 그 파일이 규칙과, 수확 범위를 정하는
+`exclude`를 함께 맡고 `--dir`의 `.gartograph.yml`은 읽지 않습니다 — 규칙과 그 규칙이 검사하는
+패키지가 한 파일에서 옵니다.
 
 ```yaml
 components:
@@ -663,6 +666,10 @@ isthmus는 3a45450(#133)부터 go `route-call`을 받습니다. 그 빌드로 `c
 `gartograph_rules`는 패키지 레벨 문서에 `rules --graph`를 돌릴 때와 같은 `signature checks skipped`
 limitation을 답니다. 서버에는 baseline이 없어 `baselined`·`staleBaseline`은 나오지 않습니다. 형식이 틀린
 인자(`{"retainPublic": "true"}`)는 기본값으로 답하지 않고, 그 인자를 밝힌 `isError` 결과가 됩니다.
+
+`--config FILE`은 `gartograph_rules`·`gartograph_metrics`·`gartograph_mapping`이 쓰는 규칙 파일이고, 그 파일의
+`exclude`가 수확 범위를 정합니다(규칙 설정 절). 수확할 때는 기동하며 그 파일을 읽으므로, 없거나 깨진 파일은
+서버를 오류(종료 코드 2)로 멈춥니다. `--graph`로 저장 문서를 읽으면 도구를 부를 때 읽습니다.
 
 ```json
 {"mcpServers": {"gartograph": {

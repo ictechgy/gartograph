@@ -2585,6 +2585,91 @@ import _ "example.com/fixture/gen"
 	}
 }
 
+// configScopeFixture는 app이 lib와 gen을 import하는 모듈과, gen을 수확에서 빼고 app→lib를 금지하는 규칙
+// 파일(모듈 밖 strict.yml)을 만든다. dirConfig가 비어 있지 않으면 --dir의 .gartograph.yml로 둔다.
+func configScopeFixture(t *testing.T, dirConfig string) (dir, strict string) {
+	t.Helper()
+	files := map[string]string{
+		"app/app.go": "package app\n\nimport (\n\t_ \"example.com/fixture/gen\"\n\t_ \"example.com/fixture/lib\"\n)\n",
+		"lib/lib.go": "package lib\n",
+		"gen/gen.go": "package gen\n",
+	}
+	if dirConfig != "" {
+		files[".gartograph.yml"] = dirConfig
+	}
+	dir = testutil.WriteModule(t, files)
+	strict = filepath.Join(t.TempDir(), "strict.yml")
+	writeTestFile(t, strict, "components:\n  app: [app]\n  lib: [lib]\ndeps:\n  app: []\nexclude: [gen]\n", 0o644)
+	return dir, strict
+}
+
+// TestConfigFlagSetsHarvestScope는 --config FILE을 받는 명령(rules·metrics·mapping·mcp)이 그 파일의 exclude로만
+// 수확하고 --dir의 .gartograph.yml을 읽지 않는지 본다(DECISIONS: --config의 exclude). 예전에는 규칙은 --config
+// 파일에서, 수확 범위는 .gartograph.yml에서 와서, .gartograph.yml이 app을 빼면 `rules --config strict.yml
+// --strict`가 app→lib 위반을 두고도 0으로 통과했고, strict.yml의 exclude는 읽히고도 효과가 없어 gen이 unmapped로
+// 섞였다. --config가 없으면 지금처럼 .gartograph.yml이 규칙과 수확 범위를 함께 정한다.
+func TestConfigFlagSetsHarvestScope(t *testing.T) {
+	const appOnly = "components:\n  app: [app]\n  lib: [lib]\n  gen: [gen]\ndeps:\n  app: [lib, gen]\nexclude: [app]\n"
+	cases := []struct {
+		name, dirConfig string
+		useConfig       bool
+		strictCode      int
+		components      map[string][]string // mapping의 컴포넌트 → 패키지
+		unmatched       []string
+	}{
+		{"--config alone", "", true, 1,
+			map[string][]string{"app": {"example.com/fixture/app"}, "lib": {"example.com/fixture/lib"}}, nil},
+		{"--config over a different .gartograph.yml exclude", appOnly, true, 1,
+			map[string][]string{"app": {"example.com/fixture/app"}, "lib": {"example.com/fixture/lib"}}, nil},
+		{"--config over a broken .gartograph.yml", "components: [\n", true, 1,
+			map[string][]string{"app": {"example.com/fixture/app"}, "lib": {"example.com/fixture/lib"}}, nil},
+		{"no --config", appOnly, false, 0,
+			map[string][]string{"app": {}, "lib": {"example.com/fixture/lib"}, "gen": {"example.com/fixture/gen"}},
+			[]string{"app"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir, strict := configScopeFixture(t, c.dirConfig)
+			flags := []string{"--dir", dir}
+			if c.useConfig {
+				flags = append(flags, "--config", strict)
+			}
+			code, out, errb := run(t, append([]string{"rules", "--strict"}, flags...)...)
+			if code != c.strictCode {
+				t.Fatalf("rules --strict: want exit %d, got %d\n%s%s", c.strictCode, code, out, errb)
+			}
+			var mapping struct {
+				Components          map[string][]string `json:"components"`
+				Unmapped            []string            `json:"unmapped"`
+				UnmatchedComponents []string            `json:"unmatchedComponents"`
+			}
+			mappingOut := cliReport(t, append([]string{"mapping", "--format", "json"}, flags...)...)
+			if err := json.Unmarshal([]byte(mappingOut), &mapping); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(mapping.Components, c.components) || len(mapping.Unmapped) != 0 ||
+				!reflect.DeepEqual(mapping.UnmatchedComponents, c.unmatched) {
+				t.Fatalf("mapping must reflect the harvest scope of the rules file in use: %s", mappingOut)
+			}
+			// metrics도 같은 범위를 센다 — --config(gen 제외)로는 gen이 어디에도 없고 unmapped도 없다.
+			metricsOut := cliReport(t, append([]string{"metrics", "--format", "json"}, flags...)...)
+			harvestsGen := strings.Contains(metricsOut, `"example.com/fixture/gen"`)
+			if harvestsGen == c.useConfig || strings.Contains(metricsOut, `"unmapped"`) {
+				t.Fatalf("metrics must count the harvest scope of the rules file in use: %s", metricsOut)
+			}
+			// MCP는 같은 플래그·같은 수확 레벨에서 CLI와 같은 보고를 낸다(수확 레벨: rules·mapping package, metrics type).
+			for _, tool := range []struct{ name, level string }{
+				{"rules", "package"}, {"mapping", "package"}, {"metrics", "type"},
+			} {
+				answers := runMcpTools(t, append([]string{"--level", tool.level}, flags...),
+					mcpCall(1, "gartograph_"+tool.name, `{}`))
+				requireCLIReport(t, tool.name, answers[0],
+					cliReport(t, append([]string{tool.name, "--format", "json"}, flags...)...))
+			}
+		})
+	}
+}
+
 // TestConfigMustBeRegularFile은 분석 대상의 .gartograph.yml이 정규 파일이 아니면 명령이
 // 멈추지 않고 원인을 담아 2로 끝나는지 확인한다. 수확 명령은 전부 exclude를 읽으려고 이
 // 파일을 연다 — FIFO는 open에서, /dev/zero 링크는 읽기에서 끝나지 않았다(장치는 회귀해도
