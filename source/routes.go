@@ -103,7 +103,8 @@ func RouteFacts(opts RouteOptions, toolVersion string) (*RouteFactsDocument, err
 	if err != nil {
 		return nil, err
 	}
-	symbolDoc, err := documentFrom(pkgs, loadOpts)
+	// usr 확인에는 정점 집합만 쓴다(usrDocument — 간선은 만들지 않는다).
+	symbolDoc, err := usrDocument(pkgs, loadOpts)
 	if err != nil {
 		return nil, err
 	}

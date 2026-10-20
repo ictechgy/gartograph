@@ -72,6 +72,19 @@ func Load(opts Options) (*graph.Document, error) {
 // symbol.usr가 impact 그래프의 정점 ID와 같은 규칙(충돌 접미사·exclude 포함)을 따라야
 // 하기 때문이다.
 func documentFrom(pkgs []*packages.Package, opts Options) (*graph.Document, error) {
+	return documentWith(pkgs, opts, false)
+}
+
+// usrDocument는 schema·routes(server·client)가 usr를 확인할 symbol 문서다. 세 생산자는 이 문서에서 정점 ID·종류
+// (newSymbolIDs)만 읽는다. 정점 집합은 같은 적재·opts의 documentFrom과 같다 — 같은 정점 생성 코드를 지나고, 심볼
+// 수확의 간선 전용 단계만 건너뛴다(harvestSymbols의 vertexOnly). 그 단계(구체 타입 × 인터페이스 implements 판정,
+// 외부 디스패치 사실, CHA 팬아웃, 간선 기록)가 큰 모듈에서 수확 시간·메모리의 큰 몫이다.
+func usrDocument(pkgs []*packages.Package, opts Options) (*graph.Document, error) {
+	return documentWith(pkgs, opts, true)
+}
+
+// documentWith는 documentFrom·usrDocument의 본체다. vertexOnly면 심볼 수확이 정점만 만든다.
+func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*graph.Document, error) {
 	// Root는 절대 경로로 남긴다 — Position.File이 절대 경로라, 이후
 	// 파일→정점 해석이 어느 cwd에서든 같은 결과를 내야 한다.
 	root, err := filepath.Abs(opts.Dir)
@@ -98,7 +111,7 @@ func documentFrom(pkgs []*packages.Package, opts Options) (*graph.Document, erro
 	doc, kept := buildDocument(root, reachable, opts.IncludeDeps, excluded)
 	if opts.Level.Rank() >= graph.LevelType.Rank() {
 		internal := internalPackages(pkgs, kept)
-		harvestSymbols(doc, internal, opts.Level)
+		harvestSymbols(doc, internal, opts.Level, vertexOnly)
 	}
 	markGenerated(doc, kept)
 	if len(excluded) > 0 {

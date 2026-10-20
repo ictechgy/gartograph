@@ -82,9 +82,9 @@ func SchemaFacts(opts Options, toolVersion string) (*BridgeFactsDocument, error)
 	if err != nil {
 		return nil, err
 	}
-	// 같은 로드 결과로 impact와 같은 심볼 그래프를 만든다 — usr는 이 그래프의
-	// 정점일 때만 싣는다(유령 ID 금지).
-	symbolDoc, err := documentFrom(pkgs, loadOpts)
+	// 같은 로드 결과로 impact 그래프와 같은 심볼 정점 집합을 만든다(usrDocument — 간선은 만들지 않는다) — usr는
+	// 이 집합의 정점일 때만 싣는다(유령 ID 금지).
+	symbolDoc, err := usrDocument(pkgs, loadOpts)
 	if err != nil {
 		return nil, err
 	}

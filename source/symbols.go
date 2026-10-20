@@ -58,12 +58,16 @@ type harvester struct {
 	// 아무도 만족하지 않는 이름 없는 인터페이스에서도 만들어지므로, 만들 때가 아니라 실을 때 센다.
 	spell       *typeSpeller
 	abbreviated int
+	// vertexOnly는 정점 집합만 쓰는 수확(usrDocument)이다. 구조 간선·외부 디스패치·CHA 팬아웃을 건너뛰고 간선을
+	// 기록하지 않는다. 정점을 만드는 판정(init·pkg._·필드)은 vertices·fieldIDs만 보고 간선과 무관해 정점 집합은 같다.
+	vertexOnly bool
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
 // 간선을 doc에 추가한다. level이 type이면 타입과 타입 간 관계만,
 // symbol이면 함수·변수·상수와 호출·참조까지 수확한다.
-func harvestSymbols(doc *graph.Document, internal []*packages.Package, level graph.Level) {
+// vertexOnly면 정점만 만든다 — 몸체 순회는 init·pkg._ 정점을 만들어서 그대로 돌고, 간선 전용 단계는 건너뛴다.
+func harvestSymbols(doc *graph.Document, internal []*packages.Package, level graph.Level, vertexOnly bool) {
 	h := &harvester{
 		doc:      doc,
 		vertices: make(map[string]bool),
@@ -81,6 +85,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		reflectPkgs:    make(map[string]bool),
 		baseFiles:      baseSyntaxFiles(internal),
 		spell:          newTypeSpeller(),
+		vertexOnly:     vertexOnly,
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -95,9 +100,12 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	doc.DispatchEvidence = wantSymbols // CHA 팬아웃(candidateEdge)은 심볼 레벨에서만 생긴다
 
 	h.addSymbolVertices(internal, wantSymbols)
-	h.addStructuralEdges(internal)
+	// 구조 간선(embeds·implements, 구체 타입 × 인터페이스 판정)과 외부 디스패치 사실(satisfies)은 정점을 만들지 않는다.
+	if !vertexOnly {
+		h.addStructuralEdges(internal)
+	}
 	h.addBodyEdges(internal, wantSymbols)
-	if wantSymbols {
+	if wantSymbols && !vertexOnly {
 		h.markExternalDispatch(internal)
 	}
 
@@ -1152,6 +1160,9 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 // 인터페이스(io.Closer 등)는 그 경로로 가지 않는다 — satisfies·receiver 규칙이 리시버
 // 도달성으로 더 정밀하게 다룬다(모든 모듈 구현자로 퍼뜨리면 죽은 구현까지 살린다).
 func (h *harvester) dispatchTargets(sel *types.Selection, fn *types.Func, id string) []string {
+	if h.vertexOnly { // 팬아웃은 간선뿐이다 — 호출 지점마다 구현자를 찾지 않는다.
+		return nil
+	}
 	recv := fn.Signature().Recv()
 	if !isInterface(sel.Recv()) && (recv == nil || !types.IsInterface(recv.Type())) {
 		return nil
@@ -1388,7 +1399,11 @@ func (h *harvester) candidateEdge(from, to string, kind graph.EdgeKind, pos *gra
 }
 
 // addEdge는 edge·candidateEdge의 공통 본체다. candidate는 이 지점이 팬아웃 전용인지다.
+// 정점 전용 수확(vertexOnly)은 간선을 기록하지 않는다 — 소비자가 정점만 읽어 간선 색인·위치 병합이 헛일이다.
 func (h *harvester) addEdge(from, to string, kind graph.EdgeKind, pos *graph.Position, candidate bool) {
+	if h.vertexOnly {
+		return
+	}
 	if !h.vertices[from] || !h.vertices[to] {
 		if h.vertices[from] && kind != graph.EdgeContains {
 			h.omitRef()
