@@ -84,9 +84,10 @@ gartograph query 'github.com/ictechgy/gartograph/graph.(Document).Sort'
 gartograph impact <정점ID> --depth 2           # 역방향 전이 — 바꾸면 뭐가 깨지나
 gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분석
                                               # (git 2.24 이상. --files cli/cli.go도 가능. '-'로 시작하거나
-                                              #  제어 문자가 든 값은 사용법 오류. git 호출은 fsmonitor 훅을
-                                              #  끄지만 작업 트리의 .git/config(필터 등)는 신뢰한다 —
-                                              #  출처를 모르는 트리에서는 --files를 쓴다)
+                                              #  제어 문자가 든 값은 사용법 오류. git은 저장소의 filter 드라이버·
+                                              #  fsmonitor 훅·diff 드라이버·index 갱신·객체 받기 없이 돌고
+                                              #  서브모듈 안으로 들어가지 않는다 — 보안 절. 시각이 바뀐 파일은
+                                              #  바뀐 파일로 센다)
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
 gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트별 고유분
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
@@ -94,7 +95,15 @@ gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 
                                                #  //go:build ignore 제외 — limitations는 로드 오류와,
                                                #  이번에 로드하지 않은 패키지를 import하는 제외 파일을 셈.
                                                #  std만 쓰는 제외 파일은 조용하다.
-                                               #  이 플랫폼 파일이 없는 패키지는 로드되지 않아 --goos로 확인)
+                                               #  이 플랫폼·태그 파일이 하나도 없는 디렉터리(windows 전용
+                                               #  패키지 등)는 패키지가 되지 않아 import를 읽지 못하고, 거기서만
+                                               #  쓰는 require는 unused에 남는다 — limitations가 그런 디렉터리를
+                                               #  센다. 범위는 /...로 끝나는 패턴(./..., ./x/..., 모듈 경로/...)과
+                                               #  all·work이고, go list ./...·tidy가 건너뛰는 곳(testdata, _x, .x,
+                                               #  하위 모듈, vendor 밑, go.mod ignore)과 //go:build ignore만 있는
+                                               #  곳은 세지 않는다. --goos·--goarch·--tags로 확인. 와일드카드 없는
+                                               #  패턴의 파일 없는 디렉터리는 로드 오류로 센다. 읽지 못한
+                                               #  디렉터리는 그 패턴의 순회를 멈추고(go list도 같다) 센다)
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 # (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·
 #  인터페이스 메서드 추가·서명 변경(직접·임베드 경유 — 두 문서에 메서드 집합이 있으면
@@ -127,8 +136,11 @@ limitations에 남음), `--graph`(저장 문서 읽기).
 아니라 "규칙이 모르는 영역"입니다.
 
 규칙 파일은 16 MiB 이하의 일반 파일이거나 그런 파일을 가리키는 링크여야 합니다.
-수확하는 명령은 모두 `exclude`를 읽으려고 이 파일을 열기 때문에, 장치·이름 있는
+수확하는 명령은 모두 `exclude`를 읽으려고 `.gartograph.yml`을 열기 때문에, 장치·이름 있는
 파이프·그보다 큰 파일은 끝없이 읽는 대신 오류(종료 코드 2)가 됩니다.
+`rules`·`metrics`·`mapping`·`mcp`에 `--config FILE`을 주면 그 파일이 규칙과, 수확 범위를 정하는
+`exclude`를 함께 맡고 `--dir`의 `.gartograph.yml`은 읽지 않습니다 — 규칙과 그 규칙이 검사하는
+패키지가 한 파일에서 옵니다.
 
 ```yaml
 components:
@@ -187,12 +199,13 @@ independent: [web, cli]   # web과 cli는 어느 방향으로도 서로 도달 �
   간선 하나의 위반이 아니라 컴포넌트 수준의 사실입니다 — 위반은
   `rule: "limit"`, `name: "maxIn"|"maxOut"`, 실제 수치를 싣습니다.
 - `exclude`는 규칙이 아니라 수확 필터입니다 — 패턴에 맞는 패키지
-  (컴포넌트와 같은 글롭 의미론 — 주 모듈은 상대 경로, 외부는 전체 경로)는
-  정점이 되지 않고, 그쪽으로의 import는 `limitations`에 셉니다.
+  (컴포넌트와 같은 글롭 의미론 — 주 모듈 패키지는 그 패키지가 속한 모듈 기준 상대 경로,
+  외부는 전체 경로)는 정점이 되지 않고, 그쪽으로의 import는 `limitations`에 셉니다.
   생성 코드나 vendored 트리에 씁니다:
 - `fileRules`는 import가 일어나는 **파일**로 금지 범위를 좁힙니다 —
   dependency-cruiser의 `not-to-dev-dep` 계약입니다. `from`은 `/`가 없으면
-  파일명에, 있으면 모듈 상대 경로에 맞는 글롭이고, `!` 접두사는 반전입니다.
+  파일명에, 있으면 그 파일이 속한 모듈 기준 상대 경로에 맞는 글롭이고, `!` 접두사는
+  반전입니다.
   위반은 `rule: "fileScope"`, 규칙 `name`, 해당 지점을 싣습니다.
   지점이 없는 간선은 검사할 수 없어 `fileScopeUnchecked`로 셉니다.
 - 규칙이 참조하는 모든 이름은 정의된 컴포넌트여야 합니다 — `Load`가
@@ -228,6 +241,15 @@ deps:
 `--deps`를 빼먹었다는(또는 패턴이 stale하다는) 신호입니다. 컴포넌트에 매칭
 되지 않은 외부 패키지는 `unmappedExternal`로 따로 보고됩니다.
 
+**go.work 워크스페이스.** 수확에 둘 이상의 워크스페이스 모듈 패키지가 있으면(`use ./a`·`use ./b`를
+`--dir a`로, 또는 워크스페이스 루트에서 `--pattern ./a/... --pattern ./b/...`로 수확) 컴포넌트·`exclude`·
+`fileRules` 패턴은 패키지·파일마다 그것이 속한 모듈 기준 상대 경로입니다 — `util`은 `example.com/a/util`과
+`example.com/b/util`에 함께 맞고, `impact --dir a --files ../b/util/util.go`는 `example.com/b/util`로
+해석됩니다. 다른 워크스페이스 모듈의 패키지는 내부입니다 — `rules`는 그쪽 import를 검사하고, `mapping`·
+`metrics`는 그 패키지를 `unmappedExternal`이 아니라 매핑·`unmapped`·`orphans`로 세며, `init`은 그 패키지의
+컴포넌트를 만들고 두 모듈이 함께 쓰는 경로에는 컴포넌트 하나를 둡니다. 전체 import 경로로 맞는 것은 `--deps`
+의존뿐이므로 형제 모듈 패키지는 `example.com/b/util`이 아니라 모듈 상대 경로(`util`)로 적으세요.
+
 **Baseline.** 기존 레포에 규칙을 도입할 때: 오늘의 위반을 한 번 기록하고,
 이후에는 새 위반만 `--strict`에서 실패합니다. 같은 플래그가 `cycles`와
 `dead`에도 동작합니다 — 종류마다 다른 baseline 파일 kind를 쓰므로
@@ -246,6 +268,12 @@ gartograph dead   --baseline .dead-baseline.json --strict
 항목은 가리키는 사실로 짝지어지고 줄 번호나 체크아웃 경로는 보지 않습니다
 (`fileRules` 위반은 규칙·import 간선·파일 이름으로 맞춥니다) — 한 머신에서
 커밋한 baseline이 CI에서도 그대로 맞습니다.
+`--write-baseline`은 `position.file`을 모듈 루트(`go.mod`가 있는 디렉터리) 기준
+`/` 구분 상대 경로로 씁니다. 그래서 커밋한 baseline에 그 파일을 쓴 머신의 경로가
+남지 않습니다. 모듈 루트 밖 파일은 파일 이름만 남깁니다 — 표준 라이브러리
+(`type T time.Time`의 필드는 거기 선언돼 있습니다), 의존 모듈, 다른 go.work 모듈의
+파일이 그렇습니다. 예전 판이 절대 경로로 쓴 baseline도 그대로 맞고,
+`staleBaseline`은 항목을 파일에 적힌 그대로 돌려줍니다.
 
 패턴: 정확 일치, `x/**` 재귀 접두사, `*` 세그먼트 글롭.
 규칙 파일을 읽을 때 components·`exclude`·`fileRules.from`의 그 밖의
@@ -255,6 +283,101 @@ gartograph dead   --baseline .dead-baseline.json --strict
 `rules`·`cycles`·`dead` 모두 `--format sarif`를 받습니다 — 순환은
 `dependency-cycle` error, unreachable은 `unreachable-symbol` warning
 (삭제 판정이 아니라 사실)으로 보고됩니다.
+`artifactLocation.uri`는 모듈 루트 기준 상대 경로를 세그먼트마다 퍼센트
+인코딩한 값(RFC 3986)이고 `"uriBaseId": "%SRCROOT%"`를 답니다.
+`run.originalUriBaseIds`는 `%SRCROOT%`를 절대 경로 없이 설명만 하므로, 업로드한
+로그에 로컬 경로가 남지 않습니다. 파일이 모듈 루트 밖에 있는 결과는
+`physicalLocation` 없이 그 사실을 메시지에 적습니다. GitHub code scanning은 상대
+URI를 저장소 루트 기준으로 읽습니다. 그래서 `go.mod`가 하위 디렉터리에 있으면
+업로드 전에 URI 앞에 그 디렉터리를 붙이세요.
+
+```bash
+gartograph rules --dir svc --format sarif |
+  jq '(.runs[].results[].locations[].physicalLocation | select(. != null)
+       | .artifactLocation | select(.uriBaseId == "%SRCROOT%") | .uri) |= "svc/" + .' > rules.sarif
+```
+
+## 보안
+
+gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패키지를 읽으려고
+`golang.org/x/tools/go/packages`를 거쳐 `go` 명령을 실행하고, `git`은
+`impact --since`(`git diff`)와 `--revision`·`--graph` 없는 순회 문서(`reach`,
+`impact --format language-traversal`)의 `revision`(`git ls-files`, `git status`,
+`git rev-parse`)에만 씁니다. `PATH`에서 처음 찾은 `git`을 실행합니다.
+
+이 git 호출은 모두 분석 대상 저장소의 git 설정이 명령을 실행하지 못하게 합니다.
+
+- 호출 바로 앞에서 git이 보는 filter 드라이버를 모읍니다
+  (`git config -z --includes --get-regexp '^filter\..*\.(clean|smudge|process)$'` —
+  저장소, 사용자, 시스템 설정을 모두 봅니다). 드라이버마다 `clean`·`smudge`·`process`를
+  빈 명령으로, `required`를 `false`로 덮어 git이 하나도 실행하지 않게 합니다.
+  `.gitattributes`와 `.git/info/attributes` 어느 쪽에서 건 드라이버든 같습니다.
+- `core.fsmonitor`, untracked cache, `log.showSignature`, 선택 잠금
+  (`GIT_OPTIONAL_LOCKS=0`)을 끕니다. `git diff`에는 `--no-ext-diff --no-textconv`와
+  `diff.autoRefreshIndex=false`도 줍니다 — index를 갱신하면 index를 쓰면서
+  `post-index-change` 훅이 실행됩니다.
+- 서브모듈 안에서는 git을 띄우지 않습니다. `git diff`에는 `--ignore-submodules=dirty`를
+  주고, index에 서브모듈이 있으면 `git status`를 아예 실행하지 않습니다(없으면
+  `--ignore-submodules=all`).
+- git이 아무것도 받아 오지 못하게 합니다(`GIT_NO_LAZY_FETCH=1`, 빈 `GIT_ALLOW_PROTOCOL`).
+  부분 clone에서 호출에 필요한 객체가 없으면 git은 그 객체를 받으려고 `git fetch`를 띄우고,
+  그 fetch는 저장소 설정의 전송 명령(`remote.<이름>.uploadpack`, `core.sshCommand`, 자격 증명
+  도우미)을 실행합니다. 빈 프로토콜 목록은 `GIT_NO_LAZY_FETCH`를 모르는 2.44 미만 git에서도
+  모든 전송을 막습니다.
+- 드라이버를 모으지 못하거나 이름에 `=`·제어 문자가 든 드라이버가 있으면(git의 `-c`는
+  첫 `=`에서 나누므로 그 드라이버를 덮을 수 없습니다) 다른 git 명령을 실행하지 않습니다.
+  `impact --since`는 원인과 `--files` 안내를 담아 종료 코드 2로 끝나고, 순회 문서는
+  `revision`을 생략합니다(드라이버 이름 때문이면 `revision-unverified:` 한계로 알립니다).
+
+그래서 달라지는 것:
+
+- filter가 정규화하던 파일(git-lfs 등)은 원문으로 비교합니다. git의 stat 캐시가 낡으면
+  바뀐 파일로 보입니다 — `impact --since`는 그 파일을 내고, 순회 문서는 확인하지 못한
+  깨끗한 `HEAD`를 주장하지 않고 `revision`을 싣지 않습니다.
+- `impact --since`는 내용이 같아도 시각이 바뀐 파일을 바뀐 파일로 냅니다. git이 다시
+  읽어 확인하지 않기 때문입니다. 신뢰하는 checkout이면 먼저 `git status`로 git의 stat
+  캐시를 새로 고칩니다.
+- 서브모듈: `impact --since`는 기록된 커밋과 다른 커밋을 checkout한 서브모듈은 지금처럼
+  내지만, 서브모듈 안의 커밋하지 않은 변경은 내지 않습니다. 서브모듈이 있는 작업 트리는
+  `revision`을 자동으로 싣지 않고 `revision-unverified:` 한계로 알립니다 — 필요하면
+  `--revision`으로 줍니다.
+- 부분 clone: clone에 없는 객체가 필요한 호출은 객체를 받지 않고 실패합니다. `--since`
+  revision의 트리가 로컬에 없으면(treeless clone, `--filter=tree:0`) `impact --since`는 git의
+  오류와 부분 clone 안내를 담아 종료 코드 2로 끝나고, `HEAD`의 트리가 없으면 순회 문서는
+  `revision`을 싣지 않습니다. blobless clone(`--filter=blob:none`)은 트리를 모두 가지고 있어
+  예전처럼 동작합니다. 신뢰하는 checkout이면 같은 `git diff`를 한 번 직접 실행해 빠진 객체를
+  받아 두거나 `--files`를 씁니다.
+
+나머지 git 설정은 평소대로 적용됩니다. `--files`는 git을 쓰지 않습니다.
+
+`go` 명령은 gartograph 자신의 환경에 `--goos`·`--goarch`의 `GOOS`·`GOARCH`를 더해 실행하고,
+`GOTOOLCHAIN` 환경 변수가 없거나 비었으면 `GOTOOLCHAIN=local`로 실행합니다. 그래서 분석 대상
+`go.mod`·`go.work`의 `go`·`toolchain` 줄이 다른 Go 툴체인을 내려받아 실행하게 하지 못합니다.
+
+- 설치된 Go보다 새 Go가 필요한 저장소는 go 명령의 `requires go >= …` 문구와 해결 방향을 담아
+  종료 코드 2로 끝납니다. 그 Go를 설치하거나, 신뢰하는 저장소라면 `GOTOOLCHAIN=auto`로 다시
+  실행합니다.
+- 설치된 Go보다 새 `toolchain` 줄은 더는 툴체인을 바꾸지 않습니다. 설치된 Go가 패키지를 읽습니다.
+- 환경 변수로 준 `GOTOOLCHAIN`(`auto`, `local`, `go1.N.M` 등)은 그대로 넘깁니다.
+  `go env -w GOTOOLCHAIN=…`로 저장한 값은 쓰이지 않습니다. gartograph가 넣는 환경 변수가 그 값보다
+  우선하고, gartograph는 그 값을 읽으려고 분석 대상 모듈에서 `go env`를 실행하지 않습니다.
+
+모듈 다운로드는 그대로입니다. go 명령은 분석 대상 `go.mod`가 require하는데 모듈 캐시에 없는 모듈을
+여전히 `GOPROXY`에서 받아 `go.sum`으로 확인합니다. 수확을 오프라인으로 두려면 `GOPROXY=off`를
+줍니다.
+
+수확 전체에는 시간·메모리 예산이 없습니다. 앞 선언을 두 번씩 쓰는 선언 사슬 — 중첩 별칭
+(`type A1 = struct{ a, b A0 }`, `type F1 = func(F0, F0)`)과 유니언 제약
+(`type U1 interface{ U0 | U0 }`) — 은 더는 gartograph 자신의 표기 작업·메모리·출력을
+지수적으로 키우지 않습니다. 타입마다 표기 길이를 메모하고, 표기 하나(타입 하나, 메서드
+서명 하나, 유니언 원소 하나 전체, 이름 없는 인터페이스 이름 하나)를 64KiB로 묶고
+([그래프 문서](#그래프-문서)), 유니언의 인터페이스 항을 한 번만 펼치고, 이름 없는
+인터페이스를 거를 때 타입마다 한 번만 봅니다. 그래도 타입 검사(`go/types`) 자체는 이런
+사슬 일부(유니언 사슬, struct 별칭 사슬, `type S1 struct{ a, b S0 }` 같은 명명 struct
+사슬)에서 깊이에 지수적인 시간이 걸립니다. 문서는 선언·필드·메서드 수에 따라 늘어납니다.
+항목 하나는 필드·메서드 이름 말고 64KiB까지 표기를 담고, 문서 전체를 묶는 것은 없습니다 —
+그러려면 문서 단위 표기 예산이 필요한데 gartograph에는 없습니다. 신뢰하지 않는 저장소는
+외부 제한(타임아웃, `ulimit`, 컨테이너) 아래에서 분석합니다.
 
 ## 출력 계약(에이전트용)
 
@@ -341,6 +464,17 @@ breaking으로 분류하는 재료입니다.
 유니언의 인터페이스 항을 펼치고, 항을 정렬하고, `comparable`은 항목으로 남김 — 표시
 `interfaceTypeSets: true`)도 담고, `diff`는 공개 제약의 타입 집합이 바뀌면 breaking으로
 봅니다(좁히면 인스턴스화가, 넓히면 허용 연산에 기댄 제네릭 코드가 깨질 수 있음).
+정규 표기 하나(타입 하나, 메서드 서명 하나, 항 전부를 이은 유니언 원소 하나, 이름 없는
+인터페이스 이름 하나)는 64KiB(65536바이트)가 상한입니다. 실제 코드는 이보다 훨씬
+짧지만(실측한 x/tools·pgx·Kubernetes 모듈·이 저장소의 가장 긴 표기도 400바이트 미만), 앞
+선언을 두 번씩 쓰는 선언은 깊이마다 표기를 두 배로 키웁니다
+(`type A1 = struct{ a, b A0 }`, `type A2 = struct{ a, b A1 }`, …). 상한을 넘으면
+`fields`·`methods`·`typeSet`·`satisfies` 항목은 그 표기를 처음 256바이트, `…sha256:`, 구조의
+SHA-256(hex)으로 적습니다 — 같은 타입은 같은 항목, 다른 타입은 다른 항목이라 `diff`는
+지금처럼 비교합니다. 필드 이름(`name:`)과 메서드 이름은 앞에 남습니다. 유니언 원소와 이름 없는
+인터페이스 이름은 항·메서드 하나하나가 상한 아래여도 이은 전체가 상한을 넘으면 통째로
+축약합니다. 축약이 든 항목 수는 `limitations`에 실리고, `--type-edges members`는 축약된 필드
+타입이 앞부분 밖의 어떤 타입이든 담을 수 있다고 봅니다.
 간선 종류: `import`/`contains`/`embeds`/`implements`/`references`/`call`/
 `signature`(선언 시그니처 안의 타입 참조 — `contains`와 달리 의존 관계).
 인터페이스 호출은 CHA 팬아웃으로 인터페이스 메서드와 모든 구현 메서드에
@@ -352,6 +486,13 @@ breaking으로 분류하는 재료입니다.
 `contains`·`implements`·모듈 간선처럼 단일 지점이 없는 관계는 생략합니다.
 `dead --algo rta`는 수확한 CHA 간선 대신 SSA 기반 RTA를 씁니다 —
 더 좁지만 소스가 필요하고 과소 근사이므로 그 사실이 `limitations`에 실립니다.
+
+`moduleDir`는 `module`의 `go.mod`가 있는 디렉터리이고, 주 모듈 밖의 패키지 정점(`--deps` 의존, 중첩 모듈)은
+`external: true`를 답니다. 둘 이상의 워크스페이스 모듈 패키지를 수확한 go.work 문서는 `workspaceModules`(모듈마다
+`path`·`dir`, 경로순)를 싣고, 문서 `module`이 아닌 워크스페이스 모듈의 패키지 정점에 `module`을 답니다 — rules·
+`mapping`·`metrics`·`init`·`impact --files`는 이 사실로 패턴과 파일을 패키지마다 그 모듈 기준으로 읽습니다.
+`workspaceModules`가 없는 문서(단일 모듈 수확, 이전 판이 저장한 워크스페이스 문서)는 `module` 하나를 기준으로
+읽으므로, 옛 워크스페이스 문서는 다시 수확하세요.
 
 ## isthmus 교환 — `schema` usr와 순회 문서
 
@@ -365,6 +506,20 @@ breaking으로 분류하는 재료입니다.
 요소부터의 ID입니다. usr는 같은 `.gartograph.yml` exclude로 `impact`가 수확할 그래프의
 심볼 정점일 때만 싣고, 없으면(빈 함수, 모듈 심볼을 쓰지 않는 빈 선언, exclude 패키지, 타입
 정보 없는 패키지) `symbol`을 빼고 체인 전용 `missing-relation-usrs:`로 셉니다.
+
+SQL 텍스트는 파서가 아니라 토큰 스캐너로 읽습니다. `FROM`·`JOIN`·`INTO`·`UPDATE`·`TABLE`·
+`TRUNCATE` 뒤의 이름이 relation-use이고, isthmus 계약의 SQL 텍스트 생산자 공통 규칙
+([GRAPH-EXCHANGE](https://github.com/ictechgy/isthmus/blob/main/docs/GRAPH-EXCHANGE.md))이
+관계가 아니라고 정한 경우는 내지 않습니다 — 함수 인자 안의 `FROM`(`EXTRACT(YEAR FROM
+created_at)`·`TRIM`·`SUBSTRING`. 그 안의 하위 질의는 그대로 셉니다), `;`로 나뉜 같은 문장의 CTE
+이름인 한정자 없는 이름(비인용 이름은 대소문자 없이, 인용 이름은 쓴 그대로 비교합니다. 규칙이
+문장 단위라 `WITH users AS (SELECT * FROM users …)`는 본문이 읽는 실제 `users`도 내지 않습니다),
+`IS [NOT] DISTINCT FROM`의 피연산자. 관계 자리의 절 키워드(`DO UPDATE SET`, `FROM the …`)는
+목록을 끝내고, `GRANT`·`REVOKE`의 `FROM`은 관계가 아니라 권한 주체입니다. 관계 이름 자리의
+자리표시자(`%s`·`{}`·`?`·`$1`·`:name`·`@name`)도 관계가 아닙니다 — 그 리터럴은 `dynamic` 사실
+하나가 되고, 수는 테이블 값 함수 피연산자와 따로 `unjoined-dynamic-relations:` limitation으로
+셉니다. 인용 식별자 안이나 이름 접두 뒤의 자리표시자는 알아보지 못합니다 — `"%s"`는 관계
+`%s`로, `log_%s`는 `log_`로 읽힙니다.
 
 `reach`(`dependencies`)와 `impact --format language-traversal`(`dependents`)은
 `impact`와 같은 의존 간선 위에서 isthmus
@@ -385,7 +540,9 @@ breaking으로 분류하는 재료입니다.
   `truncationReasons`에 `depth`·`max-reached`가 실립니다. `rootsTruncated`는 실린
   심볼만 봅니다 — `--max`로 빠진 심볼은 세지 않습니다.
 - `project`는 `schema`와 같은 realpath, `revision`은 `--revision` 또는 작업 트리가
-  깨끗할 때의 git `HEAD`(`--graph`면 생략), `graphRevision`은 그래프 JSON의 SHA-256,
+  깨끗할 때의 git `HEAD`(`--graph`면 생략. 저장소의 git 설정을 실행하지 않고는 깨끗한지
+  확인할 수 없는 작업 트리 — 서브모듈이 있는 트리, [보안](#보안) 절 — 도 생략하고
+  `revision-unverified:` 한계로 알립니다), `graphRevision`은 그래프 JSON의 SHA-256,
   `--generated-at`은 시각을 고정합니다.
 - 정점이 아닌 id는 `symbol` 없이 `roots`에 싣고 `root-not-found:` 한계·잘림 이유와 함께
   문서를 쓴 뒤 64로 끝납니다. 사용법 오류(root 없음, 제어 문자, 범위 밖 숫자, 잘못된
@@ -400,8 +557,9 @@ breaking으로 분류하는 재료입니다.
 struct의 필드 타입 참조를 타입 정점에서 긋기 때문에, `all`에서는 공유 `Handler` struct의 모든 메서드가
 리시버를 거쳐 모든 필드 뒤의 행 타입에 닿았고(`/api/health` → `users` 컬럼), 역방향에서는 필드 타입이
 컨테이너의 모든 메서드로 퍼졌습니다. `members`는 필드 선언에서 나온 간선 `T → X`(타입 파라미터 머리가 아닌 references·signature)를 타입의 필드
-목록(`fields`, 정규 타입)에서 `X`를 담는 필드들(`a, b *X`, `m map[K]X`, `Box[X]`, `struct{ x X }`)의 정점으로
-옮깁니다(`T.f → X`). `T`에 닿아도 `X`에는 닿지 않고, `f`를 읽는 코드는 여전히 닿습니다. 닿지 않은 struct의
+목록(`fields`, 정규 타입)에서 `X`를 담는 필드들(`a, b *X`, `m map[K]X`, `Box[X]`, `struct{ x X }`; 표기 상한을
+넘어 축약된 필드 타입은 어떤 `X`든 담는다고 봅니다)의 정점으로 옮깁니다(`T.f → X`).
+`T`에 닿아도 `X`에는 닿지 않고, `f`를 읽는 코드는 여전히 닿습니다. 닿지 않은 struct의
 필드를 읽는 코드는 이제 그 필드 타입에 닿습니다(`all`은 놓쳤습니다). 두 방향 모두 평범한 그래프 하나라 계약의 `depth = via depth + 1`과
 roots 포함 규칙이 그대로 성립합니다. `members`가 포기하는 것: 필드 이름 없이 struct 값 전체를
 리플렉션에 넘기는 경로(`json.Marshal(h)`, ORM `Save(&u)`)는 임베드가 아닌 필드 타입에 닿지 않습니다
@@ -573,9 +731,21 @@ isthmus는 3a45450(#133)부터 go `route-call`을 받습니다. 그 빌드로 `c
 
 `gartograph mcp`는 수확한 문서를 MCP stdio(개행 구분 JSON-RPC)로 서빙합니다:
 `gartograph_summary`, `gartograph_query`, `gartograph_impact`,
-`gartograph_path`, `gartograph_cycles`, `gartograph_dead`,
+`gartograph_path`, `gartograph_shared`, `gartograph_cycles`, `gartograph_dead`,
 `gartograph_rules`, `gartograph_metrics`, `gartograph_mapping`.
 문서는 기동 시 한 번 수확해 모든 호출이 같은 스냅샷 위에서 답합니다.
+
+보고 도구는 CLI와 같은 코드로 답을 만들어 `--format json`과 같은 JSON을 돌려줍니다.
+`gartograph_cycles`는 `cycles`의 봉투 `{cycles, limitations}`를, `gartograph_dead`는 `dead` 보고
+(`algorithm: "cha"`, 루트, 같은 루트·디스패치·필드 limitation)를, `gartograph_rules`·`gartograph_metrics`·
+`gartograph_mapping`은 같은 문서의 `rules`·`metrics`·`mapping` 보고를 돌려줍니다 — `--level package`에서
+`gartograph_rules`는 패키지 레벨 문서에 `rules --graph`를 돌릴 때와 같은 `signature checks skipped`
+limitation을 답니다. 서버에는 baseline이 없어 `baselined`·`staleBaseline`은 나오지 않습니다. 형식이 틀린
+인자(`{"retainPublic": "true"}`)는 기본값으로 답하지 않고, 그 인자를 밝힌 `isError` 결과가 됩니다.
+
+`--config FILE`은 `gartograph_rules`·`gartograph_metrics`·`gartograph_mapping`이 쓰는 규칙 파일이고, 그 파일의
+`exclude`가 수확 범위를 정합니다(규칙 설정 절). 수확할 때는 기동하며 그 파일을 읽으므로, 없거나 깨진 파일은
+서버를 오류(종료 코드 2)로 멈춥니다. `--graph`로 저장 문서를 읽으면 도구를 부를 때 읽습니다.
 
 ```json
 {"mcpServers": {"gartograph": {

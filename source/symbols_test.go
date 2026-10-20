@@ -1247,3 +1247,53 @@ func BenchmarkImplementsEdges(b *testing.B) {
 		}
 	}
 }
+
+// unionChain은 유니언 사슬 U0 = interface{ int | string }, Ui = interface{ U(i-1) | U(i-1) }을 go/types
+// API로 직접 만들고 마지막 인터페이스를 돌려준다. 타입 검사기는 이 사슬의 검증에서 깊이마다 두 배로
+// 느려져(깊이 22에서 약 2초) 소스 fixture로는 수확기 비용만 잴 수 없다. 인터페이스 항을 만날 때마다
+// 다시 펼치면 항이 깊이마다 두 배가 된다.
+func unionChain(depth int) *types.Interface {
+	pkg := types.NewPackage("example.com/chain", "chain")
+	union := func(a, b types.Type) types.Type {
+		return types.NewUnion([]*types.Term{types.NewTerm(false, a), types.NewTerm(false, b)})
+	}
+	iface := types.NewInterfaceType(nil, []types.Type{union(types.Typ[types.Int], types.Typ[types.String])})
+	for i := 1; i <= depth; i++ {
+		prev := types.NewNamed(types.NewTypeName(token.NoPos, pkg, fmt.Sprintf("U%d", i-1), nil), iface, nil)
+		iface = types.NewInterfaceType(nil, []types.Type{union(prev, prev)})
+	}
+	return iface
+}
+
+// TestUnionTypeSetChainIsLinear는 유니언의 인터페이스 항을 한 번만 펼치는지 확인한다 — 출력은 정렬·
+// 중복 제거된 항 집합이라 그대로이고(깊이 24도 "int | string"), 비용은 깊이에 선형이다(n→2n에서
+// 할당이 두 배 남짓 — 다시 펼치면 2^n배). 실제 수확(fillTypeShape)에서도 사슬과 마름모(같은 제약에 두
+// 길로 닿음)의 typeSet이 그대로인지 본다.
+func TestUnionTypeSetChainIsLinear(t *testing.T) {
+	allocs := func(depth int) float64 {
+		iface := unionChain(depth)
+		return testing.AllocsPerRun(3, func() { newTypeSpeller().interfaceTypeSet(iface) })
+	}
+	if small, large := allocs(10), allocs(20); large > 3*small {
+		t.Fatalf("union expansion must be linear in the chain depth: depth 10 %.0f allocs, depth 20 %.0f", small, large)
+	}
+	if got, n := newTypeSpeller().interfaceTypeSet(unionChain(24)); !slices.Equal(got, []string{"int | string"}) || n != 0 {
+		t.Fatalf("depth-24 union chain typeSet %q (%d abbreviated), want [\"int | string\"]", got, n)
+	}
+	var src strings.Builder
+	src.WriteString("package a\n\ntype U0 interface{ int | string }\n")
+	for i := 1; i <= 12; i++ {
+		fmt.Fprintf(&src, "type U%d interface{ U%d | U%d }\n", i, i-1, i-1)
+	}
+	src.WriteString("\ntype z interface{ ~float64 }\ntype x interface{ int | z }\ntype y interface{ string | z }\n" +
+		"type Diamond interface{ x | y }\n")
+	doc := loadSymbol(t, testutil.WriteModule(t, map[string]string{"a/a.go": src.String()}))
+	for id, want := range map[string][]string{
+		"example.com/fixture/a.U12":     {"int | string"},
+		"example.com/fixture/a.Diamond": {"int | string | ~float64"},
+	} {
+		if v, _ := doc.VertexByID(id); v == nil || !slices.Equal(v.TypeSet, want) {
+			t.Fatalf("%s: vertex %+v, want typeSet %q", id, v, want)
+		}
+	}
+}

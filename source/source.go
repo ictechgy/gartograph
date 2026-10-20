@@ -72,6 +72,19 @@ func Load(opts Options) (*graph.Document, error) {
 // symbol.usr가 impact 그래프의 정점 ID와 같은 규칙(충돌 접미사·exclude 포함)을 따라야
 // 하기 때문이다.
 func documentFrom(pkgs []*packages.Package, opts Options) (*graph.Document, error) {
+	return documentWith(pkgs, opts, false)
+}
+
+// usrDocument는 schema·routes(server·client)가 usr를 확인할 symbol 문서다. 세 생산자는 이 문서에서 정점 ID·종류
+// (newSymbolIDs)만 읽는다. 정점 집합은 같은 적재·opts의 documentFrom과 같다 — 같은 정점 생성 코드를 지나고, 심볼
+// 수확의 간선 전용 단계만 건너뛴다(harvestSymbols의 vertexOnly). 그 단계(구체 타입 × 인터페이스 implements 판정,
+// 외부 디스패치 사실, CHA 팬아웃, 간선 기록)가 큰 모듈에서 수확 시간·메모리의 큰 몫이다.
+func usrDocument(pkgs []*packages.Package, opts Options) (*graph.Document, error) {
+	return documentWith(pkgs, opts, true)
+}
+
+// documentWith는 documentFrom·usrDocument의 본체다. vertexOnly면 심볼 수확이 정점만 만든다.
+func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*graph.Document, error) {
 	// Root는 절대 경로로 남긴다 — Position.File이 절대 경로라, 이후
 	// 파일→정점 해석이 어느 cwd에서든 같은 결과를 내야 한다.
 	root, err := filepath.Abs(opts.Dir)
@@ -98,7 +111,7 @@ func documentFrom(pkgs []*packages.Package, opts Options) (*graph.Document, erro
 	doc, kept := buildDocument(root, reachable, opts.IncludeDeps, excluded)
 	if opts.Level.Rank() >= graph.LevelType.Rank() {
 		internal := internalPackages(pkgs, kept)
-		harvestSymbols(doc, internal, opts.Level)
+		harvestSymbols(doc, internal, opts.Level, vertexOnly)
 	}
 	markGenerated(doc, kept)
 	if len(excluded) > 0 {
@@ -133,23 +146,26 @@ func dropExcluded(pkgs []*packages.Package, patterns []string) ([]*packages.Pack
 }
 
 // excludeMatch는 패키지가 exclude 패턴 중 하나에 맞는지 본다.
-// 주 모듈 패키지는 모듈 상대 경로로 맞춘다 — 컴포넌트 패턴과 같은 기준이어야
-// 설정이 이식 가능하다. 외부·모듈 없는 패키지는 전체 경로로 맞춘다.
+// 주 모듈 패키지(go.work 워크스페이스면 각 워크스페이스 모듈의 패키지)는 그 패키지가 속한 모듈 기준 상대
+// 경로로 맞춘다 — 컴포넌트 패턴과 같은 함수(graph.ModuleRelative)로 같은 기준을 써야 설정이 이식 가능하다.
+// 외부·모듈 없는 패키지는 전체 경로로 맞춘다.
 func excludeMatch(p *packages.Package, patterns []string) bool {
-	rel := p.PkgPath
-	if p.Module != nil && p.Module.Main {
-		if p.PkgPath == p.Module.Path {
-			rel = "."
-		} else {
-			rel = strings.TrimPrefix(p.PkgPath, p.Module.Path+"/")
-		}
-	}
+	rel := graph.ModuleRelative(p.PkgPath, mainModulePath(p))
 	for _, pat := range patterns {
 		if graph.MatchPath(pat, rel) {
 			return true
 		}
 	}
 	return false
+}
+
+// mainModulePath는 패키지가 주 모듈(go.work 워크스페이스면 워크스페이스 모듈 중 하나) 소속이면 그 모듈
+// 경로를, 외부·모듈 없는 패키지면 ""를 돌려준다 — graph.ModuleRelative가 상대 경로의 기준으로 받는 값이다.
+func mainModulePath(p *packages.Package) string {
+	if p == nil || p.Module == nil || !p.Module.Main {
+		return ""
+	}
+	return p.Module.Path
 }
 
 // LoadPackageGraph는 패키지 레벨 의존 그래프를 수확한다.
@@ -179,21 +195,24 @@ func load(opts Options) ([]*packages.Package, error) {
 	if opts.Tags != "" {
 		cfg.BuildFlags = []string{"-tags=" + opts.Tags}
 	}
-	cfg.Env = platformEnv(opts)
+	cfg.Env = loaderEnv(opts)
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
-		return nil, fmt.Errorf("loading packages: %w — check go.mod and build tags", err)
+		return nil, loaderError("loading packages", err, "check go.mod and build tags")
 	}
 	return pkgs, nil
 }
 
-// platformEnv는 GOOS/GOARCH 덮어쓰기가 있으면 로더 환경에 주입한다.
-// packages.Config.Env가 nil이면 호스트 환경을 그대로 물려받는다 —
-// 덮어쓸 것이 없을 때는 nil을 돌려 그 기본 동작을 건드리지 않는다.
-func platformEnv(opts Options) []string {
-	if opts.GOOS == "" && opts.GOARCH == "" {
-		return nil
-	}
+// loaderEnv는 go/packages가 띄우는 go 명령의 환경이다. go list를 띄우는 두 호출(load·patternRoots)이 함께 써서
+// 같은 플랫폼·툴체인 규칙으로 돈다 — dead --algo rta의 SSA도 load가 적재한 패키지로 만든다(LoadSession).
+//
+// GOOS/GOARCH 덮어쓰기가 있으면 더한다. GOTOOLCHAIN 환경 변수가 없거나 비었으면(go 명령도 빈 값을
+// 미지정으로 본다) GOTOOLCHAIN=local을 더한다 — 분석 대상(신뢰하지 않는 입력)의 go.mod·go.work에 있는
+// go·toolchain 줄이 다른 Go 툴체인을 내려받아 실행하게 두지 않기 위해서다(DECISIONS gartograph GOTOOLCHAIN).
+// 사용자가 환경 변수로 준 값(auto 포함)은 그대로 둔다. `go env -w`로 저장한 값은 이 환경 변수에 덮인다 —
+// 그 값을 읽으려고 분석 대상 디렉터리에서 go env를 돌리면 그 실행이 툴체인 전환을 일으킬 수 있어 읽지 않는다.
+// 늘 os.Environ()에서 시작하고(Env가 nil일 때 go/packages가 쓰는 값과 같다), 같은 키는 뒤 값이 이긴다(os/exec).
+func loaderEnv(opts Options) []string {
 	env := os.Environ()
 	if opts.GOOS != "" {
 		env = append(env, "GOOS="+opts.GOOS)
@@ -201,7 +220,35 @@ func platformEnv(opts Options) []string {
 	if opts.GOARCH != "" {
 		env = append(env, "GOARCH="+opts.GOARCH)
 	}
+	if os.Getenv("GOTOOLCHAIN") == "" {
+		env = append(env, "GOTOOLCHAIN=local")
+	}
 	return env
+}
+
+// toolchainAdvice는 go 명령이 GOTOOLCHAIN=local이라 더 새 Go를 요구하는 저장소를 거부했을 때의 원인과 해결
+// 방향이다. 기본값이 막았다는 사실과 되돌리는 방법은 go 명령의 문구만으로는 알 수 없다.
+const toolchainAdvice = "this repository needs a newer Go than the installed one, and GOTOOLCHAIN=local " +
+	"(gartograph's default when the GOTOOLCHAIN environment variable is not set) keeps the go command from " +
+	"downloading it: install that Go release, or rerun with GOTOOLCHAIN=auto if you trust this repository"
+
+// loaderError는 packages.Load 실패를 what 단계의 오류로 감싸고 해결 방향 advice를 붙인다. go 명령이
+// GOTOOLCHAIN=local 아래에서 더 새 Go 요구를 거부한 실패면 advice 대신 toolchainAdvice를 붙인다 —
+// "check go.mod" 같은 일반 안내로는 Go 설치와 GOTOOLCHAIN=auto라는 두 길이 보이지 않는다.
+func loaderError(what string, err error, advice string) error {
+	if toolchainRefused(err) {
+		advice = toolchainAdvice
+	}
+	return fmt.Errorf("%s: %w — %s", what, err, advice)
+}
+
+// toolchainRefused는 go 명령이 GOTOOLCHAIN=local이라 툴체인을 바꾸지 않고 더 새 Go 요구를 거부했는지 오류
+// 문구로 본다. 문구는 cmd/go gover.TooNewError의 "X requires go >= V (running go L; GOTOOLCHAIN=local)"이다
+// (X는 go.mod·go.work·의존 모듈). 문구가 바뀌면 일반 안내로 물러날 뿐 go 명령의 원인 문구는 그대로 남는다.
+// local+path 같은 다른 값은 맞추지 않는다 — 그 값은 사용자가 고른 전환 규칙이다.
+func toolchainRefused(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, " requires go >= ") && strings.Contains(msg, "; GOTOOLCHAIN=local)")
 }
 
 // platformNote는 플랫폼 덮어쓰기를 limitation 문장으로 만든다.
@@ -261,6 +308,7 @@ func buildDocument(root string, reachable []*packages.Package,
 			}
 		}
 	}
+	recordWorkspaceModules(doc, kept)
 
 	var merged int
 	for _, p := range reachable {
@@ -333,6 +381,35 @@ func buildDocument(root string, reachable []*packages.Package,
 	}
 	doc.Sort()
 	return doc, kept
+}
+
+// recordWorkspaceModules는 go.work 워크스페이스 수확에서 패키지 정점의 모듈 소속을 문서에 싣는다.
+// 그래프에 패키지가 있는 주 모듈이 둘 이상일 때만 싣는다 — 단일 모듈 문서는 Module 하나로 모든 패키지를
+// 해석할 수 있어 바이트가 그대로여야 한다. 문서에는 모듈마다 go.mod 디렉터리(WorkspaceModules)를, 문서
+// Module이 아닌 모듈의 패키지 정점에는 그 모듈 경로(Module)를 싣는다. 분석이 컴포넌트·fileRules 패턴과
+// 파일→패키지 해석을 패키지마다 그 모듈 기준으로 하는 재료다 — exclude는 수확 때 이미 그렇게 맞췄다.
+// doc.Vertices는 아직 kept의 패키지 정점뿐이다(심볼 수확 전).
+func recordWorkspaceModules(doc *graph.Document, kept map[string]*packages.Package) {
+	dirs := map[string]string{}
+	for _, p := range kept {
+		if path := mainModulePath(p); path != "" {
+			dirs[path] = p.Module.Dir
+		}
+	}
+	if len(dirs) < 2 {
+		return
+	}
+	for path, dir := range dirs {
+		doc.WorkspaceModules = append(doc.WorkspaceModules, graph.WorkspaceModule{Path: path, Dir: dir})
+	}
+	sort.Slice(doc.WorkspaceModules, func(i, j int) bool {
+		return doc.WorkspaceModules[i].Path < doc.WorkspaceModules[j].Path
+	})
+	for i := range doc.Vertices {
+		if path := mainModulePath(kept[doc.Vertices[i].ID]); path != "" && path != doc.Module {
+			doc.Vertices[i].Module = path
+		}
+	}
 }
 
 // internalPackages는 로드된 루트 중 모듈 내부이고 그래프에 남은 것만 골라낸다.

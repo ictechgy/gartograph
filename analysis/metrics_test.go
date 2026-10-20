@@ -296,6 +296,26 @@ func TestMetricsNoConfig(t *testing.T) {
 	}
 }
 
+// TestMetricsWorkspace는 워크스페이스 문서의 metrics가 형제 모듈 패키지를 내부로 세는지 본다 — 임포터가
+// 없는 b/tool은 orphan이고, 컴포넌트 단위는 rules와 같은 매핑(b/util은 util)이라 util의 Ca·Ce에 b/util의
+// 의존이 들어간다. 모듈 소속 사실이 없는 옛 문서는 지금처럼 b/tool을 외부로 보고 orphan에서 뺀다.
+func TestMetricsWorkspace(t *testing.T) {
+	rep := Metrics(workspaceDoc(), workspaceCfg())
+	if !reflect.DeepEqual(rep.Orphans, []string{"example.com/a/app", "example.com/b/tool"}) ||
+		!reflect.DeepEqual(rep.Unmapped, []string{"example.com/b/tool"}) {
+		t.Fatalf("workspace orphans and unmapped: %+v", rep)
+	}
+	util := metricOf(rep, "util")
+	if !reflect.DeepEqual(util.Packages, []string{"example.com/a/util", "example.com/b/util"}) ||
+		util.Afferent != 1 || util.Efferent != 1 {
+		t.Fatalf("util must count both modules' packages: %+v", util)
+	}
+	old := Metrics(oldWorkspaceDoc(), workspaceCfg())
+	if !reflect.DeepEqual(old.Orphans, []string{"example.com/a/app"}) {
+		t.Fatalf("an old document must keep sibling packages out of orphans: %+v", old)
+	}
+}
+
 // TestMetricsAbstractnessDistance는 인터페이스 비율(A)과 주 계열 거리(D)를 확인한다.
 // D = |A+I−1| — 타입 정점이 없는 단위는 정의되지 않아 키가 빠진다.
 func TestMetricsAbstractnessDistance(t *testing.T) {

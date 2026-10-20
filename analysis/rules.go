@@ -188,14 +188,11 @@ func fileViolations(d *graph.Document, cfg *config.File, e graph.Edge,
 	return violations, 0
 }
 
-// relFile은 절대 파일 경로를 모듈 상대 경로로 바꾼다 — 설정의 파일 패턴이
-// 수확 머신의 절대 경로가 아니라 이식 가능한 경로에 맞도록.
-// ModuleDir이 없는 문서는 Root를 기준으로 한다.
+// relFile은 절대 파일 경로를 그 파일이 속한 모듈 기준 상대 경로로 바꾼다 — 설정의 파일 패턴이
+// 수확 머신의 절대 경로가 아니라 이식 가능한 경로에 맞도록. 기준은 fileModule이 고른다(go.work
+// 워크스페이스면 파일을 담는 워크스페이스 모듈, 아니면 ModuleDir, 그것도 없으면 Root).
 func relFile(d *graph.Document, abs string) string {
-	base := d.ModuleDir
-	if base == "" {
-		base = d.Root
-	}
+	_, base := fileModule(d, abs)
 	if rel, err := filepath.Rel(base, abs); err == nil {
 		return filepath.ToSlash(rel)
 	}
@@ -422,8 +419,9 @@ func vertexMap(d *graph.Document) map[string]graph.Vertex {
 }
 
 // componentMap은 패키지 정점을 컴포넌트로 해석한다.
-// 모듈 경로 접두사를 벗겨 상대 경로로 패턴과 맞춘다. 모듈 밖의 패키지는
-// 접두사가 벗겨지지 않아 전체 import 경로가 그대로 패턴과 맞는다 —
+// 패키지가 속한 모듈의 경로 접두사를 벗겨 상대 경로로 패턴과 맞춘다(packageModule) — go.work
+// 워크스페이스에서는 패키지마다 자기 워크스페이스 모듈이 기준이라 exclude와 같은 패키지를 가리킨다.
+// 모듈 밖의 패키지는 접두사가 벗겨지지 않아 전체 import 경로가 그대로 패턴과 맞는다 —
 // `github.com/aws/**` 같은 컴포넌트가 --deps 수확에서 vendor 규칙이 된다.
 // 두 번째 반환값은 실제로 한 정점 이상에 매칭된 컴포넌트 집합이다.
 func componentMap(d *graph.Document, cfg *config.File) (map[string]string, map[string]bool) {
@@ -433,7 +431,7 @@ func componentMap(d *graph.Document, cfg *config.File) (map[string]string, map[s
 		if v.Kind != graph.KindPackage {
 			continue
 		}
-		rel := relPath(v.ID, d.Module)
+		rel := graph.ModuleRelative(v.ID, packageModule(d, v))
 		if c, ok := cfg.ComponentOf(rel); ok {
 			out[v.ID] = c
 			used[c] = true
@@ -491,25 +489,67 @@ func MapComponents(d *graph.Document, cfg *config.File) *Mapping {
 
 // isExternalPackage는 패키지 정점이 주 모듈 밖에 있는지 본다.
 // 정점의 External 표시가 정본이다 — 수확 시점의 모듈 소속 사실.
-// 표시가 없는 옛 문서는 경로 접두사로 폴백한다 — 모듈 정보가 없는 문서는
-// 모두 내부로 본다.
+// 워크스페이스 문서(isWorkspaceDocument)의 External은 빠짐없이 수확한 사실이라 그대로 믿는다 — 형제
+// 워크스페이스 모듈의 패키지는 문서 Module 접두사가 없어도 외부가 아니다.
+// 그 밖의 문서에서 표시가 없으면 경로 접두사로 폴백한다(External을 싣기 전의 옛 문서) — 모듈 정보가
+// 없는 문서는 모두 내부로 본다.
 func isExternalPackage(d *graph.Document, v graph.Vertex) bool {
 	if v.External {
 		return true
+	}
+	if isWorkspaceDocument(d) {
+		return false
 	}
 	return d.Module != "" && v.ID != d.Module &&
 		!strings.HasPrefix(v.ID, d.Module+"/")
 }
 
-// relPath는 패키지 경로를 모듈 상대 경로로 바꾼다.
-// Root가 모듈 경로일 때만 접두사를 벗긴다 — 파일시스템 경로가 아니라
-// 모듈 경로 기준으로 맞춰야 설정 파일이 이식 가능하다.
-func relPath(pkgPath, modulePath string) string {
-	if modulePath == "" {
-		return pkgPath
+// isWorkspaceDocument는 문서가 패키지 정점의 모듈 소속(graph.Document.WorkspaceModules)을 담았는지
+// 본다 — 둘 이상의 주 모듈을 수확한 go.work 문서만 싣는다. 없는 문서(단일 모듈, 그 사실을 수확하기 전의
+// 옛 문서)는 문서 Module 하나로 해석한다 — 옛 문서의 결과가 그대로여야 하기 때문이다.
+func isWorkspaceDocument(d *graph.Document) bool {
+	return len(d.WorkspaceModules) > 0
+}
+
+// packageModule은 패키지 정점의 패턴 기준 모듈 경로다 — graph.ModuleRelative에 넘기는 값이다.
+// 워크스페이스 문서는 수확 사실을 그대로 쓴다: 외부 패키지는 ""(전체 import 경로로 맞춘다), 형제
+// 워크스페이스 모듈의 패키지는 정점의 Module, 나머지는 문서 Module이다. exclude(source.excludeMatch)와
+// 같은 기준이다. 그 밖의 문서는 지금처럼 모든 패키지를 문서 Module 기준으로 벗긴다 — 접두사가 맞는
+// 패키지만 벗겨지므로 외부 패키지는 전체 경로로 남는다.
+func packageModule(d *graph.Document, v graph.Vertex) string {
+	switch {
+	case !isWorkspaceDocument(d):
+		return d.Module
+	case v.External:
+		return ""
+	case v.Module != "":
+		return v.Module
+	default:
+		return d.Module
 	}
-	if pkgPath == modulePath {
-		return "."
+}
+
+// fileModule은 파일이 속한 모듈의 경로와 go.mod 디렉터리를 고른다 — 파일→패키지 해석(packageForFile)과
+// fileRules의 파일 경로(relFile)가 같은 기준을 쓴다. 워크스페이스 문서에서는 파일을 담는 워크스페이스 모듈
+// 디렉터리 중 가장 깊은 것이다(다른 워크스페이스 모듈 디렉터리 안에 놓인 모듈도 맞게 고른다). 담는 모듈이
+// 없거나 워크스페이스 문서가 아니면 문서 Module과 ModuleDir(없으면 Root)이다 — 예전 기준 그대로다.
+func fileModule(d *graph.Document, abs string) (modulePath, dir string) {
+	modulePath, dir = d.Module, d.ModuleDir
+	if dir == "" {
+		dir = d.Root
 	}
-	return strings.TrimPrefix(pkgPath, modulePath+"/")
+	depth := -1
+	for _, m := range d.WorkspaceModules {
+		if len(m.Dir) > depth && containsFile(m.Dir, abs) {
+			modulePath, dir, depth = m.Path, m.Dir, len(m.Dir)
+		}
+	}
+	return modulePath, dir
+}
+
+// containsFile은 절대 경로 abs가 dir 아래에 있는지 어휘적으로 본다(심링크를 풀지 않는다 — 저장 문서의
+// 경로는 이 머신에 없을 수 있다). 상대 경로를 만들 수 없으면(다른 볼륨, 빈 dir·상대 dir) 담지 않는다.
+func containsFile(dir, abs string) bool {
+	rel, err := filepath.Rel(dir, abs)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

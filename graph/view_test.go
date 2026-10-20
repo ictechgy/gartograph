@@ -43,6 +43,19 @@ func TestView(t *testing.T) {
 	if pkg.Module != "m" {
 		t.Fatal("view lost Module")
 	}
+	// 모듈 위치 사실(ModuleDir·WorkspaceModules·정점 Module)도 그대로다 — 패턴·파일 해석의 기준이다.
+	ws := viewDoc()
+	ws.ModuleDir = "/w/m"
+	ws.WorkspaceModules = []WorkspaceModule{{Path: "m", Dir: "/w/m"}, {Path: "n", Dir: "/w/n"}}
+	ws.Vertices = append(ws.Vertices, Vertex{ID: "n/q", Kind: KindPackage, Module: "n"})
+	wsView, err := ws.View(LevelPackage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wsView.ModuleDir != ws.ModuleDir || !reflect.DeepEqual(wsView.WorkspaceModules, ws.WorkspaceModules) ||
+		len(wsView.Vertices) != 2 || wsView.Vertices[0].Module != "n" {
+		t.Fatalf("view lost module location facts: %+v", wsView)
+	}
 
 	typ, err := d.View(LevelType)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ictechgy/gartograph/analysis"
+	"github.com/ictechgy/gartograph/config"
 	"github.com/ictechgy/gartograph/export"
 	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
@@ -579,10 +582,352 @@ func TestImpactSinceGuardsGit(t *testing.T) {
 	}
 }
 
+// gitIn은 dir에서 git을 실행해 출력을 돌려주는 함수다 — 실패하면 테스트를 끝낸다. 커밋 신원과 로컬
+// 서브모듈 clone 허용(git 2.38.1부터 기본 거부)을 인자로 준다.
+func gitIn(t *testing.T, dir string) func(args ...string) string {
+	t.Helper()
+	return func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t",
+			"-c", "protocol.file.allow=always"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+}
+
+// commitFixture는 dir을 git 저장소로 만들어 전부 커밋하고, 그 저장소에서 git을 부르는 함수를 돌려준다.
+// prepare는 첫 커밋 전에 돈다(커밋할 때 이미 있어야 하는 filter 설정용). 사용자·시스템 git 설정은 읽지
+// 않는다 — 개발자 머신의 전역 설정(git-lfs의 filter.lfs 같은)이 결과를 바꾸지 않게 하기 위해서다.
+// gartograph가 띄우는 git도 이 환경을 물려받는다. 셸 스크립트 fixture라 windows에서는 건너뛴다.
+func commitFixture(t *testing.T, dir string, prepare func(git func(args ...string) string)) func(args ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("the repository configuration fixtures are POSIX shell scripts")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	git := gitIn(t, dir)
+	git("init", "-q")
+	if prepare != nil {
+		prepare(git)
+	}
+	git("add", "-A")
+	git("commit", "-qm", "init")
+	return git
+}
+
+// writeTestFile은 path에 내용을 쓴다(상위 디렉터리를 만든다). mode가 0이면 0o644다.
+func writeTestFile(t *testing.T, path, content string, mode os.FileMode) {
+	t.Helper()
+	if mode == 0 {
+		mode = 0o644
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// markerCommand는 실행되면 markers 안의 name 파일에 한 줄을 남기고 then을 실행하는 셸 스크립트를
+// at에 만든다 — 분석 대상 설정이 띄우는 명령(filter·훅)이 실제로 돌았는지 파일로 남긴다.
+func markerCommand(t *testing.T, at, markers, name, then string) string {
+	t.Helper()
+	writeTestFile(t, at, "#!/bin/sh\necho ran >> '"+filepath.Join(markers, "ran-"+name)+"'\n"+then+"\n", 0o755)
+	return at
+}
+
+// assertNoRepositoryCommandRan은 markerCommand가 남긴 마커가 하나도 없는지 본다.
+func assertNoRepositoryCommandRan(t *testing.T, markers, what string) {
+	t.Helper()
+	entries, err := os.ReadDir(markers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ran []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "ran-") {
+			ran = append(ran, e.Name())
+		}
+	}
+	if len(ran) > 0 {
+		t.Fatalf("%s ran commands from the analyzed repository's git configuration: %v", what, ran)
+	}
+}
+
+// staleStat은 파일의 시각을 과거로 돌려 git의 stat 캐시를 낡게 만든다 — 그래야 git이 내용을 다시
+// 읽어(clean filter를 거쳐) 바뀌었는지 본다. 내용은 그대로다.
+func staleStat(t *testing.T, at time.Time, paths ...string) {
+	t.Helper()
+	for _, p := range paths {
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// hasLimitation은 prefix로 시작하고 want를 담은 limitation이 있는지 본다.
+func hasLimitation(limitations []string, prefix, want string) bool {
+	for _, l := range limitations {
+		if strings.HasPrefix(l, prefix) && strings.Contains(l, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGitCallsDoNotRunRepositoryCommands는 분석용 git 호출(impact --since의 diff, 순회 revision 판독)이
+// 분석 대상 저장소 설정의 filter 드라이버와 post-index-change 훅을 실행하지 않는지 본다(DECISIONS D1).
+// 드라이버는 .git/info/attributes와 커밋된 .gitattributes 양쪽에서 걸고, 점이 든 이름과 장기 실행
+// process 키도 둔다. stat 캐시를 낡게 만들어야 git이 내용을 다시 읽는다 — 수정 전에는 그때 clean·process
+// 명령이 돌았고, git diff의 index 갱신이 post-index-change 훅을 실행했다. 내용을 바꾸지 않는 filter라
+// 순회는 여전히 깨끗한 HEAD를 싣고, --since는 stat만 바뀐 파일도 바뀐 파일로 낸다(diff.autoRefreshIndex=false).
+func TestGitCallsDoNotRunRepositoryCommands(t *testing.T) {
+	variants := []struct{ name, driver, key, attributes, then string }{
+		{"info attributes clean", "evil", "clean", ".git/info/attributes", "cat"},
+		{"committed gitattributes dotted name", "a.b", "clean", ".gitattributes", "cat"},
+		{"process", "p", "process", ".git/info/attributes", "exit 1"},
+	}
+	for _, v := range variants {
+		t.Run(v.name, func(t *testing.T) {
+			dir := traversalFixture(t)
+			git := commitFixture(t, dir, func(func(...string) string) {
+				if v.attributes == ".gitattributes" {
+					writeTestFile(t, filepath.Join(dir, ".gitattributes"), "*.go filter="+v.driver+"\n", 0)
+				}
+			})
+			head := git("rev-parse", "HEAD")
+			markers := t.TempDir()
+			git("config", "filter."+v.driver+"."+v.key,
+				markerCommand(t, filepath.Join(markers, "driver.sh"), markers, "filter", v.then))
+			if v.attributes != ".gitattributes" {
+				writeTestFile(t, filepath.Join(dir, v.attributes), "*.go filter="+v.driver+"\n", 0)
+			}
+			markerCommand(t, filepath.Join(dir, ".git", "hooks", "post-index-change"), markers, "hook", "")
+			mainGo := filepath.Join(dir, "main.go")
+			old := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+
+			staleStat(t, old, mainGo)
+			code, out, errb := run(t, "impact", "--dir", dir, "--since", "HEAD")
+			assertNoRepositoryCommandRan(t, markers, "impact --since HEAD")
+			if code != 0 || !strings.Contains(out, `"main.go"`) {
+				t.Fatalf("impact --since HEAD must list the file whose stat changed: %d %s %s", code, out, errb)
+			}
+			for _, args := range [][]string{{"reach", fx + ".main"}, {"impact", "--format", "language-traversal", fx + ".handleUsers"}} {
+				old = old.Add(time.Hour)
+				staleStat(t, old, mainGo)
+				code, out, errb := run(t, append(args, "--dir", dir)...)
+				assertNoRepositoryCommandRan(t, markers, args[0]+" (revision)")
+				if doc := parseTraversal(t, out); code != 0 || doc.Revision == nil || *doc.Revision != head {
+					t.Fatalf("%v: a filter that keeps the content must leave the clean HEAD %s: %d %s %s", args, head, code, out, errb)
+				}
+			}
+		})
+	}
+}
+
+// TestGitCallsRefuseUnneutralizableFilter는 이름에 '='가 든 filter 드라이버가 설정돼 있으면 분석용 git을
+// 실행하지 않는지 본다 — git은 -c 값을 첫 '='에서 나눠 그런 드라이버를 빈 명령으로 덮을 수 없다(fail-closed).
+// impact --since는 원인과 --files를 담은 오류(2)로 끝나고, 순회는 revision을 싣지 않고 그 이유를
+// limitation으로 알린다.
+func TestGitCallsRefuseUnneutralizableFilter(t *testing.T) {
+	dir := traversalFixture(t)
+	git := commitFixture(t, dir, nil)
+	markers := t.TempDir()
+	git("config", "filter.a=b.clean", markerCommand(t, filepath.Join(markers, "driver.sh"), markers, "filter", "cat"))
+	writeTestFile(t, filepath.Join(dir, ".git", "info", "attributes"), "*.go filter=a=b\n", 0)
+	mainGo := filepath.Join(dir, "main.go")
+
+	staleStat(t, time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC), mainGo)
+	code, out, errb := run(t, "impact", "--dir", dir, "--since", "HEAD")
+	assertNoRepositoryCommandRan(t, markers, "impact --since HEAD")
+	if code != 2 || out != "" || !strings.Contains(errb, "'='") || !strings.Contains(errb, "--files") {
+		t.Fatalf("an unneutralizable filter driver must stop impact --since with a --files hint: %d %q %q", code, out, errb)
+	}
+
+	staleStat(t, time.Date(2002, 1, 1, 0, 0, 0, 0, time.UTC), mainGo)
+	code, out, errb = run(t, "reach", "--dir", dir, fx+".main")
+	assertNoRepositoryCommandRan(t, markers, "reach")
+	doc := parseTraversal(t, out)
+	if code != 0 || doc.Revision != nil || !hasLimitation(doc.Limitations, "revision-unverified:", "--revision") {
+		t.Fatalf("reach must omit the revision and say why: %d %s %s", code, out, errb)
+	}
+}
+
+// TestGitCallsStayOutOfSubmodules는 서브모듈 저장소 자신의 설정(그 안의 filter 드라이버)을 실행하지 않는지
+// 본다 — 상위 저장소의 status·diff는 기본값이면 서브모듈 안에서 git을 띄워 그 설정을 따른다. 순회는 서브모듈
+// 작업 트리를 볼 수 없어 revision을 싣지 않고 limitation으로 알린다(fail-safe). impact --since는 서브모듈에
+// 기록된 커밋과 서브모듈 HEAD가 다르면 지금처럼 그 경로를 바뀐 파일로 낸다.
+func TestGitCallsStayOutOfSubmodules(t *testing.T) {
+	subSrc := t.TempDir()
+	writeTestFile(t, filepath.Join(subSrc, "notes.txt"), "v1\n", 0)
+	gitSrc := commitFixture(t, subSrc, nil)
+	writeTestFile(t, filepath.Join(subSrc, "notes.txt"), "v2\n", 0)
+	gitSrc("commit", "-qam", "v2")
+
+	dir := traversalFixture(t)
+	git := commitFixture(t, dir, nil)
+	git("submodule", "add", "-q", subSrc, "sub")
+	git("commit", "-qm", "add submodule")
+	subWork := filepath.Join(dir, "sub")
+	gitSub := gitIn(t, subWork)
+	markers := t.TempDir()
+	gitSub("config", "filter.subevil.clean", markerCommand(t, filepath.Join(markers, "driver.sh"), markers, "filter", "cat"))
+	writeTestFile(t, filepath.Join(gitSub("rev-parse", "--absolute-git-dir"), "info", "attributes"), "* filter=subevil\n", 0)
+	notes := filepath.Join(subWork, "notes.txt")
+
+	staleStat(t, time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC), notes)
+	code, out, errb := run(t, "reach", "--dir", dir, fx+".main")
+	assertNoRepositoryCommandRan(t, markers, "reach")
+	doc := parseTraversal(t, out)
+	if code != 0 || doc.Revision != nil || !hasLimitation(doc.Limitations, "revision-unverified:", "1 git submodule") {
+		t.Fatalf("reach must omit the revision of a tree with submodules and say why: %d %s %s", code, out, errb)
+	}
+
+	staleStat(t, time.Date(2002, 1, 1, 0, 0, 0, 0, time.UTC), notes)
+	code, out, errb = run(t, "impact", "--dir", dir, "--since", "HEAD")
+	assertNoRepositoryCommandRan(t, markers, "impact --since HEAD")
+	if code != 0 || strings.Contains(out, `"sub"`) {
+		t.Fatalf("a submodule at its recorded commit is not a changed path: %d %s %s", code, out, errb)
+	}
+
+	// 악성 설정을 걷어 낸 뒤 서브모듈을 기록과 다른 커밋으로 옮긴다 — 테스트 자신의 git이 마커를 남기지 않게.
+	gitSub("config", "--unset", "filter.subevil.clean")
+	gitSub("checkout", "-q", "--detach", "HEAD~1")
+	code, out, errb = run(t, "impact", "--dir", dir, "--since", "HEAD")
+	if code != 0 || !strings.Contains(out, `"sub"`) {
+		t.Fatalf("a submodule moved off its recorded commit must stay a changed path: %d %s %s", code, out, errb)
+	}
+}
+
+// TestGitTreatsFilteredFilesAsChanged는 clean filter가 내용을 바꾸던 파일(git-lfs 같은)을 filter 없이 읽으면
+// 바뀐 파일로 보는지 본다 — git은 작업 트리 원문과 커밋된(filter를 거친) blob을 비교한다. stat 캐시가
+// 그대로면 다시 읽지 않으므로 깨끗하다. 낡으면 순회는 깨끗하다고 주장하지 않고 revision을 싣지 않으며
+// (fail-safe), impact --since는 그 파일을 바뀐 파일로 낸다.
+func TestGitTreatsFilteredFilesAsChanged(t *testing.T) {
+	dir := traversalFixture(t)
+	data := filepath.Join(dir, "data.txt")
+	writeTestFile(t, data, "payload\n", 0)
+	writeTestFile(t, filepath.Join(dir, ".gitattributes"), "data.txt filter=upper\n", 0)
+	// 커밋 전에 시각을 과거로 둔다 — index 기록보다 한참 앞선 파일은 racy-clean으로 다시 읽히지 않는다.
+	staleStat(t, time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC), data)
+	git := commitFixture(t, dir, func(git func(...string) string) {
+		git("config", "filter.upper.clean", "tr a-z A-Z")
+	})
+	head := git("rev-parse", "HEAD")
+	if blob := git("show", "HEAD:data.txt"); blob != "PAYLOAD" {
+		t.Fatalf("fixture: the committed blob must be the filter's output, got %q", blob)
+	}
+
+	code, out, errb := run(t, "reach", "--dir", dir, fx+".main")
+	if doc := parseTraversal(t, out); code != 0 || doc.Revision == nil || *doc.Revision != head {
+		t.Fatalf("an untouched filtered file must not make the tree dirty: %d %s %s", code, out, errb)
+	}
+
+	staleStat(t, time.Date(2002, 1, 1, 0, 0, 0, 0, time.UTC), data)
+	code, out, errb = run(t, "reach", "--dir", dir, fx+".main")
+	doc := parseTraversal(t, out)
+	if code != 0 || doc.Revision != nil || hasLimitation(doc.Limitations, "revision-unverified:", "") {
+		t.Fatalf("a re-read filtered file must make the tree dirty (no revision, no extra limitation): %d %s %s",
+			code, out, errb)
+	}
+	code, out, errb = run(t, "impact", "--dir", dir, "--since", "HEAD")
+	if code != 0 || !strings.Contains(out, `"data.txt"`) {
+		t.Fatalf("impact --since must list the re-read filtered file: %d %s %s", code, out, errb)
+	}
+}
+
+// removeLooseObject는 저장소의 loose 객체 하나를 지운다 — 부분 clone처럼 객체가 빠진 저장소를 만든다.
+// 커밋 직후의 객체는 loose다(pack이 아니면 테스트를 끝낸다).
+func removeLooseObject(t *testing.T, dir, oid string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(dir, ".git", "objects", oid[:2], oid[2:])); err != nil {
+		t.Fatalf("fixture: object %s must be loose: %v", oid, err)
+	}
+}
+
+// TestGitCallsDoNotFetchMissingObjects는 분석 대상 저장소가 promisor remote(부분 clone의 설정)를 두고 객체가
+// 빠져 있어도 분석용 git이 그 객체를 받으려고 fetch를 띄우지 않는지 본다(DECISIONS D1). 받으려 하면 git은
+// 그 remote의 uploadpack 명령(분석 대상 설정)을 실행한다 — 수정 전에는 impact --since의 diff와 순회 revision
+// 판독의 status가 그 명령을 실행했다. 객체가 없으니 impact --since는 부분 clone 안내와 --files를 담아 종료
+// 2로 끝나고, 순회는 status가 실패해 revision을 싣지 않는다.
+func TestGitCallsDoNotFetchMissingObjects(t *testing.T) {
+	cases := []struct {
+		name, missing string
+		args          []string
+	}{
+		{"impact --since", "HEAD~1^{tree}", []string{"impact", "--since", "HEAD~1"}},
+		{"reach", "HEAD^{tree}", []string{"reach", fx + ".main"}},
+		{"impact language-traversal", "HEAD^{tree}", []string{"impact", "--format", "language-traversal", fx + ".handleUsers"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := traversalFixture(t)
+			git := commitFixture(t, dir, nil)
+			mainGo := filepath.Join(dir, "main.go")
+			src, err := os.ReadFile(mainGo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeTestFile(t, mainGo, string(src)+"\n// second\n", 0)
+			git("commit", "-qam", "second")
+			markers := t.TempDir()
+			git("config", "remote.origin.url", t.TempDir())
+			git("config", "remote.origin.promisor", "true")
+			git("config", "remote.origin.uploadpack",
+				markerCommand(t, filepath.Join(markers, "upload-pack.sh"), markers, "fetch", "exit 1"))
+			removeLooseObject(t, dir, git("rev-parse", c.missing))
+
+			code, out, errb := run(t, append(c.args, "--dir", dir)...)
+			assertNoRepositoryCommandRan(t, markers, c.name)
+			if c.missing == "HEAD~1^{tree}" {
+				if code != 2 || out != "" || !strings.Contains(errb, "partial clone") || !strings.Contains(errb, "--files") {
+					t.Fatalf("a missing base tree must stop impact --since with the partial clone hint: %d %q %q",
+						code, out, errb)
+				}
+				return
+			}
+			if doc := parseTraversal(t, out); code != 0 || doc.Revision != nil {
+				t.Fatalf("%v: a missing HEAD tree must leave the revision out: %d %s %s", c.args, code, out, errb)
+			}
+		})
+	}
+}
+
+// TestGitProcessBlocksFetching은 분석용 git 프로세스의 실효 환경이 fetch를 막는지 본다 — 빠진 객체를 받는
+// fetch를 끄고(GIT_NO_LAZY_FETCH, git 2.44+) 허용 전송 목록을 비운다(GIT_ALLOW_PROTOCOL, 2.44 미만 git의
+// 방어). 실행 환경이 다른 값을 줘도 덮는다. 두 변수는 서로를 대신하는 방어라 행동 테스트(git 하나로 돈다)만으로는
+// 하나가 빠져도 드러나지 않아 환경을 직접 고정한다.
+func TestGitProcessBlocksFetching(t *testing.T) {
+	t.Setenv("GIT_NO_LAZY_FETCH", "0")
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file:ssh:ext")
+	env := gitProcess([]string{"status"}).Environ()
+	for _, want := range []string{"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL="} {
+		key, _, _ := strings.Cut(want, "=")
+		var got []string
+		for _, kv := range env {
+			if strings.HasPrefix(kv, key+"=") {
+				got = append(got, kv)
+			}
+		}
+		if !slices.Equal(got, []string{want}) {
+			t.Errorf("the git environment must set exactly %q, got %q", want, got)
+		}
+	}
+}
+
 // TestChangedFilesSinceExplainsUsageErrors는 git diff가 인자를 사용법 오류(종료 코드 129)로 거부하면
 // 원인과 해결 방향을 담은 한 줄 오류를 내는지 본다. git 2.24보다 오래된 git은 --end-of-options를 모르는
 // 옵션으로 보고 수십 줄 사용법만 찍는다 — 그대로 옮기면 왜 실패했는지 보이지 않는다. 그런 git을
 // 흉내 내는 가짜 git을 PATH에 둔다. 다른 실패(종료 코드 128의 bad revision)는 git의 말을 그대로 옮긴다.
+// diff 앞의 filter 드라이버 조회(git config)에는 "일치 없음"(종료 1)으로 답한다 — 오래된 git도 그 조회는 안다.
 func TestChangedFilesSinceExplainsUsageErrors(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake git is a POSIX shell script")
@@ -590,6 +935,7 @@ func TestChangedFilesSinceExplainsUsageErrors(t *testing.T) {
 	fake := t.TempDir()
 	script := "#!/bin/sh\n" +
 		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = config ]; then exit 1; fi\n" +
 		"  if [ \"$a\" = nope ]; then echo \"fatal: bad revision 'nope'\" >&2; exit 128; fi\n" +
 		"done\n" +
 		"echo 'usage: git diff [<options>] [<commit> [<commit>]] [--] [<path>...]' >&2\n" +
@@ -1995,6 +2341,603 @@ fileRules:
 	}
 }
 
+// portableFixture는 fileScope 위반(web/web.go), unreachable 심볼(lib.unusedHelper), 심볼 순환
+// (main.A↔main.B)이 함께 있는 모듈을 만든다 — baseline과 SARIF가 위치를 어떻게 적는지
+// rules·dead·cycles에서 한 번에 보려는 fixture다.
+func portableFixture(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func A() { B() }
+func B() { A() }
+
+func main() { lib.Run(); A() }
+`,
+		"lib/lib.go": `package lib
+
+func Run() {}
+func unusedHelper() {}
+`,
+		"web/web.go":    "package web\n\nimport _ \"example.com/fixture/testhelp\"\n",
+		"testhelp/t.go": "package testhelp\n",
+		".gartograph.yml": `components:
+  web: ["web"]
+  testhelp: ["testhelp"]
+deps:
+  web: ["testhelp"]
+fileRules:
+  - name: no-testdeps-in-prod
+    from: "!*_test.go"
+    to: testhelp
+`,
+	})
+}
+
+// resolvedPath는 심링크를 푼 경로를 돌려준다 — macOS 임시 디렉터리(/var → /private/var)에서
+// 수확한 위치와 테스트가 만든 경로를 같은 형태로 견주기 위해서다.
+func resolvedPath(t *testing.T, p string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatalf("resolving %s: %v", p, err)
+	}
+	return resolved
+}
+
+// assertNoCheckoutPath는 산출물에 dir의 절대 경로가 없는지 본다. 적힌 경로와 심링크를 푼 경로를,
+// JSON 문자열로 이스케이프한 형태(윈도 역슬래시)까지 함께 찾는다.
+func assertNoCheckoutPath(t *testing.T, what string, data []byte, dir string) {
+	t.Helper()
+	for _, p := range []string{dir, resolvedPath(t, dir)} {
+		quoted, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("quoting %s: %v", p, err)
+		}
+		if bytes.Contains(data, []byte(p)) || bytes.Contains(data, quoted[1:len(quoted)-1]) {
+			t.Fatalf("%s must not carry the checkout path %s:\n%s", what, p, data)
+		}
+	}
+}
+
+// TestBaselinesWriteModuleRelativePositions는 rules·dead --write-baseline이 위치 파일을 모듈 루트
+// 기준 '/' 구분 상대 경로로 쓰는지 확인한다 — 절대 경로를 쓰면 커밋한 baseline에 수확한 머신의
+// 사용자 이름과 디렉터리 구조가 남는다. 다른 경로로 복사한 체크아웃에서도 같은 baseline이 맞아야
+// 하고, 보고서의 위치(같은 실행의 위반·unreachable, 다음 실행의 baselined)는 지금처럼 그
+// 체크아웃의 절대 경로다.
+func TestBaselinesWriteModuleRelativePositions(t *testing.T) {
+	first := portableFixture(t)
+	moved := filepath.Join(t.TempDir(), "checkout")
+	if err := os.CopyFS(moved, os.DirFS(first)); err != nil {
+		t.Fatalf("copying the fixture to a second checkout: %v", err)
+	}
+	for _, c := range []struct{ cmd, file string }{
+		{"rules", "web/web.go"},
+		{"dead", "lib/lib.go"},
+	} {
+		path := filepath.Join(t.TempDir(), c.cmd+"-baseline.json")
+		code, out, errb := run(t, c.cmd, "--dir", first, "--write-baseline", path, "--format", "json")
+		if code != 0 {
+			t.Fatalf("%s --write-baseline failed: %d %s", c.cmd, code, errb)
+		}
+		var report struct {
+			Violations []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"violations"`
+			Unreachable []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"unreachable"`
+		}
+		if err := json.Unmarshal([]byte(out), &report); err != nil {
+			t.Fatalf("not JSON: %v\n%s", err, out)
+		}
+		// baseline에 쓸 사본만 상대 경로가 된다 — 같은 실행의 보고서는 바뀌지 않는다.
+		reported := append(report.Violations, report.Unreachable...)
+		if len(reported) != 1 || reported[0].Position == nil ||
+			resolvedPath(t, reported[0].Position.File) != resolvedPath(t, filepath.Join(first, filepath.FromSlash(c.file))) {
+			t.Fatalf("%s: writing the baseline must leave the report's absolute position alone: %s", c.cmd, out)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading the %s baseline: %v", c.cmd, err)
+		}
+		assertNoCheckoutPath(t, c.cmd+" baseline", data, first)
+		var written struct {
+			Violations []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"violations"`
+			Findings []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"findings"`
+		}
+		if err := json.Unmarshal(data, &written); err != nil {
+			t.Fatalf("baseline is not JSON: %v\n%s", err, data)
+		}
+		entries := append(written.Violations, written.Findings...)
+		if len(entries) != 1 || entries[0].Position == nil || entries[0].Position.File != c.file {
+			t.Fatalf("%s baseline must record %s relative to the module root:\n%s", c.cmd, c.file, data)
+		}
+		for _, dir := range []string{first, moved} {
+			code, out, errb := run(t, c.cmd, "--dir", dir,
+				"--baseline", path, "--strict", "--format", "json")
+			if code != 0 {
+				t.Fatalf("%s in %s: a baselined entry must not fail --strict: %d %s %s",
+					c.cmd, dir, code, out, errb)
+			}
+			var rep struct {
+				Violations  []json.RawMessage `json:"violations"`
+				Unreachable []json.RawMessage `json:"unreachable"`
+				Baselined   []struct {
+					Position *graph.Position `json:"position"`
+				} `json:"baselined"`
+				Stale []json.RawMessage `json:"staleBaseline"`
+			}
+			if err := json.Unmarshal([]byte(out), &rep); err != nil {
+				t.Fatalf("not JSON: %v\n%s", err, out)
+			}
+			if len(rep.Violations)+len(rep.Unreachable) != 0 || len(rep.Baselined) != 1 || len(rep.Stale) != 0 {
+				t.Fatalf("%s in %s: expected 0 fresh + 1 baselined + 0 stale: %s", c.cmd, dir, out)
+			}
+			// 보고서의 위치는 바꾸지 않는다 — 이 체크아웃의 절대 경로다.
+			if p := rep.Baselined[0].Position; p == nil ||
+				resolvedPath(t, p.File) != resolvedPath(t, filepath.Join(dir, filepath.FromSlash(c.file))) {
+				t.Fatalf("%s in %s: baselined entry must point at this checkout's %s: %s",
+					c.cmd, dir, c.file, out)
+			}
+		}
+	}
+}
+
+// TestBaselinePositionsUseModuleRoot는 --dir이 모듈의 하위 디렉터리여도 baseline 위치와 SARIF URI가
+// go.mod 디렉터리 기준인지 rules·dead·cycles에서 확인한다 — 기준이 --dir을 따르면 같은 파일이
+// 실행마다 다른 경로로 적힌다.
+func TestBaselinePositionsUseModuleRoot(t *testing.T) {
+	dir := portableFixture(t)
+	cycleDir := cycleFixture(t)
+	for _, c := range []struct {
+		args     []string
+		file     string
+		baseline bool // cycles baseline에는 위치가 없다
+	}{
+		{[]string{"dead", "--dir", filepath.Join(dir, "lib")}, "lib/lib.go", true},
+		{[]string{"rules", "--dir", filepath.Join(dir, "web"),
+			"--config", filepath.Join(dir, ".gartograph.yml")}, "web/web.go", true},
+		{[]string{"cycles", "--dir", filepath.Join(cycleDir, "a"), "--level", "symbol"}, "a/a.go", false},
+	} {
+		path := filepath.Join(t.TempDir(), "baseline.json")
+		args := append(slices.Clone(c.args), "--format", "sarif")
+		if c.baseline {
+			args = append(args, "--write-baseline", path)
+		}
+		code, out, errb := run(t, args...)
+		if code != 0 {
+			t.Fatalf("%v failed: %d %s", args, code, errb)
+		}
+		results := parseSARIFReport(t, out).Runs[0].Results
+		if len(results) == 0 {
+			t.Fatalf("%s: expected results: %s", c.args[0], out)
+		}
+		for _, r := range results {
+			if phys := r.Locations[0].PhysicalLocation; phys == nil || phys.ArtifactLocation["uri"] != c.file {
+				t.Fatalf("%s: SARIF URIs must be relative to the go.mod directory, not --dir: %s", c.args[0], out)
+			}
+		}
+		if !c.baseline {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var written struct {
+			Violations []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"violations"`
+			Findings []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"findings"`
+		}
+		if err := json.Unmarshal(data, &written); err != nil {
+			t.Fatalf("baseline is not JSON: %v\n%s", err, data)
+		}
+		entries := append(written.Violations, written.Findings...)
+		if len(entries) == 0 {
+			t.Fatalf("%s: the harvest under --dir must still report entries: %s", c.args[0], data)
+		}
+		for _, e := range entries {
+			if e.Position == nil || e.Position.File != c.file {
+				t.Fatalf("%s: baseline positions must be relative to the go.mod directory, not --dir: %s",
+					c.args[0], data)
+			}
+		}
+	}
+}
+
+// TestBaselineMatchesAbsolutePathEntries는 예전 판이 절대 경로로 쓴 baseline이 계속 맞는지 확인한다 —
+// 짝짓기 키는 경로를 보지 않으므로(fileScope는 규칙·import 간선·파일 이름) 다른 체크아웃의 절대
+// 경로로 적힌 항목도 지금 위반과 같은 항목이다. 더 이상 나오지 않는 항목은 baseline에 적힌 그대로
+// staleBaseline으로 돌아온다 — 읽을 때 경로를 고쳐 쓰지 않는다.
+func TestBaselineMatchesAbsolutePathEntries(t *testing.T) {
+	dir := portableFixture(t)
+	elsewhere := filepath.Join(t.TempDir(), "old-checkout")
+	pos := func(parts ...string) map[string]any {
+		return map[string]any{"file": filepath.Join(append([]string{elsewhere}, parts...)...),
+			"line": 3, "column": 8}
+	}
+	write := func(body map[string]any) string {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encoding the baseline: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "baseline.json")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	gone := pos("web", "gone.go")
+	rulesBase := write(map[string]any{
+		"tool": "gartograph", "kind": "violations-baseline", "version": 1,
+		"violations": []map[string]any{
+			{"from": "example.com/fixture/web", "to": "example.com/fixture/testhelp",
+				"fromComponent": "web", "toComponent": "testhelp", "kind": "import",
+				"rule": "fileScope", "name": "no-testdeps-in-prod", "position": pos("web", "web.go")},
+			{"from": "example.com/fixture/web", "to": "example.com/fixture/lib",
+				"fromComponent": "web", "toComponent": "lib", "kind": "import",
+				"rule": "allow", "position": gone},
+		},
+	})
+	code, out, errb := run(t, "rules", "--dir", dir,
+		"--baseline", rulesBase, "--strict", "--format", "json")
+	if code != 0 {
+		t.Fatalf("an absolute-path baseline must still match: %d %s %s", code, out, errb)
+	}
+	var rules struct {
+		Violations []json.RawMessage `json:"violations"`
+		Baselined  []json.RawMessage `json:"baselined"`
+		Stale      []struct {
+			Position *graph.Position `json:"position"`
+		} `json:"staleBaseline"`
+	}
+	if err := json.Unmarshal([]byte(out), &rules); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(rules.Violations) != 0 || len(rules.Baselined) != 1 || len(rules.Stale) != 1 ||
+		rules.Stale[0].Position == nil || rules.Stale[0].Position.File != gone["file"] {
+		t.Fatalf("expected 0 fresh + 1 baselined + the stale entry exactly as stored: %s", out)
+	}
+
+	deadBase := write(map[string]any{
+		"tool": "gartograph", "kind": "dead-baseline", "version": 1,
+		"findings": []map[string]any{{
+			"id": "example.com/fixture/lib.unusedHelper", "kind": "func",
+			"package": "example.com/fixture/lib", "position": pos("lib", "lib.go"),
+			"exported": false, "state": "unreachable", "reason": "not reachable from retention roots",
+		}},
+	})
+	code, out, errb = run(t, "dead", "--dir", dir,
+		"--baseline", deadBase, "--strict", "--format", "json")
+	if code != 0 {
+		t.Fatalf("an absolute-path dead baseline must still match: %d %s %s", code, out, errb)
+	}
+	var dead struct {
+		Unreachable []json.RawMessage `json:"unreachable"`
+		Baselined   []json.RawMessage `json:"baselined"`
+	}
+	if err := json.Unmarshal([]byte(out), &dead); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(dead.Unreachable) != 0 || len(dead.Baselined) != 1 {
+		t.Fatalf("expected 0 fresh + 1 baselined: %s", out)
+	}
+}
+
+// sarifReportResult는 SARIF 결과 하나에서 위치 테스트들이 보는 부분이다. artifactLocation은
+// 키 집합까지 견주려고 맵으로 읽는다.
+type sarifReportResult struct {
+	Message struct {
+		Text string `json:"text"`
+	} `json:"message"`
+	Locations []struct {
+		PhysicalLocation *struct {
+			ArtifactLocation map[string]any `json:"artifactLocation"`
+		} `json:"physicalLocation"`
+	} `json:"locations"`
+}
+
+// sarifReport는 SARIF 로그에서 위치 테스트들이 보는 부분이다. originalUriBaseIds 항목도
+// 키 집합까지 견주려고 맵으로 읽는다.
+type sarifReport struct {
+	Runs []struct {
+		OriginalURIBaseIDs map[string]map[string]any `json:"originalUriBaseIds"`
+		Results            []sarifReportResult       `json:"results"`
+	} `json:"runs"`
+}
+
+// parseSARIFReport는 SARIF 출력을 읽고 실행(run)이 하나인지 확인한다.
+func parseSARIFReport(t *testing.T, out string) sarifReport {
+	t.Helper()
+	var log sarifReport
+	if err := json.Unmarshal([]byte(out), &log); err != nil {
+		t.Fatalf("not SARIF JSON: %v\n%s", err, out)
+	}
+	if len(log.Runs) != 1 {
+		t.Fatalf("expected one SARIF run: %s", out)
+	}
+	return log
+}
+
+// wantOmittedNote는 모듈 루트 밖 파일의 결과 메시지 끝에 붙어야 하는 문구다 — 구현 상수와 따로 적어 문구 회귀를 잡는다.
+const wantOmittedNote = " (location omitted: the file is not under the module root)"
+
+// TestSARIFLocationsAreModuleRelative는 rules·cycles·dead SARIF의 artifactLocation이 모듈 루트 기준
+// 상대 URI와 uriBaseId %SRCROOT%를 쓰고, run.originalUriBaseIds가 %SRCROOT%를 절대 경로 없이
+// 설명하며, 로그 어디에도 체크아웃 경로가 없는지 확인한다 — 업로드한 SARIF에 수확한 머신의
+// 경로가 남지 않아야 한다.
+func TestSARIFLocationsAreModuleRelative(t *testing.T) {
+	dir := portableFixture(t)
+	for _, c := range []struct {
+		args []string
+		uri  string
+	}{
+		{[]string{"rules"}, "web/web.go"},
+		{[]string{"cycles", "--level", "symbol"}, "main.go"},
+		{[]string{"dead"}, "lib/lib.go"},
+	} {
+		args := append(slices.Clone(c.args), "--dir", dir, "--format", "sarif")
+		code, out, errb := run(t, args...)
+		if code != 0 {
+			t.Fatalf("%v failed: %d %s", args, code, errb)
+		}
+		assertNoCheckoutPath(t, c.args[0]+" SARIF", []byte(out), dir)
+		run0 := parseSARIFReport(t, out).Runs[0]
+		if len(run0.Results) != 1 || len(run0.Results[0].Locations) != 1 {
+			t.Fatalf("%s: expected one result with one location: %s", c.args[0], out)
+		}
+		want := map[string]any{"uri": c.uri, "uriBaseId": "%SRCROOT%"}
+		if phys := run0.Results[0].Locations[0].PhysicalLocation; phys == nil ||
+			!reflect.DeepEqual(phys.ArtifactLocation, want) {
+			t.Fatalf("%s: artifactLocation must be %v: %s", c.args[0], want, out)
+		}
+		srcRoot, ok := run0.OriginalURIBaseIDs["%SRCROOT%"]
+		if _, hasURI := srcRoot["uri"]; !ok || hasURI || srcRoot["description"] == nil {
+			t.Fatalf("%s: originalUriBaseIds must describe %%SRCROOT%% without an absolute uri: %s",
+				c.args[0], out)
+		}
+	}
+}
+
+// saveDoc은 문서를 임시 파일로 저장하고 그 경로를 돌려준다 — --graph로 실제 CLI 경로를 돌리려는 것이다.
+func saveDoc(t *testing.T, doc *graph.Document) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "graph.json")
+	if err := export.SaveFile(doc, path); err != nil {
+		t.Fatalf("saving the graph document: %v", err)
+	}
+	return path
+}
+
+// TestSavedDocumentPositions는 저장 문서(--graph)의 위치를 dead SARIF·baseline이 어떻게 적는지 본다.
+//   - 모듈 루트 안 파일: SARIF URI는 경로 세그먼트마다 RFC 3986으로 퍼센트 인코딩한다. 공백·#·%·비ASCII·
+//     콜론은 인코딩하고 sub-delims와 @는 그대로 둔다(첫 세그먼트의 콜론은 scheme으로 읽힌다). baseline은
+//     인코딩하지 않은 파일 경로다. 상대 위치는 이미 모듈 루트 기준으로 본다.
+//   - 모듈 루트 밖 파일(".."로 벗어나는 상대 위치 포함): SARIF는 physicalLocation 없이 메시지로 알리고,
+//     baseline은 파일 이름만 남긴다 — "../" 경로는 머신마다 다른 위치를 담는다.
+//   - 모듈 루트를 싣지 않은 문서의 절대 위치와, 윈도에서 수확한 문서를 다른 OS에서 읽은 위치("C:\…"·
+//     "\\server\…"를 이 OS는 절대 경로로 알아보지 못한다)도 상대 형태가 없는 위치로 다룬다.
+//
+// 어느 경우든 그 머신의 경로가 산출물에 옮겨지면 안 된다.
+func TestSavedDocumentPositions(t *testing.T) {
+	work := t.TempDir()
+	modRoot := filepath.Join(work, "mod root")
+	winRoot := `C:\Users\someone\repo`
+	type symbol struct{ name, file, uri, baseline string } // uri ""는 physicalLocation 생략
+	for _, g := range []struct {
+		name, root string
+		symbols    []symbol
+	}{
+		{"module root", modRoot, []symbol{
+			{"Space", filepath.Join(modRoot, "a dir", "x#1%.go"), "a%20dir/x%231%25.go", "a dir/x#1%.go"},
+			{"Hangul", filepath.Join(modRoot, "한글", "파일.go"),
+				"%ED%95%9C%EA%B8%80/%ED%8C%8C%EC%9D%BC.go", "한글/파일.go"},
+			{"Delims", filepath.Join(modRoot, "x+y(1)@v:2.go"), "x+y(1)@v%3A2.go", "x+y(1)@v:2.go"},
+			{"Relative", "rel/r.go", "rel/r.go", "rel/r.go"},
+			{"Outside", filepath.Join(work, "other", "o.go"), "", "o.go"},
+			{"Escaping", "../up/e.go", "", "e.go"},
+		}},
+		{"no module root", "", []symbol{
+			{"Abs", filepath.Join(work, "elsewhere", "z.go"), "", "z.go"},
+			{"Rel", "a/g.go", "a/g.go", "a/g.go"},
+		}},
+		{"windows document", winRoot, []symbol{
+			{"Drive", winRoot + `\a\drive.go`, "", "drive.go"},
+			{"Share", `\\server\share\someone\a\share.go`, "", "share.go"},
+		}},
+	} {
+		t.Run(g.name, func(t *testing.T) {
+			if g.root == winRoot && runtime.GOOS == "windows" {
+				t.Skip("on windows these are ordinary absolute paths under the module root")
+			}
+			doc := &graph.Document{Version: graph.Version, Tool: graph.Tool, Level: graph.LevelSymbol,
+				Root: g.root, Module: "m", ModuleDir: g.root,
+				Vertices: []graph.Vertex{{ID: "m/a", Kind: graph.KindPackage, Name: "a"}}}
+			for _, s := range g.symbols {
+				doc.Vertices = append(doc.Vertices, graph.Vertex{ID: "m/a." + s.name, Kind: graph.KindFunc,
+					Name: s.name, Package: "m/a", Position: &graph.Position{File: s.file, Line: 3, Column: 6}})
+			}
+			graphPath := saveDoc(t, doc)
+			assertNoMachinePath := func(what string, data []byte) {
+				t.Helper()
+				assertNoCheckoutPath(t, what, data, work)
+				if bytes.Contains(data, []byte("someone")) {
+					t.Fatalf("%s must not carry the windows machine's path:\n%s", what, data)
+				}
+			}
+
+			code, out, errb := run(t, "dead", "--graph", graphPath, "--format", "sarif")
+			if code != 0 {
+				t.Fatalf("dead sarif failed: %d %s", code, errb)
+			}
+			assertNoMachinePath("dead SARIF", []byte(out))
+			results := parseSARIFReport(t, out).Runs[0].Results
+			if len(results) != len(g.symbols) {
+				t.Fatalf("expected %d results: %s", len(g.symbols), out)
+			}
+			for _, s := range g.symbols {
+				i := slices.IndexFunc(results, func(r sarifReportResult) bool {
+					return strings.Contains(r.Message.Text, " m/a."+s.name+":")
+				})
+				if i < 0 || len(results[i].Locations) != 1 {
+					t.Fatalf("%s: expected a result with one location: %s", s.name, out)
+				}
+				phys := results[i].Locations[0].PhysicalLocation
+				if s.uri == "" {
+					if phys != nil || !strings.HasSuffix(results[i].Message.Text, wantOmittedNote) {
+						t.Fatalf("%s: a file not under the module root must have no physicalLocation and say so: %s",
+							s.name, out)
+					}
+					continue
+				}
+				want := map[string]any{"uri": s.uri, "uriBaseId": "%SRCROOT%"}
+				if phys == nil || !reflect.DeepEqual(phys.ArtifactLocation, want) ||
+					strings.Contains(results[i].Message.Text, "location omitted") {
+					t.Fatalf("%s: artifactLocation must be %v: %s", s.name, want, out)
+				}
+			}
+
+			basePath := filepath.Join(t.TempDir(), "dead-baseline.json")
+			if code, _, errb := run(t, "dead", "--graph", graphPath, "--write-baseline", basePath); code != 0 {
+				t.Fatalf("dead --write-baseline failed: %d %s", code, errb)
+			}
+			data, err := os.ReadFile(basePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNoMachinePath("dead baseline", data)
+			base, err := loadDeadBaseline(basePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range g.symbols {
+				i := slices.IndexFunc(base.Findings, func(f analysis.Finding) bool { return f.ID == "m/a."+s.name })
+				if i < 0 || base.Findings[i].Position == nil || base.Findings[i].Position.File != s.baseline {
+					t.Fatalf("%s: baseline position must be %q: %s", s.name, s.baseline, data)
+				}
+			}
+		})
+	}
+}
+
+// TestSARIFOmitsOutsideFilesForRulesAndCycles는 rules·cycles SARIF도 모듈 루트 밖 위치(예: 다른
+// go.work 모듈의 파일)를 physicalLocation 없이 메시지 문구로 알리는지 확인한다 — 세 명령이 같은
+// 규칙을 따라야 한다.
+func TestSARIFOmitsOutsideFilesForRulesAndCycles(t *testing.T) {
+	work := t.TempDir()
+	root := filepath.Join(work, "mod")
+	elsewhere := func(name string) []graph.Position {
+		return []graph.Position{{File: filepath.Join(work, "sibling", name), Line: 3, Column: 8}}
+	}
+	graphPath := saveDoc(t, &graph.Document{Version: graph.Version, Tool: graph.Tool,
+		Level: graph.LevelPackage, Root: root, Module: "m", ModuleDir: root,
+		Vertices: []graph.Vertex{
+			{ID: "m/db", Kind: graph.KindPackage, Name: "db"},
+			{ID: "m/web", Kind: graph.KindPackage, Name: "web"},
+		},
+		Edges: []graph.Edge{
+			{From: "m/db", To: "m/web", Kind: graph.EdgeImport, Positions: elsewhere("db.go")},
+			{From: "m/web", To: "m/db", Kind: graph.EdgeImport, Positions: elsewhere("web.go")},
+		}})
+	cfg := filepath.Join(t.TempDir(), "rules.yml")
+	if err := os.WriteFile(cfg, []byte("components:\n  web: [web]\n  db: [db]\ndeps: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"cycles", "--graph", graphPath, "--format", "sarif"},
+		{"rules", "--graph", graphPath, "--config", cfg, "--format", "sarif"},
+	} {
+		code, out, errb := run(t, args...)
+		if code != 0 {
+			t.Fatalf("%v failed: %d %s", args, code, errb)
+		}
+		assertNoCheckoutPath(t, args[0]+" SARIF", []byte(out), work)
+		run0 := parseSARIFReport(t, out).Runs[0]
+		results := run0.Results
+		if len(results) == 0 {
+			t.Fatalf("%s: expected results: %s", args[0], out)
+		}
+		// %SRCROOT%를 쓰는 결과가 없으면 그 설명도 싣지 않는다 — 위치 없는 로그는 예전 바이트 그대로다.
+		if run0.OriginalURIBaseIDs != nil {
+			t.Fatalf("%s: a log with no %%SRCROOT%% location must not describe it: %s", args[0], out)
+		}
+		for _, r := range results {
+			if len(r.Locations) != 1 || r.Locations[0].PhysicalLocation != nil ||
+				!strings.HasSuffix(r.Message.Text, wantOmittedNote) {
+				t.Fatalf("%s: a file outside the module root must have no physicalLocation and say so: %s",
+					args[0], out)
+			}
+		}
+	}
+}
+
+// TestPositionsOutsideModuleRootFromHarvest는 실제 수확이 모듈 밖 위치를 내는 흔한 경우를 본다 —
+// 표준 라이브러리 struct를 밑 타입으로 쓰는 정의 타입(type stamp time.Time)의 필드 정점은 GOROOT의
+// 필드 선언에 놓인다. baseline은 그 위치를 파일 이름만 남기고 SARIF는 물리 위치 없이 메시지로
+// 알린다 — 어느 쪽에도 GOROOT 경로(설치 위치에 따라 사용자 이름이 든다)가 남지 않아야 한다.
+func TestPositionsOutsideModuleRootFromHarvest(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport \"time\"\n\ntype stamp time.Time\n\nfunc main() { _ = stamp{} }\n",
+	})
+	const stampFields = "example.com/fixture.(stamp)."
+	basePath := filepath.Join(t.TempDir(), "dead-baseline.json")
+	if code, _, errb := run(t, "dead", "--dir", dir, "--write-baseline", basePath); code != 0 {
+		t.Fatalf("dead --write-baseline failed: %d %s", code, errb)
+	}
+	data, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := loadDeadBaseline(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := 0
+	for _, f := range base.Findings {
+		if !strings.HasPrefix(f.ID, stampFields) {
+			continue
+		}
+		fields++
+		if f.Position == nil || f.Position.File != "time.go" {
+			t.Fatalf("%s: a field declared in GOROOT must keep only its file name: %s", f.ID, data)
+		}
+	}
+	if fields == 0 || bytes.Contains(data, []byte("/src/time/")) {
+		t.Fatalf("expected stamp's fields with no GOROOT path in the baseline: %s", data)
+	}
+
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "sarif")
+	if code != 0 {
+		t.Fatalf("dead sarif failed: %d %s", code, errb)
+	}
+	if strings.Contains(out, "/src/time/") {
+		t.Fatalf("SARIF must not carry the GOROOT path: %s", out)
+	}
+	seen := 0
+	for _, r := range parseSARIFReport(t, out).Runs[0].Results {
+		if !strings.Contains(r.Message.Text, " "+stampFields) {
+			continue
+		}
+		seen++
+		if r.Locations[0].PhysicalLocation != nil || !strings.HasSuffix(r.Message.Text, wantOmittedNote) {
+			t.Fatalf("a field declared in GOROOT must have no physicalLocation and say so: %s", out)
+		}
+	}
+	if seen != fields {
+		t.Fatalf("SARIF must report the same %d stamp fields as the baseline: %s", fields, out)
+	}
+}
+
 // cycleFixture는 심볼 레벨 상호 재귀 순환을 가진 모듈을 만든다.
 func cycleFixture(t *testing.T) string {
 	t.Helper()
@@ -2280,6 +3223,92 @@ func runRecovered(t *testing.T, args ...string) (int, string, string) {
 	return run(t, args...)
 }
 
+// TestDeadRTALoadsTheProgramOnce는 dead --algo rta(--explain 포함)가 문서를 수확한 적재 결과로 SSA를 만들어, CHA
+// dead와 같은 수의 go 명령만 띄우는지 본다. 예전에는 RTA가 같은 패턴·태그·환경으로 packages.Load를 한 번 더 불러
+// 같은 프로그램을 두 번 파싱·타입체크했다(수확에서 가장 비싼 단계). 한 번의 packages.Load는 같은 적재 모드면 같은
+// 수의 go 명령(버전·크기 조회와 패키지 목록)을 띄우므로, 그 수로 적재 횟수를 센다.
+func TestDeadRTALoadsTheProgramOnce(t *testing.T) {
+	dir := deadFixture(t)
+	log := goCommandLog(t)
+	cha := goCommandsDuring(t, log, "dead", "--dir", dir)
+	for _, args := range [][]string{
+		{"dead", "--dir", dir, "--algo", "rta"},
+		{"dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/fixture/lib.helper"},
+	} {
+		if got := goCommandsDuring(t, log, args...); got != cha {
+			t.Errorf("%v started %d go commands, the CHA harvest alone %d: rta must build SSA from the harvest's load",
+				args[3:], got, cha)
+		}
+	}
+}
+
+// goCommandLog는 PATH 맨 앞에 진짜 go로 넘겨주는 가짜 go를 두고, go 명령을 띄울 때마다 그 인자를 한 줄로 남길
+// 로그 경로를 돌려준다 — 패키지 적재 횟수를 수확 결과가 아니라 실제로 띄운 프로세스로 센다.
+func goCommandLog(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go is a POSIX shell script")
+	}
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("the go command is not on PATH: %v", err)
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GARTOGRAPH_TEST_GO_LOG\"\nexec \"$GARTOGRAPH_TEST_REAL_GO\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GARTOGRAPH_TEST_GO_LOG", log)
+	t.Setenv("GARTOGRAPH_TEST_REAL_GO", realGo)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// goCommandsDuring은 로그를 비우고 CLI를 args로 실행한 뒤 그동안 띄운 go 명령 수를 돌려준다. 실행이 실패했거나
+// go를 한 번도 띄우지 않았으면 테스트 실패다 — 빈 로그는 아무것도 검증하지 않는다.
+func goCommandsDuring(t *testing.T, log string, args ...string) int {
+	t.Helper()
+	if err := os.WriteFile(log, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errb := run(t, args...); code != 0 {
+		t.Fatalf("%v: exit %d %s", args, code, errb)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Count(string(data), "\n")
+	if calls == 0 {
+		t.Fatalf("%v started no go command through PATH", args)
+	}
+	return calls
+}
+
+// TestDeadHonorsConfigExcludeForBothAlgorithms는 dead가 --algo rta에서도 .gartograph.yml의 exclude로 수확하는지
+// 본다. rta는 RTA 세션을 함께 얻느라 수확 경로가 CHA와 따로다(loadDeadDoc) — 범위가 갈리면 같은 저장소가
+// 알고리즘에 따라 다른 그래프가 된다. 제외된 패키지는 정점이 없어 그 심볼이 보고되지 않고, 제외 사실은 limitation이다.
+func TestDeadHonorsConfigExcludeForBothAlgorithms(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		".gartograph.yml": "components: {gen: [gen]}\nexclude: [gen, gen/**]\n",
+		"main.go":         "package main\n\nimport _ \"example.com/fixture/gen\"\n\nfunc main() {}\n",
+		"gen/gen.go":      "package gen\n\nfunc Unused() {}\n",
+	})
+	for _, algo := range []string{"cha", "rta"} {
+		code, out, errb := run(t, "dead", "--dir", dir, "--algo", algo, "--format", "json")
+		if code != 0 {
+			t.Fatalf("dead --algo %s failed: %d %s", algo, code, errb)
+		}
+		if strings.Contains(out, "gen.Unused") {
+			t.Errorf("--algo %s: a symbol of an excluded package must not be reported: %s", algo, out)
+		}
+		if !strings.Contains(out, "matched exclude patterns") {
+			t.Errorf("--algo %s: the exclusion must be a limitation: %s", algo, out)
+		}
+	}
+}
+
 // TestExcludeConfig는 .gartograph.yml의 exclude가 수확에서 패키지를
 // 빼는지 확인한다 — 설정과 수확이 같은 해석을 써야 한다.
 func TestExcludeConfig(t *testing.T) {
@@ -2319,6 +3348,314 @@ import _ "example.com/fixture/gen"
 	if !noted {
 		t.Fatalf("exclusion must be a limitation: %s", out)
 	}
+}
+
+// configScopeFixture는 app이 lib와 gen을 import하는 모듈과, gen을 수확에서 빼고 app→lib를 금지하는 규칙
+// 파일(모듈 밖 strict.yml)을 만든다. dirConfig가 비어 있지 않으면 --dir의 .gartograph.yml로 둔다.
+func configScopeFixture(t *testing.T, dirConfig string) (dir, strict string) {
+	t.Helper()
+	files := map[string]string{
+		"app/app.go": "package app\n\nimport (\n\t_ \"example.com/fixture/gen\"\n\t_ \"example.com/fixture/lib\"\n)\n",
+		"lib/lib.go": "package lib\n",
+		"gen/gen.go": "package gen\n",
+	}
+	if dirConfig != "" {
+		files[".gartograph.yml"] = dirConfig
+	}
+	dir = testutil.WriteModule(t, files)
+	strict = filepath.Join(t.TempDir(), "strict.yml")
+	writeTestFile(t, strict, "components:\n  app: [app]\n  lib: [lib]\ndeps:\n  app: []\nexclude: [gen]\n", 0o644)
+	return dir, strict
+}
+
+// TestConfigFlagSetsHarvestScope는 --config FILE을 받는 명령(rules·metrics·mapping·mcp)이 그 파일의 exclude로만
+// 수확하고 --dir의 .gartograph.yml을 읽지 않는지 본다(DECISIONS: --config의 exclude). 예전에는 규칙은 --config
+// 파일에서, 수확 범위는 .gartograph.yml에서 와서, .gartograph.yml이 app을 빼면 `rules --config strict.yml
+// --strict`가 app→lib 위반을 두고도 0으로 통과했고, strict.yml의 exclude는 읽히고도 효과가 없어 gen이 unmapped로
+// 섞였다. --config가 없으면 지금처럼 .gartograph.yml이 규칙과 수확 범위를 함께 정한다.
+func TestConfigFlagSetsHarvestScope(t *testing.T) {
+	const appOnly = "components:\n  app: [app]\n  lib: [lib]\n  gen: [gen]\ndeps:\n  app: [lib, gen]\nexclude: [app]\n"
+	cases := []struct {
+		name, dirConfig string
+		useConfig       bool
+		strictCode      int
+		components      map[string][]string // mapping의 컴포넌트 → 패키지
+		unmatched       []string
+	}{
+		{"--config alone", "", true, 1,
+			map[string][]string{"app": {"example.com/fixture/app"}, "lib": {"example.com/fixture/lib"}}, nil},
+		{"--config over a different .gartograph.yml exclude", appOnly, true, 1,
+			map[string][]string{"app": {"example.com/fixture/app"}, "lib": {"example.com/fixture/lib"}}, nil},
+		{"--config over a broken .gartograph.yml", "components: [\n", true, 1,
+			map[string][]string{"app": {"example.com/fixture/app"}, "lib": {"example.com/fixture/lib"}}, nil},
+		{"no --config", appOnly, false, 0,
+			map[string][]string{"app": {}, "lib": {"example.com/fixture/lib"}, "gen": {"example.com/fixture/gen"}},
+			[]string{"app"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir, strict := configScopeFixture(t, c.dirConfig)
+			flags := []string{"--dir", dir}
+			if c.useConfig {
+				flags = append(flags, "--config", strict)
+			}
+			code, out, errb := run(t, append([]string{"rules", "--strict"}, flags...)...)
+			if code != c.strictCode {
+				t.Fatalf("rules --strict: want exit %d, got %d\n%s%s", c.strictCode, code, out, errb)
+			}
+			var mapping struct {
+				Components          map[string][]string `json:"components"`
+				Unmapped            []string            `json:"unmapped"`
+				UnmatchedComponents []string            `json:"unmatchedComponents"`
+			}
+			mappingOut := cliReport(t, append([]string{"mapping", "--format", "json"}, flags...)...)
+			if err := json.Unmarshal([]byte(mappingOut), &mapping); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(mapping.Components, c.components) || len(mapping.Unmapped) != 0 ||
+				!reflect.DeepEqual(mapping.UnmatchedComponents, c.unmatched) {
+				t.Fatalf("mapping must reflect the harvest scope of the rules file in use: %s", mappingOut)
+			}
+			// metrics도 같은 범위를 센다 — --config(gen 제외)로는 gen이 어디에도 없고 unmapped도 없다.
+			metricsOut := cliReport(t, append([]string{"metrics", "--format", "json"}, flags...)...)
+			harvestsGen := strings.Contains(metricsOut, `"example.com/fixture/gen"`)
+			if harvestsGen == c.useConfig || strings.Contains(metricsOut, `"unmapped"`) {
+				t.Fatalf("metrics must count the harvest scope of the rules file in use: %s", metricsOut)
+			}
+			// MCP는 같은 플래그·같은 수확 레벨에서 CLI와 같은 보고를 낸다(수확 레벨: rules·mapping package, metrics type).
+			for _, tool := range []struct{ name, level string }{
+				{"rules", "package"}, {"mapping", "package"}, {"metrics", "type"},
+			} {
+				answers := runMcpTools(t, append([]string{"--level", tool.level}, flags...),
+					mcpCall(1, "gartograph_"+tool.name, `{}`))
+				requireCLIReport(t, tool.name, answers[0],
+					cliReport(t, append([]string{tool.name, "--format", "json"}, flags...)...))
+			}
+		})
+	}
+}
+
+// workspaceFixture는 go.work 워크스페이스(모듈 a·b)를 만들고 그 루트를 돌려준다. a/app은 b의 루트 패키지와
+// b/util·b/gen을, b/util은 a/lib를 import한다. extra는 더 쓸 파일(루트 기준 경로 → 내용)이고 같은 경로면 기본
+// 파일을 덮는다. 루트는 심링크를 푼 경로다 — go가 알리는 모듈 디렉터리와 파일 위치는 심링크를 푼 경로라서,
+// --dir 기준 상대 경로(--files)가 같은 파일을 가리키게 한다.
+func workspaceFixture(t *testing.T, extra map[string]string) string {
+	t.Helper()
+	root := resolvedPath(t, t.TempDir())
+	files := map[string]string{
+		"go.work":  "go 1.27\n\nuse ./a\nuse ./b\n",
+		"a/go.mod": "module example.com/a\n\ngo 1.27\n",
+		"b/go.mod": "module example.com/b\n\ngo 1.27\n",
+		"a/app/app.go": "package app\n\nimport (\n\t\"example.com/b\"\n\t\"example.com/b/gen\"\n\t\"example.com/b/util\"\n)\n\n" +
+			"func Run() int { return b.N + util.U() + gen.G() }\n",
+		"a/lib/lib.go":   "package lib\n\nfunc L() int { return 1 }\n",
+		"b/b.go":         "package b\n\nconst N = 0\n",
+		"b/util/util.go": "package util\n\nimport \"example.com/a/lib\"\n\nfunc U() int { return lib.L() }\n",
+		"b/gen/gen.go":   "package gen\n\nfunc G() int { return 2 }\n",
+	}
+	for name, content := range extra {
+		files[name] = content
+	}
+	for name, content := range files {
+		writeTestFile(t, filepath.Join(root, name), content, 0o644)
+	}
+	return root
+}
+
+// workspaceConfig는 workspaceFixture의 규칙이다. gen은 수확에서 빼고, app은 아무것도 쓸 수 없으며(app→b와
+// app→util이 allow 위반), util 패키지 파일이 lib를 import하면 fileScope 위반이다. 패턴은 모두 패키지·파일이
+// 속한 모듈 기준 상대 경로다 — 모듈 루트 패키지(".")·util·gen은 모듈 b, app·lib는 모듈 a에 있다.
+const workspaceConfig = `exclude: [gen]
+components:
+  app: [app]
+  util: [util]
+  lib: [lib]
+  broot: ["."]
+deps:
+  app: []
+  util: [lib]
+  lib: []
+  broot: []
+fileRules:
+  - name: util-files-no-lib
+    from: "util/*.go"
+    to: lib
+`
+
+// decodeCLIReport는 종료 코드 0으로 끝난 CLI JSON 보고를 v로 읽는다.
+func decodeCLIReport(t *testing.T, v any, args ...string) {
+	t.Helper()
+	out := cliReport(t, args...)
+	if err := json.Unmarshal([]byte(out), v); err != nil {
+		t.Fatalf("%v: not JSON: %v\n%s", args, err, out)
+	}
+}
+
+// TestWorkspacePatternsUseEachPackagesModule은 go.work 워크스페이스에서 components·exclude·fileRules 패턴과
+// impact --files가 패키지(파일)마다 그것이 속한 모듈 기준 상대 경로로 해석되는지 본다(DECISIONS gartograph
+// "go.work의 exclude·components"). 예전에는 exclude만 패키지마다 자기 모듈을 벗기고 컴포넌트·fileRules·
+// --files는 문서의 첫 모듈만 기준으로 했다. 그래서 util 컴포넌트가 example.com/b/util에 맞지 않았고(형제 모듈
+// 패키지는 외부로 분류됐다) rules --strict가 app→util 위반을 두고 0으로 끝났다. 첫 모듈이 a인 수확(--dir a)과
+// b인 수확(워크스페이스 루트에서 ./b/...를 먼저 준 --pattern — 의존이 없는 b 루트 패키지가 먼저 로드된다)이
+// 같은 답을 내야 한다. MCP도 같은 보고를 낸다.
+func TestWorkspacePatternsUseEachPackagesModule(t *testing.T) {
+	root := workspaceFixture(t, map[string]string{
+		"a/.gartograph.yml": workspaceConfig,
+		".gartograph.yml":   workspaceConfig,
+	})
+	cases := []struct {
+		name          string
+		flags         []string
+		first         string // 문서 module(수확이 처음 만난 주 모듈)
+		siblingFile   string // 첫 모듈이 아닌 모듈의 파일(--dir 기준)
+		siblingPkg    string // 그 파일의 패키지
+		siblingImport string // 그 패키지를 import하는 다른 모듈의 패키지
+	}{
+		{"first module a", []string{"--dir", filepath.Join(root, "a")}, "example.com/a",
+			"../b/util/util.go", "example.com/b/util", "example.com/a/app"},
+		{"first module b", []string{"--dir", root, "--pattern", "./b/...", "--pattern", "./a/..."}, "example.com/b",
+			"a/lib/lib.go", "example.com/a/lib", "example.com/b/util"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var doc graph.Document
+			decodeCLIReport(t, &doc, append([]string{"graph", "--level", "package"}, c.flags...)...)
+			if doc.Module != c.first {
+				t.Fatalf("premise: the harvest must start at %s, got %q", c.first, doc.Module)
+			}
+			var mapping analysis.Mapping
+			decodeCLIReport(t, &mapping, append([]string{"mapping", "--format", "json"}, c.flags...)...)
+			want := map[string][]string{"app": {"example.com/a/app"}, "lib": {"example.com/a/lib"},
+				"util": {"example.com/b/util"}, "broot": {"example.com/b"}}
+			if !reflect.DeepEqual(mapping.Components, want) || len(mapping.Unmapped) != 0 ||
+				len(mapping.UnmappedExternal) != 0 || len(mapping.UnmatchedComponents) != 0 {
+				t.Fatalf("components must match each package's module-relative path: %+v", mapping)
+			}
+			code, out, errb := run(t, append([]string{"rules", "--strict", "--format", "json"}, c.flags...)...)
+			var rep struct {
+				Violations  []analysis.Violation `json:"violations"`
+				Limitations []string             `json:"limitations"`
+			}
+			if err := json.Unmarshal([]byte(out), &rep); err != nil || code != 1 {
+				t.Fatalf("rules --strict must fail on the sibling-module violations: %d %v\n%s%s", code, err, out, errb)
+			}
+			var got []string
+			for _, v := range rep.Violations {
+				got = append(got, v.From+" -> "+v.To+" "+v.Rule+" "+v.Name)
+			}
+			wantViolations := []string{
+				"example.com/a/app -> example.com/b allow ",
+				"example.com/a/app -> example.com/b/util allow ",
+				"example.com/b/util -> example.com/a/lib fileScope util-files-no-lib",
+			}
+			if !reflect.DeepEqual(got, wantViolations) ||
+				!strings.HasSuffix(filepath.ToSlash(rep.Violations[2].Position.File), "b/util/util.go") {
+				t.Fatalf("want %q, got %q (%+v)", wantViolations, got, rep.Violations)
+			}
+			// exclude [gen]도 같은 기준이다 — 모듈 b의 gen이 수확에서 빠진다.
+			if !hasLimitation(rep.Limitations, "1 packages matched exclude patterns", "") ||
+				hasLimitation(rep.Limitations, "", "external packages") {
+				t.Fatalf("exclude must drop b/gen and no sibling package may count as external: %q", rep.Limitations)
+			}
+			var affected analysis.Affected
+			decodeCLIReport(t, &affected, append([]string{"impact", "--files", c.siblingFile, "--format", "json"},
+				c.flags...)...)
+			var dependers []string
+			for _, d := range affected.Dependers {
+				dependers = append(dependers, d.ID)
+			}
+			if !slices.Contains(affected.Roots, c.siblingPkg) || len(affected.UnmappedFiles) != 0 ||
+				!slices.Contains(dependers, c.siblingImport) {
+				t.Fatalf("impact --files must resolve a sibling-module file to its package: %+v", affected)
+			}
+			for _, tool := range []string{"rules", "mapping"} {
+				answers := runMcpTools(t, append([]string{"--level", "package"}, c.flags...),
+					mcpCall(1, "gartograph_"+tool, `{}`))
+				requireCLIReport(t, tool, answers[0],
+					cliReport(t, append([]string{tool, "--format", "json"}, c.flags...)...))
+			}
+		})
+	}
+}
+
+// TestWorkspaceSavedDocuments는 저장 문서(--graph)의 워크스페이스 해석을 본다. 새 수확을 저장한 문서는 모듈
+// 소속 사실이 따라가 수확과 같은 답을 낸다. 그 사실(workspaceModules·정점 module)이 없는 옛 문서는 예전처럼
+// 문서 module 하나로 해석한다 — 형제 모듈 패키지는 외부로, util 컴포넌트는 매칭 없음으로 남는다.
+func TestWorkspaceSavedDocuments(t *testing.T) {
+	root := workspaceFixture(t, map[string]string{"a/.gartograph.yml": workspaceConfig})
+	dir := filepath.Join(root, "a")
+	saved := filepath.Join(t.TempDir(), "graph.json")
+	writeTestFile(t, saved, cliReport(t, "graph", "--dir", dir, "--level", "package"), 0o644)
+	if code, out, errb := run(t, "rules", "--dir", dir, "--graph", saved, "--strict"); code != 1 {
+		t.Fatalf("a saved workspace document must keep the module facts: %d %s%s", code, out, errb)
+	}
+	var doc map[string]any
+	data, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc, "workspaceModules")
+	for _, v := range doc["vertices"].([]any) {
+		delete(v.(map[string]any), "module")
+	}
+	old, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(t.TempDir(), "old.json")
+	writeTestFile(t, oldPath, string(old), 0o644)
+	var mapping analysis.Mapping
+	decodeCLIReport(t, &mapping, "mapping", "--dir", dir, "--graph", oldPath, "--format", "json")
+	if len(mapping.Components["util"]) != 0 ||
+		!reflect.DeepEqual(mapping.UnmatchedComponents, []string{"broot", "util"}) ||
+		!reflect.DeepEqual(mapping.UnmappedExternal, []string{"example.com/b", "example.com/b/util"}) {
+		t.Fatalf("a document without module facts must keep the module-prefix fallback: %+v", mapping)
+	}
+}
+
+// TestWorkspaceInitScaffoldsSiblingModules는 go.work 워크스페이스의 init이 형제 모듈 패키지에도 컴포넌트를 만들고,
+// 두 모듈의 같은 상대 경로(a/util·b/util)는 같은 패턴에 맞으므로 한 컴포넌트로 묶어 첫 rules --strict가
+// 통과하는지 본다. 예전에는 형제 모듈 패키지를 외부로 보고 컴포넌트를 만들지 않았다.
+func TestWorkspaceInitScaffoldsSiblingModules(t *testing.T) {
+	root := workspaceFixture(t, map[string]string{"a/util/util.go": "package util\n\nfunc A() int { return 3 }\n"})
+	dir := filepath.Join(root, "a")
+	if code, out, errb := run(t, "init", "--dir", dir); code != 0 || !strings.Contains(out, "(5 components)") {
+		t.Fatalf("init must scaffold app, lib, util, gen, and b's root package: %d %s%s", code, out, errb)
+	}
+	cfg, err := config.Load(filepath.Join(dir, ".gartograph.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantComponents := map[string][]string{"app": {"app/**"}, "gen": {"gen/**"}, "lib": {"lib/**"},
+		"root": {"."}, "util": {"util/**"}}
+	wantDeps := map[string][]string{"app": {"gen", "root", "util"}, "gen": nil, "lib": nil, "root": nil,
+		"util": {"lib"}}
+	if !reflect.DeepEqual(cfg.Components, wantComponents) || !reflect.DeepEqual(depsOrNil(cfg.Deps), wantDeps) {
+		t.Fatalf("scaffold: components %v deps %v", cfg.Components, cfg.Deps)
+	}
+	if code, out, errb := run(t, "rules", "--dir", dir, "--strict"); code != 0 {
+		t.Fatalf("a scaffolded workspace config must pass its first check: %d %s%s", code, out, errb)
+	}
+	var mapping analysis.Mapping
+	decodeCLIReport(t, &mapping, "mapping", "--dir", dir, "--format", "json")
+	if !reflect.DeepEqual(mapping.Components["util"], []string{"example.com/a/util", "example.com/b/util"}) {
+		t.Fatalf("one component must hold both modules' util: %+v", mapping)
+	}
+}
+
+// depsOrNil은 deps의 빈 목록을 nil로 맞춘다 — 규칙 파일을 읽은 빈 목록과 비교 기대값의 nil을 같게 본다.
+func depsOrNil(deps map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	for k, v := range deps {
+		if len(v) == 0 {
+			v = nil
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // TestConfigMustBeRegularFile은 분석 대상의 .gartograph.yml이 정규 파일이 아니면 명령이
@@ -2585,11 +3922,14 @@ func TestCyclesEvidenceOnce(t *testing.T) {
 		t.Fatalf("MCP cycles errored: %v", result)
 	}
 	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
-	var mcpCycles []cycleEvidence
-	if err := json.Unmarshal([]byte(text), &mcpCycles); err != nil {
-		t.Fatalf("MCP cycles text is not JSON: %v\n%s", err, text)
+	// MCP도 CLI와 같은 {cycles, limitations} 보고를 돌려준다.
+	var mcpReport struct {
+		Cycles []cycleEvidence `json:"cycles"`
 	}
-	if got := evidenceOf(mcpCycles); got != want {
+	if err := json.Unmarshal([]byte(text), &mcpReport); err != nil {
+		t.Fatalf("MCP cycles text is not the cycles report: %v\n%s", err, text)
+	}
+	if got := evidenceOf(mcpReport.Cycles); got != want {
 		t.Fatalf("MCP evidence must match CLI:\ngot  %s\nwant %s", got, want)
 	}
 }
@@ -2796,7 +4136,8 @@ replace (
 // TestUnusedDepsExcludedFileLimitationCountsUnseenImports는 제외 파일 limitation이 실제 공백만 세는지
 // 확인한다 — 제외 파일이 std나 이미 로드된 패키지만 import하면 그 패키지의 의존은 이미 셌거나(로드됨)
 // require에 기대지 않는다(std). 대부분 저장소의 OS별 파일이 그렇다 — 알릴 것이 없으면 조용해야 한다.
-// 이 플랫폼 파일이 없어 로드되지 않은 주 모듈 패키지를 import하는 제외 파일은 공백이다.
+// 이 플랫폼 파일이 없어 로드되지 않은 주 모듈 패키지를 import하는 제외 파일은 공백이다. 그 패키지의
+// 디렉터리(winonly)도 이 플랫폼 파일이 없는 디렉터리로 따로 센다 — 두 limitation은 다른 공백이다.
 func TestUnusedDepsExcludedFileLimitationCountsUnseenImports(t *testing.T) {
 	otherOS := "windows"
 	if runtime.GOOS == "windows" {
@@ -2821,8 +4162,9 @@ func TestUnusedDepsExcludedFileLimitationCountsUnseenImports(t *testing.T) {
 	files["winonly/w_"+otherOS+".go"] = "package winonly\n\nfunc W() {}\n"
 	files["svc_"+otherOS+".go"] = "package main\n\nimport \"example.com/fixture/winonly\"\n\nfunc init() { winonly.W() }\n"
 	rep = runUnusedDepsJSON(t, testutil.WriteModule(t, files))
-	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
-		"1 source files excluded by build constraints import packages that were not loaded;") {
+	if len(rep.Limitations) != 2 || !strings.HasPrefix(rep.Limitations[0],
+		"1 source files excluded by build constraints import packages that were not loaded;") ||
+		rep.Limitations[1] != platformGapLimitation(1) {
 		t.Fatalf("an excluded file importing an unloaded module package must be counted: %v", rep.Limitations)
 	}
 }
@@ -2848,6 +4190,75 @@ func TestUnusedDepsLoadErrors(t *testing.T) {
 	code, out, _ := run(t, "unused-deps", "--dir", dir)
 	if code != 0 || !strings.Contains(out, "limitation: 1 packages reported load errors;") {
 		t.Fatalf("text output must show the limitation: %d %s", code, out)
+	}
+}
+
+// platformGapLimitation은 이 플랫폼 파일이 없는 디렉터리 n개를 알리는 unused-deps limitation 문구다.
+func platformGapLimitation(n int) string {
+	return fmt.Sprintf("%d directories have Go files but none for this platform or build tags, so go list "+
+		"loaded no package from them; requires imported only there may be reported as unused "+
+		"(load them with --goos, --goarch, or --tags)", n)
+}
+
+// TestUnusedDepsCountsDirectoriesWithoutPlatformFiles는 이 플랫폼 파일이 없어 go list가 패키지로 내지 않는
+// 디렉터리(다른 OS 전용 svc)를 JSON·텍스트 보고의 limitation으로 싣는지 확인한다. 판정과 종료 코드는 그대로다
+// — 그 디렉터리의 import는 읽지 않으므로 거기서만 쓰는 require는 여전히 unused이고 --strict는 1이다. 그 OS로
+// 수확하면(--goos) 디렉터리가 패키지가 되어 require가 쓰이고 알릴 것이 없다.
+func TestUnusedDepsCountsDirectoriesWithoutPlatformFiles(t *testing.T) {
+	otherOS := "windows"
+	if runtime.GOOS == "windows" {
+		otherOS = "linux"
+	}
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/winreq v0.0.0\n\n" +
+			"replace example.com/winreq => ./winreq\n",
+		"main.go":                    "package main\n\nfunc main() {}\n",
+		"svc/svc_" + otherOS + ".go": "package svc\n\nimport \"example.com/winreq\"\n\nfunc Run() { winreq.Do() }\n",
+		"winreq/go.mod":              "module example.com/winreq\n\ngo 1.27\n",
+		"winreq/winreq.go":           "package winreq\n\nfunc Do() {}\n",
+	})
+	rep := runUnusedDepsJSON(t, dir)
+	if !slices.Equal(rep.Unused, []string{"example.com/winreq"}) ||
+		!slices.Equal(rep.Limitations, []string{platformGapLimitation(1)}) {
+		t.Fatalf("the %s-only directory must be counted and the verdict kept: %+v", otherOS, rep)
+	}
+	code, out, _ := run(t, "unused-deps", "--dir", dir)
+	if code != 0 || !strings.Contains(out, "\nlimitation: "+platformGapLimitation(1)+"\n") {
+		t.Fatalf("text output must show the limitation: %d %s", code, out)
+	}
+	if code, _, _ := run(t, "unused-deps", "--dir", dir, "--strict"); code != 1 {
+		t.Fatalf("the require is still reported unused, strict must exit 1: %d", code)
+	}
+	code, out, errb := run(t, "unused-deps", "--dir", dir, "--goos", otherOS, "--format", "json")
+	if code != 0 || strings.Contains(out, "limitations") ||
+		!strings.Contains(out, `"unused": []`) || !strings.Contains(out, `"usedRequires": 1`) {
+		t.Fatalf("harvested for %s the directory is a package: %d %s %s", otherOS, code, out, errb)
+	}
+}
+
+// TestHarvestRefusesToolchainSwitch는 설치된 Go보다 새 Go를 요구하는 모듈(go 1.99.0, toolchain go1.99.0)을
+// 수확하는 명령마다 툴체인을 내려받지 않고, 원인과 해결 방향을 담아 종료 코드 2로 끝나는지 본다(README
+// Security 절의 계약). GOTOOLCHAIN 환경 변수가 없을 때가 기본이다. GOPROXY=off라 회귀해도 네트워크에 닿지 않는다.
+func TestHarvestRefusesToolchainSwitch(t *testing.T) {
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOTOOLCHAIN", "")
+	if err := os.Unsetenv("GOTOOLCHAIN"); err != nil {
+		t.Fatal(err)
+	}
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod":  "module example.com/fixture\n\ngo 1.99.0\n\ntoolchain go1.99.0\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+	for _, args := range [][]string{{"graph"}, {"dead", "--algo", "rta"}, {"unused-deps"}, {"schema"},
+		{"routes", "--role", "client", "--pattern", "./..."}, {"mcp"}} {
+		code, out, errb := run(t, append(args, "--dir", dir)...)
+		if code != 2 || out != "" {
+			t.Errorf("%v: exit %d with stdout %q, want exit 2 and no output", args, code, out)
+		}
+		if strings.Contains(errb, "downloading go1.99.0") || !strings.Contains(errb, "GOTOOLCHAIN=local") ||
+			!strings.Contains(errb, "rerun with GOTOOLCHAIN=auto") {
+			t.Errorf("%v: stderr must refuse the toolchain switch and say how to proceed:\n%s", args, errb)
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -105,5 +106,31 @@ func TestScaffoldNameCollision(t *testing.T) {
 				t.Fatalf("deps %s -> %s references a missing component", from, to)
 			}
 		}
+	}
+}
+
+// TestScaffoldWorkspace는 워크스페이스 문서의 init 초안이 형제 모듈 패키지에도 그 모듈 기준 상대 경로로
+// 컴포넌트를 만들고, 두 모듈의 같은 상대 경로(a/util·b/util)는 같은 패턴에 맞으므로 한 컴포넌트로 묶는지
+// 본다. 둘로 나누면 한 컴포넌트는 매칭이 없고 첫 rules부터 그 패키지를 모른다. 생성된 설정은 그 문서에서
+// 위반이 없어야 한다. 모듈 소속 사실이 없는 옛 문서는 지금처럼 형제 모듈 패키지를 외부로 보고 건너뛴다.
+func TestScaffoldWorkspace(t *testing.T) {
+	cfg := ScaffoldConfig(workspaceDoc())
+	want := map[string][]string{"app": {"app/**"}, "lib": {"lib/**"}, "tool": {"tool/**"}, "util": {"util/**"}}
+	if !reflect.DeepEqual(cfg.Components, want) {
+		t.Fatalf("workspace scaffold components: %v", cfg.Components)
+	}
+	if !reflect.DeepEqual(cfg.Deps["util"], []string{"lib"}) || !reflect.DeepEqual(cfg.Deps["app"], []string{"util"}) {
+		t.Fatalf("workspace scaffold deps: %v", cfg.Deps)
+	}
+	m := MapComponents(workspaceDoc(), cfg)
+	if !reflect.DeepEqual(m.Components["util"], []string{"example.com/a/util", "example.com/b/util"}) {
+		t.Fatalf("both modules' util must map to the one component: %+v", m)
+	}
+	if rep := CheckRules(workspaceDoc(), cfg); len(rep.Violations) != 0 {
+		t.Fatalf("a scaffolded workspace config must pass on the observed graph: %+v", rep.Violations)
+	}
+	old := ScaffoldConfig(oldWorkspaceDoc())
+	if _, ok := old.Components["tool"]; ok || len(old.Components) != 3 {
+		t.Fatalf("an old document must keep treating sibling packages as external: %v", old.Components)
 	}
 }

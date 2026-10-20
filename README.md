@@ -107,9 +107,10 @@ gartograph impact github.com/ictechgy/gartograph/graph --depth 2
 
 # Diff-aware impact: what breaks given the files changed since a revision
 # (needs git 2.24+; a value that starts with '-' or holds control characters
-# is a usage error). git runs with fsmonitor hooks off but trusts the rest of
-# the work tree's .git/config (filters etc.); in a tree of unknown origin pass
-# --files instead.
+# is a usage error). git runs without the repository's filter drivers,
+# fsmonitor hook, diff drivers, index refresh, and object fetching, and stays
+# out of submodules (see Security); a file whose timestamps changed counts as
+# changed.
 gartograph impact --since origin/main...HEAD          # or --files cli/cli.go
 
 # Shortest dependency path: why does 'from' reach 'to'
@@ -122,7 +123,14 @@ gartograph shared example.com/a example.com/b
 # like go mod tidy, imports in files excluded by build constraints (not //go:build ignore)
 # and imports that failed to load count too; limitations count the load errors and the
 # excluded files importing packages this run did not load (std-only files are silent).
-# A package with no file for this platform is not loaded: check it with --goos
+# A directory with no file for this platform or tags (say, a windows-only package) loads
+# no package, so its imports are not read and requires used only there stay in unused:
+# limitations count such directories under patterns ending in /... (./..., ./x/...,
+# module-path/...) and all/work, skipping what go list ./... and tidy skip (testdata, _x,
+# .x, nested modules, vendor subtrees, go.mod ignore) and //go:build ignore-only ones —
+# check them with --goos, --goarch, or --tags. A literal pattern's directory with no file
+# is a load error instead. An unreadable directory stops that pattern's walk (go list
+# stops there too) and is counted
 gartograph unused-deps --strict
 
 # Compare two saved documents: structure drift and breaking signals
@@ -178,8 +186,12 @@ module root. Components map module-relative package paths; `deps` is an
 itself.
 
 The rules file must be a regular file, or a symlink to one, of at most 16 MiB.
-Every harvesting command reads it for `exclude`, so a device, named pipe, or
-larger file is an error (exit 2) instead of an endless read.
+Every harvesting command reads `.gartograph.yml` for `exclude`, so a device,
+named pipe, or larger file is an error (exit 2) instead of an endless read.
+`rules`, `metrics`, `mapping`, and `mcp` take `--config FILE` instead: that
+file supplies both the rules and the `exclude` that sets the harvest scope,
+and `.gartograph.yml` in `--dir` is not read — the rules and the packages
+they check come from one file.
 
 ```yaml
 components:
@@ -238,16 +250,16 @@ independent: [web, cli]   # web and cli must not reach each other either way
   component-level fact, not an edge violation — violations carry
   `rule: "limit"`, `name: "maxIn"|"maxOut"`, and the observed count.
 - `exclude` is a harvest-time filter, not a rule: packages matching its
-  patterns (same glob semantics as components — module-relative for the
-  main module, full import path otherwise) never become vertices, and
+  patterns (same glob semantics as components — relative to the package's
+  own main module, full import path otherwise) never become vertices, and
   imports to them are counted in `limitations`. Use it for generated or
   vendored trees:
 - `fileRules` scopes a ban to the *file* where the import happens —
   dependency-cruiser's `not-to-dev-dep` contract. `from` is a glob matched
-  against the file basename, or the module-relative path when it contains
-  `/`; a leading `!` inverts it. Violations carry `rule: "fileScope"`, the
-  rule `name`, and the offending position. Edges without positions can't
-  be checked and are counted in `fileScopeUnchecked`.
+  against the file basename, or the path relative to the file's own module
+  root when it contains `/`; a leading `!` inverts it. Violations carry
+  `rule: "fileScope"`, the rule `name`, and the offending position. Edges
+  without positions can't be checked and are counted in `fileScopeUnchecked`.
 - `deny` entries accept a `reason` — it lands on the violation so the
   reader knows what to do instead.
 - Every name referenced by a rule must be a defined component — `Load`
@@ -285,6 +297,19 @@ external pattern ran without `--deps` (or the pattern is stale). External
 packages matching no component are reported separately as
 `unmappedExternal`.
 
+**go.work workspaces.** When a harvest holds packages from two or more
+workspace modules (`use ./a` and `use ./b`, run with `--dir a`, or from the
+workspace root with `--pattern ./a/... --pattern ./b/...`), component,
+`exclude`, and `fileRules` patterns are relative to the module each package or
+file belongs to: `util` matches `example.com/b/util` as well as
+`example.com/a/util`, and `impact --dir a --files ../b/util/util.go` resolves to
+`example.com/b/util`. Packages of the other workspace modules are internal —
+`rules` checks imports into them, `mapping` and `metrics` count them as
+mapped, `unmapped`, or `orphans` rather than `unmappedExternal`, and `init`
+scaffolds them, giving one component to a path that two modules share. Only
+`--deps` dependencies match by full import path, so name a sibling module's
+package by its module-relative path (`util`), not `example.com/b/util`.
+
 **Baseline.** Adopting rules on an existing repo: record today's violations
 once, then only new violations fail `--strict`. The same flags work on
 `cycles` and `dead` — each kind carries its own baseline file kind, so a
@@ -303,6 +328,13 @@ SARIF output and `--strict` see only fresh violations.
 Entries match on what they name, never on line numbers or the checkout path
 (a `fileRules` violation matches by rule, import edge, and file name),
 so a baseline committed from one machine still matches in CI.
+`--write-baseline` writes each `position.file` relative to the module root
+(the directory of `go.mod`, `/`-separated), so a committed baseline carries
+no path of the machine that wrote it. A file outside the module root — the
+standard library (fields of `type T time.Time` are declared there), a
+dependency, another go.work module — keeps only its file name. Baselines
+written with absolute paths by earlier versions still match, and
+`staleBaseline` returns entries as the file stores them.
 
 Patterns: exact match, `x/**` recursive prefix, `*` segment glob. Packages
 matching no component are reported as `unmapped` — a mapping gap is "rules
@@ -316,6 +348,120 @@ would pass silently.
 `rules`, `cycles`, and `dead` all accept `--format sarif` for CI code
 scanning — cycles report as `dependency-cycle` errors, unreachable symbols
 as `unreachable-symbol` warnings (a fact, not a deletion verdict).
+Each `artifactLocation.uri` is the file's path relative to the module root,
+percent-encoded per segment (RFC 3986), with `"uriBaseId": "%SRCROOT%"`;
+`run.originalUriBaseIds` describes `%SRCROOT%` without an absolute path, so
+an uploaded log carries no local path. A result whose file is not under the
+module root has no `physicalLocation` and says so in its message. GitHub
+code scanning reads relative URIs against the repository root, so when
+`go.mod` sits in a subdirectory, prefix the URIs before uploading:
+
+```bash
+gartograph rules --dir svc --format sarif |
+  jq '(.runs[].results[].locations[].physicalLocation | select(. != null)
+       | .artifactLocation | select(.uriBaseId == "%SRCROOT%") | .uri) |= "svc/" + .' > rules.sarif
+```
+
+## Security
+
+gartograph starts two external programs: the `go` command, through
+`golang.org/x/tools/go/packages`, to load packages for every harvest; and `git`,
+only for `impact --since` (`git diff`) and for the `revision` of a traversal
+document (`reach`, `impact --format language-traversal`) without `--revision`
+or `--graph` (`git ls-files`, `git status`, `git rev-parse`). It runs the first
+`git` on `PATH`.
+
+Every one of those git calls keeps the analyzed repository's git configuration
+from running commands:
+
+- Right before the call, gartograph lists the filter drivers git sees
+  (`git config -z --includes --get-regexp '^filter\..*\.(clean|smudge|process)$'`,
+  which covers the repository, your own and the system configuration) and
+  overrides each with empty `clean`, `smudge`, and `process` commands and
+  `required=false`, so git runs none of them. This holds for drivers named in
+  `.gitattributes` and in `.git/info/attributes`.
+- It turns off `core.fsmonitor`, the untracked cache, `log.showSignature`, and
+  optional locks (`GIT_OPTIONAL_LOCKS=0`); `git diff` also gets
+  `--no-ext-diff --no-textconv` and `diff.autoRefreshIndex=false` — refreshing
+  the index would write it and run the `post-index-change` hook.
+- It never starts git inside a submodule: `git diff` gets
+  `--ignore-submodules=dirty`, and `git status` does not run at all when the
+  index has a submodule (`--ignore-submodules=all` otherwise).
+- It lets git fetch nothing (`GIT_NO_LAZY_FETCH=1` and an empty
+  `GIT_ALLOW_PROTOCOL`). In a partial clone, git otherwise starts `git fetch`
+  for an object a call needs but the clone lacks, and that fetch runs the
+  transport commands the repository configures (`remote.<name>.uploadpack`,
+  `core.sshCommand`, credential helpers). The empty protocol list stops every
+  transport, also on git older than 2.44, which ignores `GIT_NO_LAZY_FETCH`.
+- When the drivers cannot be listed, or a driver name contains `=` or a control
+  character (git's `-c` splits at the first `=`, so such a driver cannot be
+  overridden), no other git command runs: `impact --since` exits 2 with the
+  cause and points to `--files`; a traversal document omits `revision` (with a
+  `revision-unverified:` limitation for the driver name).
+
+What this changes:
+
+- A file that a filter normalizes (git-lfs and the like) is compared as raw
+  content. When git's stat cache is stale for it, it counts as changed:
+  `impact --since` lists it, and a traversal document records no `revision`
+  instead of claiming a clean `HEAD` it could not verify.
+- `impact --since` lists a file whose timestamps changed even when its content
+  did not, since git no longer re-reads it. In a checkout you trust, run
+  `git status` first to refresh git's stat cache.
+- Submodules: `impact --since` still lists a submodule checked out at a commit
+  other than the recorded one, but not uncommitted changes inside it. A work
+  tree with submodules gets no automatic `revision` and a
+  `revision-unverified:` limitation; pass `--revision` to record one.
+- Partial clones: a call that needs an object the clone lacks fails instead of
+  fetching it. When the trees of the `--since` revision are not local (a
+  treeless clone, `--filter=tree:0`), `impact --since` exits 2 with git's error
+  and a partial-clone hint; when `HEAD`'s tree is missing, a traversal document
+  records no `revision`. A blobless clone (`--filter=blob:none`) keeps every
+  tree and works as before. In a checkout you trust, run the same `git diff`
+  once to fetch what is missing, or pass `--files`.
+
+The rest of the git configuration applies as usual, and `--files` needs no git
+at all.
+
+The `go` command runs with gartograph's own environment plus `GOOS`/`GOARCH`
+from `--goos`/`--goarch`, and with `GOTOOLCHAIN=local` when the `GOTOOLCHAIN`
+environment variable is unset or empty. A `go` or `toolchain` line in the
+analyzed `go.mod` or `go.work` therefore cannot make it download and run another
+Go toolchain:
+
+- A repository that needs a newer Go than the installed one fails with exit
+  code 2 and the go command's `requires go >= …` message, followed by the way
+  out: install that Go release, or, for a repository you trust, rerun with
+  `GOTOOLCHAIN=auto`.
+- A `toolchain` line newer than the installed Go no longer switches toolchains;
+  the installed Go loads the packages.
+- A `GOTOOLCHAIN` set in the environment (`auto`, `local`, `go1.N.M`, …) is
+  passed through unchanged. A value saved with `go env -w GOTOOLCHAIN=…` does
+  not apply: the environment variable gartograph sets takes precedence over it,
+  and gartograph does not run `go env` in the analyzed module to read it.
+
+Module downloads are unchanged: the go command still fetches the modules the
+analyzed `go.mod` requires that are missing from the module cache, through
+`GOPROXY`, and checks them against `go.sum`. Set `GOPROXY=off` to keep a harvest
+offline.
+
+A harvest has no overall time or memory budget. Declarations that each use the
+previous one twice — nested aliases (`type A1 = struct{ a, b A0 }`,
+`type F1 = func(F0, F0)`) and union constraints
+(`type U1 interface{ U0 | U0 }`) — no longer make gartograph's own spelling
+work, memory, or output grow exponentially: it memoizes each type's spelling
+length, caps each spelling at 64 KiB (a type, a method signature, a whole
+union element, or an anonymous interface's name; see
+[Graph document](#graph-document)), expands each interface term of a union
+once, and visits each type once when it filters anonymous interfaces. Type
+checking (`go/types`) itself still takes time exponential in the depth of some
+of these chains (union chains, struct alias chains, and named struct chains
+such as `type S1 struct{ a, b S0 }`). A document still grows with the number
+of declarations, fields, and methods: each entry holds up to 64 KiB of spelling
+besides its field or method name, and nothing bounds the document as a whole —
+that would need a document-wide spelling budget, which gartograph does not
+have. Run gartograph on an untrusted repository under an external limit: a
+timeout, `ulimit`, or a container.
 
 ## Output contract (for agents)
 
@@ -397,6 +543,34 @@ reports an exported constraint whose type set changed (narrowing breaks
 instantiations, widening can break generic code relying on the allowed
 operations); an empty set renders as `any`. Equivalent rewrites of a
 multi-element intersection may still be reported.
+
+`moduleDir` is the directory of `module`'s `go.mod`, and package vertices
+outside the main modules (`--deps` dependencies, nested modules) carry
+`external: true`. A go.work harvest with packages from two or more workspace
+modules also carries `workspaceModules` (each module's `path` and `dir`, sorted
+by path) and `module` on package vertices of the workspace modules other than
+the document's `module`; rules, `mapping`, `metrics`, `init`, and
+`impact --files` read patterns and files against each package's own module
+with them. Documents without `workspaceModules` — single-module harvests and
+workspace documents saved by earlier versions — are read against `module`
+alone, so re-harvest an old workspace document.
+
+A canonical spelling — one type, one method signature, one union element with
+all its terms, or the name of an anonymous interface — is capped at 64 KiB
+(65536 bytes). Real code stays far below it (the longest spelling in x/tools,
+pgx, the Kubernetes modules we measured, and this repository is under 400
+bytes), but declarations that each use the previous one twice double a
+spelling at every level (`type A1 = struct{ a, b A0 }`,
+`type A2 = struct{ a, b A1 }`, …). Past the cap, a `fields`, `methods`,
+`typeSet`, or `satisfies` entry spells it as its first 256 bytes, `…sha256:`,
+and a hex SHA-256 of its structure: equal types still give equal entries and
+different types different ones, so `diff` compares them as before. Field names
+(`name:`) and method names stay in front. A union element and an anonymous
+interface's name are abbreviated as a whole once their terms or methods
+together pass the cap, even when each one alone is under it. A `limitations`
+entry counts the entries that carry an abbreviation, and
+`--type-edges members` treats an abbreviated field type as naming any type,
+since the rest may lie past the prefix.
 
 `dispatchEvidence: true` (symbol-level harvests) marks documents whose edges
 carry `candidate: true` when every site of the relation is an interface-dispatch
@@ -509,6 +683,25 @@ declarations that touch no module symbol, excluded packages, packages without
 type information) carry no `symbol` and are counted in the chain-only
 `missing-relation-usrs:` limitation.
 
+SQL text is read by a token scanner, not a parser: the name after
+`FROM`/`JOIN`/`INTO`/`UPDATE`/`TABLE`/`TRUNCATE` is a relation use, except
+where the shared producer rules for SQL text in the isthmus contract
+([GRAPH-EXCHANGE](https://github.com/ictechgy/isthmus/blob/main/docs/GRAPH-EXCHANGE.md))
+say it is not — `FROM` inside function arguments (`EXTRACT(YEAR FROM
+created_at)`, `TRIM`, `SUBSTRING`; a subquery there still counts), an
+unqualified name that is a CTE of the same `;`-separated statement (unquoted
+names compare case-insensitively, quoted names as written; the rule is
+statement-wide, so `WITH users AS (SELECT * FROM users …)` drops the real
+`users` its body reads), and the operand of `IS [NOT] DISTINCT FROM`. A
+clause word in a relation position (`DO UPDATE SET`, `FROM the …`) ends the
+list, and the `FROM` of `GRANT`/`REVOKE` names a grantee, not a relation. A
+placeholder where a relation name belongs (`%s`, `{}`, `?`, `$1`, `:name`,
+`@name`) is not a relation either: the literal becomes one `dynamic` fact,
+and the count goes to its own `unjoined-dynamic-relations:` limitation next to
+the table-valued function operands. A placeholder inside a quoted identifier
+or after a name prefix is not recognized: `"%s"` is read as the relation
+`%s`, `log_%s` as `log_`.
+
 `reach` (direction `dependencies`) and `impact --format language-traversal`
 (direction `dependents`) write an isthmus
 [`language-traversal` v1](https://github.com/ictechgy/isthmus/blob/main/docs/LANGUAGE-TRAVERSAL.md)
@@ -531,9 +724,11 @@ document over the same dependency edges as `impact`:
   100000) cut with `truncationReasons` `depth`/`max-reached`. `rootsTruncated`
   describes the listed symbols only: symbols dropped by `--max` do not set it.
 - `project` is the same realpath `schema` writes; `revision` is `--revision` or
-  git `HEAD` when the work tree is clean (omitted with `--graph`);
-  `graphRevision` is the SHA-256 of the graph JSON; `--generated-at` fixes the
-  timestamp.
+  git `HEAD` when the work tree is clean (omitted with `--graph`, and with a
+  `revision-unverified:` limitation when a clean tree cannot be checked without
+  running the repository's git configuration — a tree with submodules, see
+  [Security](#security)); `graphRevision` is the SHA-256 of the graph JSON;
+  `--generated-at` fixes the timestamp.
 - Ids that are not vertices are listed in `roots` without `symbol`, with a
   `root-not-found:` limitation and truncation reason; the document is written
   and the command exits 64. Usage errors (no roots, control characters,
@@ -549,7 +744,8 @@ columns), and in reverse a field type spread to every method of its container.
 `members` moves each field-declaration edge `T → X` (references/signature, not
 from the type-parameter header) to the vertices of the fields whose type names
 `X` in the type's field list (`fields`, canonical types: `a, b *X`, `m map[K]X`,
-`Box[X]`, `struct{ x X }`), so `T.f → X`: reaching `T` no longer reaches `X`;
+`Box[X]`, `struct{ x X }`; a field type abbreviated past the spelling cap counts
+as naming any `X`), so `T.f → X`: reaching `T` no longer reaches `X`;
 code that reads `f` still does. Code that reads a field of an unreached struct
 now reaches the field's type, which `all` missed. Both directions stay
 one plain graph, so `depth = via depth + 1` and the roots-inclusion rule of the
@@ -779,10 +975,28 @@ callers.
 
 `gartograph mcp` serves the harvested document over MCP stdio
 (newline-delimited JSON-RPC): `gartograph_summary`, `gartograph_query`,
-`gartograph_impact`, `gartograph_path`, `gartograph_cycles`,
-`gartograph_dead`, `gartograph_rules`, `gartograph_metrics`,
-`gartograph_mapping`. The document is harvested once at startup so every
-tool call answers over the same snapshot. Example client config:
+`gartograph_impact`, `gartograph_path`, `gartograph_shared`,
+`gartograph_cycles`, `gartograph_dead`, `gartograph_rules`,
+`gartograph_metrics`, `gartograph_mapping`. The document is harvested once
+at startup so every tool call answers over the same snapshot.
+
+The report tools build their answers with the CLI's own code and return the
+same JSON as `--format json`: `gartograph_cycles` returns the `cycles`
+envelope `{cycles, limitations}`, `gartograph_dead` the `dead` report
+(`algorithm: "cha"`, roots, and the same root, dispatch, and field
+limitations), and `gartograph_rules`, `gartograph_metrics`, and
+`gartograph_mapping` the `rules`, `metrics`, and `mapping` reports of the
+same document — under `--level package`, `gartograph_rules` carries the same
+`signature checks skipped` limitation as `rules --graph` on a package-level
+document. The server keeps no baseline, so `baselined` and `staleBaseline`
+never appear. A malformed argument (`{"retainPublic": "true"}`) is an
+`isError` result that names it, not an answer built from the default.
+
+`--config FILE` names the rules file of `gartograph_rules`,
+`gartograph_metrics`, and `gartograph_mapping`, and its `exclude` sets the
+harvest scope (see Rules configuration). When the server harvests, it reads
+that file at startup, so a missing or broken one stops it with exit 2; with
+`--graph`, the tools read it when called. Example client config:
 
 ```json
 {"mcpServers": {"gartograph": {

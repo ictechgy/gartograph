@@ -103,7 +103,8 @@ func RouteFacts(opts RouteOptions, toolVersion string) (*RouteFactsDocument, err
 	if err != nil {
 		return nil, err
 	}
-	symbolDoc, err := documentFrom(pkgs, loadOpts)
+	// usr 확인에는 정점 집합만 쓴다(usrDocument — 간선은 만들지 않는다).
+	symbolDoc, err := usrDocument(pkgs, loadOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -138,18 +139,19 @@ func selfCheck(doc *RouteFactsDocument) error {
 }
 
 // patternRoots는 --pattern이 가리키는 패키지를 전체 로드 결과에서 고른다(패턴이 없으면 전체).
-// 패턴 해석은 go list(이름만)에 맡겨 packages.Load와 같은 규칙을 쓴다.
+// 패턴 해석은 go list(이름만)에 맡겨 packages.Load와 같은 규칙을 쓴다. 이 go list도 분석 대상 go.mod를
+// 읽으므로 수확과 같은 환경(loaderEnv, GOTOOLCHAIN 규칙)으로 띄운다.
 func patternRoots(all []*packages.Package, root string, opts Options) ([]*packages.Package, error) {
 	if len(opts.Patterns) == 0 {
 		return all, nil
 	}
-	cfg := &packages.Config{Dir: root, Mode: packages.NeedName}
+	cfg := &packages.Config{Dir: root, Mode: packages.NeedName, Env: loaderEnv(opts)}
 	if opts.Tags != "" {
 		cfg.BuildFlags = []string{"-tags=" + opts.Tags}
 	}
 	named, err := packages.Load(cfg, opts.Patterns...)
 	if err != nil {
-		return nil, fmt.Errorf("resolving --pattern: %w — check the pattern and go.mod", err)
+		return nil, loaderError("resolving --pattern", err, "check the pattern and go.mod")
 	}
 	wanted := map[string]bool{}
 	for _, p := range named {

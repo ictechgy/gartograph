@@ -76,7 +76,8 @@ func cmdMcp(args []string, stdout, stderr io.Writer) int {
 func mcpRun(args []string, in io.Reader, stdout, stderr io.Writer) int {
 	fs, opts, graphPath := flagSet("mcp", stderr)
 	level := fs.String("level", string(graph.LevelSymbol), "harvest level: package|type|symbol")
-	configPath := fs.String("config", "", "rules file for the rules tool (default: .gartograph.yml in --dir)")
+	configPath := fs.String("config", "",
+		"rules file for the rules, metrics, and mapping tools; its exclude sets the harvest scope (default: .gartograph.yml in --dir)")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -85,18 +86,33 @@ func mcpRun(args []string, in io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	opts.Level = lvl
-	doc, err := loadDoc(opts, *graphPath)
+	cfgPath := *configPath
+	if cfgPath == "" {
+		if found, ok := config.Find(opts.Dir); ok {
+			cfgPath = found
+		}
+	}
+	rules, err := harvestRules(cfgPath, *graphPath)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	cfg := *configPath
-	if cfg == "" {
-		if found, ok := config.Find(opts.Dir); ok {
-			cfg = found
-		}
+	doc, err := loadDocWithRules(opts, *graphPath, rules)
+	if err != nil {
+		return fail(stderr, err)
 	}
-	srv := &mcpServer{doc: doc, dir: opts.Dir, cfgPath: cfg, protocol: "2024-11-05"}
+	srv := &mcpServer{doc: doc, dir: opts.Dir, cfgPath: cfgPath, protocol: "2024-11-05"}
 	return srv.serve(in, stdout, stderr)
+}
+
+// harvestRules는 mcp가 수확 범위(exclude)를 정하려고 기동 때 읽는 규칙 파일이다. 수확할 때만 읽는다 — 그 파일을
+// 읽지 못한 채 수확하면 범위가 틀린 문서를 세션 내내 서빙하므로, 없거나 깨진 파일은 기동 오류(종료 2)다.
+// 저장 문서(--graph)는 수확하지 않아 읽지 않는다(rules·metrics·mapping 도구가 호출 때 읽는다). 규칙 파일이
+// 없으면(cfgPath "") nil이다.
+func harvestRules(cfgPath, graphPath string) (*config.File, error) {
+	if cfgPath == "" || graphPath != "" {
+		return nil, nil
+	}
+	return config.Load(cfgPath)
 }
 
 // serve는 EOF까지 한 줄씩 JSON-RPC를 처리한다.
@@ -192,7 +208,9 @@ func (s *mcpServer) callTool(p toolCallParams) map[string]any {
 }
 
 // runTool은 도구별로 분석을 실행하고 JSON 문자열을 돌려준다.
-// 반환 형식은 CLI의 JSON 출력과 같다 — 같은 계약을 두 통로가 공유한다.
+// 반환 형식은 CLI의 JSON 출력과 같다 — 같은 계약을 두 통로가 공유한다. 보고 도구(cycles·dead·rules·
+// metrics)는 CLI 명령과 같은 limitation 조립 함수를 쓴다. 서버에는 baseline이 없어 baselined·staleBaseline
+// 키만 빠진다.
 func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 	marshal := func(v any) (string, error) {
 		b, err := marshalReport(v)
@@ -263,7 +281,9 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		var a struct {
 			Level string `json:"level"`
 		}
-		_ = json.Unmarshal(args, &a)
+		if err := decodeArguments(args, &a); err != nil {
+			return "", err
+		}
 		lvl := s.doc.Level
 		if a.Level != "" {
 			parsed, err := graph.ParseLevel(a.Level)
@@ -279,7 +299,9 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return marshal(analysis.Cycles(view))
+		return marshal(cyclesReport{
+			Cycles: analysis.Cycles(view), Limitations: cyclesLimitations(s.doc, 0),
+		})
 	case "gartograph_dead":
 		if err := requireLevel(s.doc, graph.LevelSymbol); err != nil {
 			return "", err
@@ -288,15 +310,15 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 			RetainPublic bool     `json:"retainPublic"`
 			Roots        []string `json:"roots"`
 		}
-		_ = json.Unmarshal(args, &a)
+		if err := decodeArguments(args, &a); err != nil {
+			return "", err
+		}
+		// 루트·도달 집합은 서버의 질의 색인으로 구한다 — 호출마다 도달성 인접 맵을 다시 만들지 않는다.
 		roots, unknown := s.queries().RetentionRoots(a.RetainPublic, a.Roots)
-		reachable := s.queries().Reachable(roots)
-		findings := analysis.Dead(s.doc, reachable)
-		limitations := append(append([]string(nil), s.doc.Limitations...),
-			initializerRootsLimitation(s.doc, findings)...)
+		findings := analysis.Dead(s.doc, s.queries().Reachable(roots))
 		return marshal(deadReport{
-			Roots: roots, UnknownRoots: unknown,
-			Unreachable: findings, Limitations: limitations,
+			Algorithm: "cha", Roots: roots, UnknownRoots: unknown, Unreachable: findings,
+			Limitations: deadLimitations(s.doc, "cha", a.RetainPublic, unknown, findings, 0),
 		})
 	case "gartograph_rules":
 		if s.cfgPath == "" {
@@ -311,7 +333,7 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 			Violations: rep.Violations, Unmapped: rep.Unmapped,
 			UnmappedExternal:    rep.UnmappedExternal,
 			UnmatchedComponents: rep.UnmatchedComponents,
-			Limitations:         s.doc.Limitations,
+			Limitations:         rulesLimitations(s.doc, cfg, rep, 0),
 		})
 	case "gartograph_metrics":
 		if s.doc.Level.Rank() < graph.LevelPackage.Rank() {
@@ -320,7 +342,7 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		}
 		// metrics는 설정이 선택이다 — 없으면 패키지 단위로 계산한다.
 		var cfg *config.File
-		var limitations []string
+		var configNotes []string
 		if s.cfgPath != "" {
 			loaded, err := config.Load(s.cfgPath)
 			if err != nil {
@@ -328,14 +350,13 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 			}
 			cfg = loaded
 		} else {
-			limitations = append(limitations,
-				"no .gartograph.yml found; metrics computed per package")
+			configNotes = []string{noRulesFileNote}
 		}
 		rep := analysis.Metrics(s.doc, cfg)
 		return marshal(struct {
 			*analysis.MetricsReport
 			Limitations []string `json:"limitations,omitempty"`
-		}{rep, append(limitations, s.doc.Limitations...)})
+		}{rep, metricsLimitations(s.doc, configNotes)})
 	case "gartograph_mapping":
 		if s.doc.Level.Rank() < graph.LevelPackage.Rank() {
 			return "", fmt.Errorf(
@@ -355,6 +376,19 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown tool %q — see tools/list", name)
 	}
+}
+
+// decodeArguments는 도구 인자 JSON을 v에 읽는다. arguments가 없으면(tools/call에서 선택 필드다) v는 기본값
+// 그대로다. 형식이 틀린 인자는 오류다 — 버리고 기본값으로 답하면 {"retainPublic":"true"}가 공개 API를
+// 루트로 삼지 않은 보고를 오류 없이 돌려줘, 소비자가 자기가 고른 옵션의 답이라고 읽는다.
+func decodeArguments(args json.RawMessage, v any) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(args, v); err != nil {
+		return fmt.Errorf("invalid arguments: %v (pass the types in the tool's inputSchema from tools/list)", err)
+	}
+	return nil
 }
 
 // mcpTools는 서빙하는 도구 목록과 입력 스키마다.
@@ -396,12 +430,14 @@ func mcpTools() []map[string]any {
 					"description": "two or more vertex IDs (packages or symbols)"},
 			}, []string{"roots"})},
 		{"name": "gartograph_cycles",
-			"description": "Dependency cycles at a level (default: the document's level)",
+			"description": "Dependency cycles at a level (default: the document's level); " +
+				"same JSON as `cycles --format json`: {cycles, limitations}",
 			"inputSchema": obj(map[string]any{
 				"level": str("module|package|type|symbol"),
 			}, nil)},
 		{"name": "gartograph_dead",
-			"description": "Symbols unreachable from retention roots — graph facts, not delete verdicts",
+			"description": "Symbols unreachable from retention roots — graph facts, not delete verdicts; " +
+				"same JSON as `dead --format json` (algorithm cha), limitations included",
 			"inputSchema": obj(map[string]any{
 				"retainPublic": map[string]any{"type": "boolean",
 					"description": "retain all exported symbols (use for libraries)"},
@@ -409,13 +445,16 @@ func mcpTools() []map[string]any {
 					"description": "extra retention root vertex IDs"},
 			}, nil)},
 		{"name": "gartograph_rules",
-			"description": "Check layer rules from .gartograph.yml; returns violations and unmapped packages",
+			"description": "Check layer rules from the rules file (--config, default .gartograph.yml); " +
+				"same JSON as `rules --format json`: violations, unmapped packages, limitations",
 			"inputSchema": obj(map[string]any{}, nil)},
 		{"name": "gartograph_metrics",
-			"description": "Coupling metrics per component (or per package without config): Ca, Ce, instability, orphans",
+			"description": "Coupling metrics per component (or per package without config): Ca, Ce, instability, orphans; " +
+				"same JSON as `metrics --format json`",
 			"inputSchema": obj(map[string]any{}, nil)},
 		{"name": "gartograph_mapping",
-			"description": "Show how packages resolve to components: mapping, unmapped, unmatched components",
+			"description": "Show how packages resolve to components: mapping, unmapped, unmatched components; " +
+				"same JSON as `mapping --format json`",
 			"inputSchema": obj(map[string]any{}, nil)},
 	}
 }

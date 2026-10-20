@@ -14,7 +14,6 @@ import (
 	"go/token"
 	"go/types"
 	"sort"
-	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -22,16 +21,18 @@ import (
 // anonScan은 의존 소스 스캔의 누적 결과다.
 // noInfo는 limitation 재료다 — 타입 정보 없는 의존 패키지의 표기를 조용히
 // 버리면 그 인터페이스로만 불리는 메서드에 사실이 없는 이유를 알 수 없다.
+// spell은 수확이 공유하는 표기 변환기다 — 이름이 모듈 쪽 methods 사실과 같은 표기가 된다.
 type anonScan struct {
 	ifaces []externalIface
 	seen   map[string]bool
 	noInfo int // AST·타입 정보가 없어 훑지 못한 의존 패키지 수
+	spell  *typeSpeller
 }
 
 // scanAnonymousInterfaces는 모듈 밖 패키지 소스의 이름 없는 인터페이스 표기를
 // 모은다. 결과는 이름 순이다 — 순회 순서가 사실 순서를 흔들지 않게.
-func scanAnonymousInterfaces(internal []*packages.Package) *anonScan {
-	scan := &anonScan{seen: map[string]bool{}}
+func scanAnonymousInterfaces(internal []*packages.Package, spell *typeSpeller) *anonScan {
+	scan := &anonScan{seen: map[string]bool{}, spell: spell}
 	for _, p := range dependencyPackages(internal) {
 		scan.scanPackage(p)
 	}
@@ -111,24 +112,33 @@ func (s *anonScan) add(t types.Type) {
 	if !ok || !iface.IsMethodSet() || iface.NumMethods() == 0 || mentionsUnnameable(iface) {
 		return
 	}
-	name := methodSetName(iface)
+	name, abbreviated := s.spell.methodSetName(iface)
 	if s.seen[name] {
 		return
 	}
 	s.seen[name] = true
-	s.ifaces = append(s.ifaces, newExternalIface(name, iface))
+	ext := newExternalIface(name, iface)
+	ext.abbreviated = abbreviated
+	s.ifaces = append(s.ifaces, ext)
 }
 
 // mentionsUnnameable은 타입 안에 모듈 코드가 적을 수 없는 타입(함수 로컬 명명
 // 타입·타입 파라미터)이 있는지 본다. 명명 타입의 밑 타입으로는 내려가지 않는다 —
 // 이름으로 적을 수 있으면 그 안은 상관없고, 순회도 명명 타입에서 끝난다.
 // 재귀 대신 worklist다 — 헬퍼끼리 서로 부르면 심볼 그래프에 자기 순환이 생겨
-// cycles 자기 분석을 오염시킨다.
+// cycles 자기 분석을 오염시킨다. 본 타입은 다시 보지 않는다 — 별칭은 이름에서 멈추지 않아
+// `type F1 = func(F0, F0)` 같은 사슬은 경로 수가 깊이마다 두 배인데, 답은 닿는 타입 집합에만
+// 달려 있다(타입 검사기는 이 사슬에 선형이라 이 순회가 수확 전체를 멈췄다).
 func mentionsUnnameable(root types.Type) bool {
+	seen := map[types.Type]bool{}
 	stack := []types.Type{root}
 	for len(stack) > 0 {
 		t := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
 		if isUnnameable(t) {
 			return true
 		}
@@ -208,33 +218,27 @@ func fieldTypes(st *types.Struct) []types.Type {
 }
 
 // methodSetName은 이름 없는 인터페이스의 결정적 이름을 만든다 — 임베드를 펼친
-// 메서드 집합을 파라미터 이름 없이 적는다("interface{Unwrap() error}").
+// 메서드 집합을 파라미터 이름 없이 적은 정규 표기다("interface{Unwrap() error}",
+// interfaceParts — 메서드 항목은 methods 사실의 methodEntry와 같은 표기다).
 // types.TypeString은 파라미터 이름과 임베드 형태를 그대로 옮겨, 같은 인터페이스가
 // 표기마다 다른 이름이 되고 upstream의 이름 변경이 문서 diff가 된다.
 // 비공개 메서드는 패키지 경로로 한정한다 — 다른 패키지의 같은 이름은 다른 메서드다.
-func methodSetName(iface *types.Interface) string {
-	methods := make([]string, iface.NumMethods())
-	for i := range methods {
-		methods[i] = methodEntry(iface.Method(i))
-	}
-	return "interface{" + strings.Join(methods, "; ") + "}"
+// 상한은 이름 전체에 건다 — 서명마다 걸면 서명 하나하나가 상한 아래여도 이름이 메서드 수만큼
+// 길어지고, 그 이름이 구현 메서드마다 satisfies로 실려 문서가 메서드 수의 제곱으로 커진다.
+// 두 번째 값은 이름을 축약했는지다.
+func (s *typeSpeller) methodSetName(iface *types.Interface) (string, bool) {
+	return s.canonicalType(iface)
 }
 
 // methodEntry는 인터페이스 메서드 하나를 "Name(params) results"로 적는다 — 파라미터
 // 이름을 빼야 이름만 바뀐 같은 메서드가 다른 항목이 되지 않는다. 비공개 메서드는
 // 패키지 경로로 한정한다 — 다른 패키지의 같은 이름은 다른 메서드다.
-// 타입은 정규 표기(canonicalType)다 — 별칭·byte/uint8·타입 파라미터 이름 차이가 같은
-// 메서드를 다른 항목으로 만들지 않게.
-func methodEntry(m *types.Func) string {
-	var b strings.Builder
-	for _, part := range methodEntryParts(m) {
-		if s, ok := part.(string); ok {
-			b.WriteString(s)
-		} else {
-			b.WriteString(canonicalType(part.(types.Type)))
-		}
-	}
-	return b.String()
+// 타입은 정규 표기(canonicalSignature)다 — 별칭·byte/uint8·타입 파라미터 이름 차이가 같은
+// 메서드를 다른 항목으로 만들지 않게. 서명이 상한을 넘으면 서명만 축약한다 — 이름이 남아
+// diff가 항목을 메서드 이름으로 짝짓는다. 두 번째 값은 축약했는지다.
+func (s *typeSpeller) methodEntry(m *types.Func) (string, bool) {
+	sig, abbreviated := s.canonicalSignature(m.Signature())
+	return methodName(m) + sig, abbreviated
 }
 
 // interfaceLiterals는 파일에서 메서드·임베드 요소가 있는 인터페이스 표기를 모은다.

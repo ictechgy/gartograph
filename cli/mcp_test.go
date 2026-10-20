@@ -350,6 +350,32 @@ func TestMcpRun(t *testing.T) {
 	}
 }
 
+// TestMcpConfigReadBeforeHarvest는 mcp가 수확 전에 --config 규칙 파일을 읽어, 없거나 깨진 파일이 기동 때 그
+// 파일을 밝힌 오류(종료 2)가 되는지 본다 — 그 파일의 exclude가 수확 범위라, 읽지 못한 채 수확하면 범위가 틀린
+// 문서를 서빙한다. 예전에는 서버가 떴고 rules 도구를 부를 때에야 isError였다. 저장 문서(--graph)는 수확하지
+// 않으므로 지금처럼 도구 호출 때 읽는다.
+func TestMcpConfigReadBeforeHarvest(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"main.go": "package main\n\nfunc main() {}\n"})
+	scratch := t.TempDir()
+	broken := filepath.Join(scratch, "broken.yml")
+	writeTestFile(t, broken, "components: {a: [a]}\ndeps: {a: [ghost]}\n", 0o644)
+	missing := filepath.Join(scratch, "missing.yml")
+	for _, cfg := range []string{broken, missing} {
+		var out, errb bytes.Buffer
+		code := mcpRun([]string{"--dir", dir, "--config", cfg}, strings.NewReader(""), &out, &errb)
+		if code != 2 || !strings.Contains(errb.String(), cfg) || out.Len() != 0 {
+			t.Fatalf("mcp --config %s must stop at startup naming the file: code=%d stderr=%q stdout=%q",
+				cfg, code, errb.String(), out.String())
+		}
+	}
+	saved := filepath.Join(scratch, "graph.json")
+	cliReport(t, "graph", "--dir", dir, "--out", saved)
+	answers := runMcpTools(t, []string{"--graph", saved, "--config", missing}, mcpCall(1, "gartograph_rules", `{}`))
+	if !answers[0].isError || !strings.Contains(answers[0].text, missing) {
+		t.Fatalf("with --graph the rules file is read when the tool runs: %+v", answers[0])
+	}
+}
+
 // TestMcpUnknownMethod는 알 수 없는 요청에 -32601을, 알림에는 침묵을 확인한다.
 func TestMcpUnknownMethod(t *testing.T) {
 	res := mcpSession(t, testMcpServer(),

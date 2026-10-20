@@ -118,19 +118,13 @@ func verticesForFiles(d *graph.Document, byID map[string]*graph.Vertex,
 
 // packageForFile은 파일이 속한 디렉터리의 패키지 정점 ID를 만든다.
 // 루트 디렉터리의 파일은 모듈 경로 자체가 패키지 ID다.
-// 기준은 ModuleDir(go.mod 위치)이다 — --dir이 모듈 하위를 가리키면
-// Root 기준 상대 경로는 패키지 경로와 어긋난다. ModuleDir이 없는
-// 옛 문서는 Root로 폴백한다.
+// 기준은 파일이 속한 모듈의 go.mod 위치다(fileModule) — go.work 워크스페이스면 파일을 담는 워크스페이스
+// 모듈, 아니면 ModuleDir이다. --dir이 모듈 하위를 가리키면 Root 기준 상대 경로는 패키지 경로와 어긋난다.
+// ModuleDir이 없는 옛 문서는 Root로 폴백한다.
 // 모듈 밖의 파일(외부 의존)은 모듈 상대 경로가 성립하지 않아 ""를 돌려준다.
 func packageForFile(d *graph.Document, absFile string) string {
-	if d.Module == "" {
-		return ""
-	}
-	base := d.ModuleDir
-	if base == "" {
-		base = d.Root
-	}
-	if base == "" {
+	modulePath, base := fileModule(d, absFile)
+	if modulePath == "" || base == "" {
 		return ""
 	}
 	root, err := filepath.Abs(base)
@@ -142,9 +136,9 @@ func packageForFile(d *graph.Document, absFile string) string {
 		return ""
 	}
 	if rel == "." {
-		return d.Module
+		return modulePath
 	}
-	return d.Module + "/" + filepath.ToSlash(rel)
+	return modulePath + "/" + filepath.ToSlash(rel)
 }
 
 // dedupeSorted는 정렬하고 중복을 제거한다 — 출력 계약의 결정성을 위해.

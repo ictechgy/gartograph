@@ -90,7 +90,9 @@ func positionLess(a, b graph.Position) bool {
 
 // fieldOwners는 struct 타입 T의 구조 간선 T → X(references·signature)를 필드로 옮길 수 있으면 그
 // 필드 정점들을 돌려준다: 필드 목록에서 정규 타입이 X를 담는 필드(`a, b *X`는 둘 다, `m map[K]X`,
-// `Box[X]`, `struct{ x X }`도)다. 간선 위치가 첫 필드보다 앞(타입 파라미터 제약 등 타입 머리)이거나,
+// `Box[X]`, `struct{ x X }`도)다. 수확 상한을 넘어 축약된 필드 타입(graph.AbbreviatedSpelling)은 앞부분
+// 밖에 X가 있을 수 있어 담는다고 본다 — 아니라고 보면 그 필드를 읽는 선언이 X에 닿지 못한다(과소 근사).
+// 간선 위치가 첫 필드보다 앞(타입 파라미터 제약 등 타입 머리)이거나,
 // X를 담는 필드가 없거나, 필드 목록·정점이 없는 옛 문서면 nil이다 — 그 간선은 옮기지 않는다(all과 같은
 // 도달).
 func (idx fieldIndex) fieldOwners(e graph.Edge) []string {
@@ -117,7 +119,7 @@ func (idx fieldIndex) fieldOwners(e graph.Edge) []string {
 	var out []string
 	for _, f := range fields {
 		name, typ, ok := strings.Cut(f, ":")
-		if !ok || !mentionsType(typ, target) {
+		if !ok || !(mentionsType(typ, target) || graph.AbbreviatedSpelling(typ)) {
 			continue
 		}
 		id := member[:pkgEnd] + ".(" + member[pkgEnd+1:] + ")." + name

@@ -57,7 +57,10 @@ func (d *Document) View(l Level) (*Document, error) {
 		Module:      d.Module,
 		Roots:       d.Roots,
 		Limitations: d.Limitations,
-		// 수확 사실이라 투영해도 그대로다.
+		// 수확 사실이라 투영해도 그대로다. 모듈 위치(ModuleDir·WorkspaceModules)도 함께 옮겨야
+		// 투영한 문서의 패턴·파일 해석이 원 문서와 같다.
+		ModuleDir:           d.ModuleDir,
+		WorkspaceModules:    d.WorkspaceModules,
 		AnonymousDispatch:   d.AnonymousDispatch,
 		InterfaceMethodSets: d.InterfaceMethodSets,
 		InterfaceTypeSets:   d.InterfaceTypeSets,

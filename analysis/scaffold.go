@@ -16,19 +16,27 @@ import (
 // 사라지므로, 굵은 컴포넌트로 묶는 편집은 사용자가 한다.
 // 외부 패키지(--deps 수확분)는 컴포넌트를 만들지 않는다 — vendor 규칙은
 // 사용자가 의도를 알고 적어야 할 영역이다.
+// go.work 워크스페이스의 형제 모듈 패키지는 내부라 컴포넌트를 만들고, 패턴은 rules와 같이 패키지가 속한
+// 모듈 기준 상대 경로다. 그래서 두 모듈의 같은 상대 경로(a/util·b/util)는 같은 패턴에 맞는다 — 컴포넌트를
+// 둘 두면 한쪽은 아무 패키지에도 매칭되지 않으므로 한 컴포넌트로 묶는다.
 func ScaffoldConfig(d *graph.Document) *config.File {
 	comps := map[string][]string{}
-	unit := map[string]string{} // 패키지 정점 ID → 컴포넌트명
+	unit := map[string]string{}      // 패키지 정점 ID → 컴포넌트명
+	byPattern := map[string]string{} // 패턴 → 컴포넌트명
 	for _, v := range d.Vertices {
 		if v.Kind != graph.KindPackage || isExternalPackage(d, v) {
 			continue
 		}
-		rel := relPath(v.ID, d.Module)
+		rel := graph.ModuleRelative(v.ID, packageModule(d, v))
 		name, pattern := rel, rel+"/**"
 		if rel == "." {
 			// 모듈 루트 패키지 — 경로 "."는 재귀 패턴으로 표현할 수 없어
 			// 정확 일치로 둔다.
 			name, pattern = "root", "."
+		}
+		if existing, ok := byPattern[pattern]; ok {
+			unit[v.ID] = existing
+			continue
 		}
 		// 이름은 컴포넌트 키라 유일해야 한다 — 모듈 루트가 "root"를 쓰면
 		// 같은 이름의 root/ 패키지가 밀려나는 식의 충돌을 접미사로 피한다.
@@ -36,12 +44,13 @@ func ScaffoldConfig(d *graph.Document) *config.File {
 			if _, taken := comps[name]; !taken {
 				break
 			}
-			name = fmt.Sprintf("%s-%d", relPath(v.ID, d.Module), i)
+			name = fmt.Sprintf("%s-%d", rel, i)
 			if rel == "." {
 				name = fmt.Sprintf("root-%d", i)
 			}
 		}
 		comps[name] = []string{pattern}
+		byPattern[pattern] = name
 		unit[v.ID] = name
 	}
 	deps := map[string][]string{}

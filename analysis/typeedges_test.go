@@ -3,6 +3,7 @@ package analysis
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -328,5 +329,40 @@ func TestTypeEdgesExternalFieldNotAttributed(t *testing.T) {
 		MaxDepth: MaxTraversalDepth, MaxReached: MaxTraversalReached, TypeEdges: TypeEdgesMembers}))
 	if got["p.Order"] {
 		t.Errorf("reading db must not reach Order: %v", got)
+	}
+}
+
+// TestTypeEdgesAbbreviatedField는 수확 상한을 넘어 축약된 필드 타입(앞부분…sha256:해시)을 앞부분 밖의
+// 타입도 담는 필드로 보는지 확인한다 — 다른 필드가 그 타입을 이름으로 담아 간선이 필드로 옮겨져도, 축약
+// 필드를 읽는 선언은 그 타입에 닿아야 한다(과소 근사 금지). 축약하지 않은 필드는 이름으로 담을 때만 받는다.
+func TestTypeEdgesAbbreviatedField(t *testing.T) {
+	pos := func(line, col int) *graph.Position { return &graph.Position{File: "a.go", Line: line, Column: col} }
+	big := "struct{a struct{a " + graph.SpellingDigestMarker + strings.Repeat("0f", 32)
+	d := &graph.Document{Version: graph.Version, Level: graph.LevelSymbol,
+		Vertices: []graph.Vertex{
+			{ID: "p.Leaf", Kind: graph.KindType, Position: pos(1, 6)},
+			{ID: "p.Box", Kind: graph.KindType, Position: pos(5, 6),
+				Fields: []string{"big:" + big, "leaf:p.Leaf", "n:int"}},
+			{ID: "p.(Box).big", Kind: graph.KindField, Position: pos(6, 2)},
+			{ID: "p.(Box).leaf", Kind: graph.KindField, Position: pos(7, 2)},
+			{ID: "p.(Box).n", Kind: graph.KindField, Position: pos(8, 2)},
+			{ID: "p.readBig", Kind: graph.KindFunc, Position: pos(10, 6)},
+			{ID: "p.readN", Kind: graph.KindFunc, Position: pos(20, 6)},
+		},
+		Edges: []graph.Edge{
+			{From: "p.Box", To: "p.Leaf", Kind: graph.EdgeReferences, Positions: []graph.Position{*pos(6, 40), *pos(7, 7)}},
+			{From: "p.readBig", To: "p.(Box).big", Kind: graph.EdgeReferences, Positions: []graph.Position{*pos(11, 4)}},
+			{From: "p.readN", To: "p.(Box).n", Kind: graph.EdgeReferences, Positions: []graph.Position{*pos(21, 4)}},
+		},
+	}
+	reach := func(root string) map[string]bool {
+		return reachedIDs(Traverse(d, TraversalRequest{Roots: []string{root}, Direction: DirectionDependencies,
+			MaxDepth: MaxTraversalDepth, MaxReached: MaxTraversalReached, TypeEdges: TypeEdgesMembers}))
+	}
+	if got := reach("p.readBig"); !got["p.Leaf"] {
+		t.Errorf("reading the abbreviated field must reach Leaf, which may lie past its prefix: %v", got)
+	}
+	if got := reach("p.readN"); got["p.Leaf"] {
+		t.Errorf("reading n (int) must not reach Leaf: %v", got)
 	}
 }

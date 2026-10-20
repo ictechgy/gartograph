@@ -22,6 +22,32 @@ import (
 	"golang.org/x/tools/go/ssa/ssautil"
 )
 
+// Session은 수확 문서를 만든 적재 결과를 RTA 분석에 다시 쓰게 하는 불투명 핸들이다. dead --algo rta는 문서
+// (정점 ID·루트)와 SSA 호출 그래프가 모두 필요한데, 둘을 따로 적재하면 같은 패턴·태그·환경으로 같은 프로그램을
+// 두 번 파싱·타입체크한다 — 수확에서 가장 비싼 단계다. 적재한 패키지는 source 밖으로 내보내지 않는다
+// (golang.org/x/tools는 source 안에서만 쓴다).
+type Session struct {
+	pkgs []*packages.Package
+}
+
+// LoadSession은 opts로 symbol 레벨 문서를 수확하고, 그 적재 결과로 RTA를 돌릴 세션을 함께 돌려준다. 문서는
+// Level만 symbol로 둔 같은 opts의 Load와 같다 — RTA가 답하는 함수·메서드 정점은 symbol 문서에만 있어
+// opts.Level은 쓰지 않는다. symbol 적재 모드는 SSA 구축에 필요한 syntax·타입 정보를 이미 담는다. 예전 RTA 전용
+// 적재가 더하던 NeedTypesSizes는 Package.TypesSizes만 채우는데 ssa·rta는 그 필드를 읽지 않고, 타입 검사는 두
+// 모드 모두 go list가 알려 준 크기로 한다(golang.org/x/tools v0.50.0 go/packages).
+func LoadSession(opts Options) (*graph.Document, *Session, error) {
+	opts.Level = graph.LevelSymbol
+	pkgs, err := load(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	doc, err := documentFrom(pkgs, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return doc, &Session{pkgs: pkgs}, nil
+}
+
 // RTAReachable은 roots로 주어진 정점 ID 집합에서 RTA로 도달 가능한
 // 함수·메서드의 정점 ID를 돌려준다.
 // 반환 집합에는 루트 자신도 포함된다 — 도달성 집합의 의미와 같다.
@@ -29,9 +55,9 @@ import (
 // 않는다 — 비호출 심볼의 판정은 그래프 도달성이 담당한다.
 // doc은 ID 규칙의 기준이다 — 수확 문서와 같은 패키지 ID 집합으로 이름을 지어야
 // 접미사가 붙은 충돌 ID(collisionSuffix)가 두 그래프에서 같다.
-func RTAReachable(opts Options, doc *graph.Document, roots map[string]bool) (map[string]bool, error) {
+func (s *Session) RTAReachable(doc *graph.Document, roots map[string]bool) (map[string]bool, error) {
 	namer := newRTANamer(doc, roots)
-	res, err := analyzeRTA(opts, namer)
+	res, err := analyzeRTA(s.pkgs, namer)
 	if err != nil {
 		return nil, err
 	}
@@ -61,9 +87,9 @@ func withRoots(reach, roots map[string]bool) map[string]bool {
 // 도달성만으로는 "왜 살아 있다고 봤나"에 답할 수 없다 — dead --explain
 // --algo rta가 CHA 수확 그래프가 아니라 실제 판정을 내린 그래프 위의
 // 경로를 보여주기 위한 장치다.
-func RTAAdjacency(opts Options, doc *graph.Document, roots map[string]bool) (map[string][]string, map[string]bool, error) {
+func (s *Session) RTAAdjacency(doc *graph.Document, roots map[string]bool) (map[string][]string, map[string]bool, error) {
 	namer := newRTANamer(doc, roots)
-	res, err := analyzeRTA(opts, namer)
+	res, err := analyzeRTA(s.pkgs, namer)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -161,13 +187,9 @@ func (n rtaNamer) reachable(res *rta.Result) map[string]bool {
 	return out
 }
 
-// analyzeRTA는 SSA를 만들고 주어진 루트에서 RTA를 실행한다.
+// analyzeRTA는 적재한 패키지로 SSA를 만들고 주어진 루트에서 RTA를 실행한다.
 // 도달 집합과 인접 맵의 두 소비자가 같은 분석 결과를 나누기 위한 단위다.
-func analyzeRTA(opts Options, namer rtaNamer) (*rta.Result, error) {
-	pkgs, err := loadSSA(opts)
-	if err != nil {
-		return nil, err
-	}
+func analyzeRTA(pkgs []*packages.Package, namer rtaNamer) (*rta.Result, error) {
 	prog, ssaPkgs := ssautil.AllPackages(pkgs, ssa.InstantiateGenerics)
 	prog.Build()
 
@@ -253,29 +275,4 @@ func ExplainRoots(doc *graph.Document, roots []string) []string {
 		}
 	}
 	return out
-}
-
-// loadSSA는 SSA 구축에 필요한 로드 모드로 패키지를 읽는다.
-// RTA는 호출 그래프를 만들므로 syntax·타입·사이즈 정보가 모두 필요하다.
-func loadSSA(opts Options) ([]*packages.Package, error) {
-	patterns := opts.Patterns
-	if len(patterns) == 0 {
-		patterns = []string{"./..."}
-	}
-	cfg := &packages.Config{
-		Dir:   opts.Dir,
-		Tests: opts.Tests,
-		Mode: packages.NeedName | packages.NeedImports | packages.NeedDeps |
-			packages.NeedModule | packages.NeedFiles | packages.NeedSyntax |
-			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedTypesSizes,
-	}
-	if opts.Tags != "" {
-		cfg.BuildFlags = []string{"-tags=" + opts.Tags}
-	}
-	cfg.Env = platformEnv(opts)
-	pkgs, err := packages.Load(cfg, patterns...)
-	if err != nil {
-		return nil, fmt.Errorf("loading packages for rta: %w — check go.mod and build tags", err)
-	}
-	return pkgs, nil
 }

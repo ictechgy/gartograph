@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"sort"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -59,7 +60,7 @@ func TestSQLRelations(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := sqlRelations(tc.sql)
+			got, _, _ := sqlRelations(tc.sql)
 			if len(got) != len(tc.want) {
 				t.Fatalf("sqlRelations(%q) = %v, want %v", tc.sql, got, tc.want)
 			}
@@ -104,6 +105,46 @@ func TestLexSQL(t *testing.T) {
 			t.Fatalf("escaped quote must not end the literal: %v", got)
 		}
 	})
+	// `;`는 문장 경계 기호이고, 자리를 여는 자리표시자 기호는 관계 자리에서 미해석으로 세도록 표시된다.
+	// 닫는 `}`는 기호일 뿐이다. `$` 뒤에 숫자가 오면 위치 매개변수(자리표시자)이고, 그 밖의 `$`로 시작하는
+	// 이름은 지금처럼 식별자다.
+	t.Run("문장 경계·자리표시자", func(t *testing.T) {
+		tokens := lexSQL("a; %s {} ? :n @v $12 $x # *")
+		var texts, placeholders []string
+		for _, tok := range tokens {
+			texts = append(texts, tok.text)
+			if tok.placeholder {
+				placeholders = append(placeholders, tok.text)
+			}
+		}
+		want := []string{"a", ";", "%", "s", "{", "}", "?", ":", "n", "@", "v", "$12", "$x"}
+		if strings.Join(texts, "|") != strings.Join(want, "|") {
+			t.Fatalf("tokens = %v, want %v", texts, want)
+		}
+		wantPlaceholders := []string{"%", "{", "?", ":", "@", "$12"}
+		if strings.Join(placeholders, "|") != strings.Join(wantPlaceholders, "|") {
+			t.Fatalf("placeholders = %v, want %v", placeholders, wantPlaceholders)
+		}
+		if isNameToken(tokens[11]) || !isNameToken(tokens[12]) {
+			t.Fatalf("$12 must not be a name, $x must stay one: %+v %+v", tokens[11], tokens[12])
+		}
+	})
+	// `:`·`@`·`%`는 이름·동사가 바로 붙어야 자리다 — `::` 캐스트, 산문 콜론, 나머지 연산자, `%%`는
+	// 목록을 끝내는 기호일 뿐 미해석이 아니다.
+	t.Run("떨어진 기호는 자리표시자가 아니다", func(t *testing.T) {
+		tokens := lexSQL("a::int b: c 5 % 2 @ x 100%% y:")
+		var texts []string
+		for _, tok := range tokens {
+			texts = append(texts, tok.text)
+			if tok.placeholder {
+				t.Fatalf("%q must not open a placeholder in %v", tok.text, tokens)
+			}
+		}
+		want := []string{"a", ":", ":", "int", "b", ":", "c", "%", "@", "x", "%", "%", "y", ":"}
+		if strings.Join(texts, "|") != strings.Join(want, "|") {
+			t.Fatalf("tokens = %v, want %v", texts, want)
+		}
+	})
 }
 
 // TestReadQualifiedName은 한정 이름 읽기의 종료 조건을 검증한다.
@@ -131,6 +172,150 @@ func TestReadQualifiedName(t *testing.T) {
 			t.Fatalf("name=%q next=%d, want a/1", name, next)
 		}
 	})
+	t.Run("절 키워드는 관계 이름이 아니다", func(t *testing.T) {
+		// `DO UPDATE SET`·`FROM {} WHERE`의 SET·WHERE가 관계 이름으로 새지 않는다.
+		for _, word := range []string{"SET", "where", "Lateral", "the"} {
+			if name, _ := readQualifiedName([]sqlToken{{text: word}}, 0); name != "" {
+				t.Fatalf("clause word %q must not start a name, got %q", word, name)
+			}
+		}
+		// `table`은 UPDATE table SET의 진짜 관계 이름일 수 있어 절 키워드가 아니다.
+		if name, _ := readQualifiedName([]sqlToken{{text: "table"}}, 0); name != "table" {
+			t.Fatalf("table must stay a name, got %q", name)
+		}
+	})
+	t.Run("점 뒤의 예약어는 이름의 일부다", func(t *testing.T) {
+		// 한정 이름의 점 뒤는 예약어여도 식별자다(PostgreSQL·MySQL) — 절 키워드 거르기는 첫 세그먼트만 본다.
+		name, next := readQualifiedName(
+			[]sqlToken{{text: "shop"}, {text: "."}, {text: "order"}}, 0)
+		if name != "shop.order" || next != 3 {
+			t.Fatalf("name=%q next=%d, want shop.order/3", name, next)
+		}
+	})
+	t.Run("자리표시자는 이름이 아니다", func(t *testing.T) {
+		if name, _ := readQualifiedName([]sqlToken{{text: "$1", placeholder: true}}, 0); name != "" {
+			t.Fatalf("placeholder must not start a name, got %q", name)
+		}
+	})
+}
+
+// sqlRelationsSharedCases는 계열 공통 SQL 관계 사례(DECISIONS D2, design/sql-relations-cases.json)다.
+// 7개 생산자의 추출 테스트와 isthmus conformance/sql-relations.json 벡터가 같은 SQL 문자열과 같은 기대 집합을
+// 쓴다 — 벡터를 벤더링하기 전까지는 각 생산자가 같은 사례를 테스트로 고정하므로 id·SQL·기대값을 고치지 않는다.
+// 규칙은 R1 함수 인자 안의 FROM, R2 문장 단위 CTE 이름, R3 IS [NOT] DISTINCT FROM이다.
+var sqlRelationsSharedCases = []struct {
+	id        string
+	sql       string
+	relations []string
+}{
+	{"cte/simple", "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent", []string{"orders"}},
+	{"cte/recursive-with-columns", "WITH RECURSIVE tree(id, parent_id) AS (SELECT id, parent_id FROM nodes UNION ALL SELECT n.id, n.parent_id FROM nodes n JOIN tree t ON n.parent_id = t.id) SELECT * FROM tree", []string{"nodes"}},
+	{"cte/multiple-materialized", "WITH a AS (SELECT 1), b AS MATERIALIZED (SELECT * FROM orders) SELECT * FROM a JOIN b ON true", []string{"orders"}},
+	{"cte/not-materialized", "WITH c AS NOT MATERIALIZED (SELECT * FROM orders) SELECT * FROM c", []string{"orders"}},
+	{"cte/insert-select", "WITH staged AS (SELECT * FROM imports) INSERT INTO orders SELECT * FROM staged", []string{"imports", "orders"}},
+	{"cte/scope-is-one-statement", "WITH recent AS (SELECT 1) SELECT * FROM recent; SELECT * FROM recent", []string{"recent"}},
+	{"function-from/extract", "SELECT EXTRACT(YEAR FROM created_at) FROM orders", []string{"orders"}},
+	{"function-from/trim", "SELECT TRIM(BOTH ' ' FROM name) FROM users", []string{"users"}},
+	{"function-from/substring", "SELECT SUBSTRING(name FROM 2 FOR 3) FROM users", []string{"users"}},
+	{"subquery/derived-table-still-fires", "SELECT * FROM (SELECT * FROM orders) AS sub", []string{"orders"}},
+	{"subquery/scalar-still-fires", "SELECT (SELECT max(id) FROM users) FROM orders", []string{"users", "orders"}},
+	{"subquery/in-select-still-fires", "SELECT * FROM orders WHERE id IN (SELECT order_id FROM payments)", []string{"orders", "payments"}},
+	{"distinct-from/is", "SELECT * FROM events WHERE a IS DISTINCT FROM b", []string{"events"}},
+	{"distinct-from/is-not", "SELECT * FROM events WHERE a IS NOT DISTINCT FROM b", []string{"events"}},
+}
+
+// sortedNames는 관계 목록을 순서와 무관하게 비교하려고 정렬한 사본을 `|`로 잇는다. 중복은 남겨 둔다 —
+// 이 추출기는 한 텍스트에서 같은 이름을 한 번만 내므로 중복이 있으면 그 자체로 실패여야 한다.
+func sortedNames(names []string) string {
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	return strings.Join(sorted, "|")
+}
+
+// TestSQLRelationsSharedCases는 계열 공통 사례를 순서와 무관한 집합으로 비교한다 — CTE 이름, 함수 인자 안의
+// FROM(EXTRACT·TRIM·SUBSTRING), IS [NOT] DISTINCT FROM의 피연산자는 관계가 아니고, 하위 질의 안의 FROM은
+// 그대로 관계다. isthmus는 관계로 나온 이름을 선언과 잇지 못하면 relation-use-without-decl error를 낸다.
+func TestSQLRelationsSharedCases(t *testing.T) {
+	for _, tc := range sqlRelationsSharedCases {
+		t.Run(tc.id, func(t *testing.T) {
+			got, _, _ := sqlRelations(tc.sql)
+			if sortedNames(got) != sortedNames(tc.relations) {
+				t.Fatalf("sqlRelations(%q) = %v, want the set %v", tc.sql, got, tc.relations)
+			}
+		})
+	}
+}
+
+// TestSQLRelationsPortedRules는 공통 사례 밖에서 이 추출기가 지키는 규칙을 검증한다 — tsograph에서 옮긴 절
+// 키워드 게이트·자리표시자 계수·GRANT/REVOKE 문장 판정, 세 규칙의 경계(대소문자 접기, 한정 이름, 문장 범위,
+// 함수 인자 안의 하위 질의), 그리고 바뀌면 안 되는 기존 판독(UPDATE table, DELETE … RETURNING CTE 본문,
+// 테이블 값 함수 미해석). functions는 테이블 값 함수 피연산자 수, placeholders는 관계 자리의 자리표시자 수다.
+func TestSQLRelationsPortedRules(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		sql          string
+		want         []string
+		functions    int
+		placeholders int
+	}{
+		// 자리표시자는 관계 이름이 아니라 실행 때 채워지는 자리다 — 미해석으로 센다.
+		{"fmt 동사", "DELETE FROM %s WHERE id = $1", nil, 0, 1},
+		{"중괄호", "SELECT * FROM {} WHERE id = 1", nil, 0, 1},
+		{"물음표", "SELECT * FROM ? WHERE id = 1", nil, 0, 1},
+		{"위치 매개변수", "SELECT * FROM $1", nil, 0, 1},
+		{"이름 매개변수", "SELECT * FROM :tbl JOIN @other ON true", nil, 0, 2},
+		{"템플릿", "SELECT * FROM {{.Table}} WHERE id = $1", nil, 0, 1},
+		// 템플릿 안의 Table은 관계 키워드로 읽혀도 닫는 `}`에서 멈춘다 — 구멍을 두 번 세지 않고 별칭 t를
+		// 관계로 읽지 않는다.
+		{"템플릿 뒤 별칭", "SELECT * FROM {{.Table}} t JOIN {table} u ON true", nil, 0, 2},
+		{"자리표시자 한정자", "SELECT * FROM %s.users", nil, 0, 1},
+		{"자리표시자 세그먼트", "SELECT * FROM public.%s", nil, 0, 1},
+		{"쉼표 뒤 자리표시자", "SELECT * FROM a, %s", []string{"a"}, 0, 1},
+		// 절 키워드는 관계 이름 자리에서 목록을 끝낸다 — 세지 않는다.
+		{"upsert의 DO UPDATE SET", "INSERT INTO t (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET x = 1", []string{"t"}, 0, 0},
+		{"LATERAL", "SELECT * FROM t, LATERAL f(x) AS l", []string{"t"}, 0, 0},
+		{"산문", "update the cache from the database", nil, 0, 0},
+		// 산문 콜론은 `:name` 자리가 아니다 — 관계도 미해석도 아니다.
+		{"산문 콜론", "internal error: update: pointer already set", nil, 0, 0},
+		{"GRANT UPDATE ON", "GRANT UPDATE ON orders TO bob", nil, 0, 0},
+		{"점 뒤 예약어", "SELECT * FROM shop.order", []string{"shop.order"}, 0, 0},
+		// GRANT·REVOKE 문장의 FROM은 권한 주체 자리다. 판정은 그 문장에만 미친다.
+		{"REVOKE", "REVOKE SELECT ON orders FROM bob", nil, 0, 0},
+		{"GRANT", "GRANT SELECT ON orders TO bob", nil, 0, 0},
+		{"REVOKE 다음 문장", "REVOKE SELECT ON orders FROM bob; SELECT * FROM audit", []string{"audit"}, 0, 0},
+		// R3: DISTINCT FROM의 피연산자는 자리표시자여도 관계 자리가 아니다. IS 없는 DISTINCT는 그대로다.
+		{"DISTINCT FROM 위치 매개변수", "SELECT * FROM events WHERE kind IS DISTINCT FROM $1", []string{"events"}, 0, 0},
+		{"SELECT DISTINCT", "SELECT DISTINCT * FROM t", []string{"t"}, 0, 0},
+		// R2: 비인용 이름은 대소문자를 접고 인용 이름은 그대로 비교한다. 한정 이름은 CTE가 아니다.
+		{"CTE 대소문자", "WITH Recent AS (SELECT 1) SELECT * FROM RECENT", nil, 0, 0},
+		{"인용 CTE와 비인용 피연산자", `WITH "recent" AS (SELECT 1) SELECT * FROM Recent`, nil, 0, 0},
+		{"인용 대소문자", `WITH "Recent" AS (SELECT 1) SELECT * FROM recent`, []string{"recent"}, 0, 0},
+		{"인용 피연산자", `WITH recent AS (SELECT 1) SELECT * FROM "Recent"`, []string{"Recent"}, 0, 0},
+		{"한정 이름은 CTE가 아니다", "WITH recent AS (SELECT 1) SELECT * FROM s.recent", []string{"s.recent"}, 0, 0},
+		// 공통 규칙은 문장 단위라, 자기 본문에서 같은 이름의 실제 테이블을 읽는 CTE도 그 이름을 내지 않는다
+		// (README에 적은 알려진 손실이다 — 계열 생산자가 같은 판정을 내야 isthmus 조인이 언어와 무관하다).
+		{"같은 이름 테이블을 가리는 CTE", "WITH users AS (SELECT * FROM users WHERE active) SELECT * FROM users", nil, 0, 0},
+		// R1: 함수 인자 안의 하위 질의는 관계를 낸다. 닫히지 않은 함수 괄호는 다음 문장을 삼키지 않는다.
+		{"함수 인자 안 하위 질의", "SELECT COALESCE((SELECT max(id) FROM users), 0) FROM orders", []string{"users", "orders"}, 0, 0},
+		{"ARRAY 하위 질의", "SELECT ARRAY(SELECT id FROM users)", []string{"users"}, 0, 0},
+		{"OVERLAY", "SELECT OVERLAY(name PLACING 'x' FROM 2 FOR 3) FROM users", []string{"users"}, 0, 0},
+		{"닫히지 않은 함수 괄호", "SELECT EXTRACT(YEAR FROM d; SELECT * FROM t", []string{"t"}, 0, 0},
+		// 보존: CTE 본문 괄호는 함수 인자가 아니다(AS는 절 키워드, MATERIALIZED는 R2가 본문으로 안다).
+		{"DELETE CTE", "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d", []string{"t"}, 0, 0},
+		{"MATERIALIZED DELETE CTE", "WITH d AS MATERIALIZED (DELETE FROM t RETURNING *) SELECT * FROM d", []string{"t"}, 0, 0},
+		{"NOT MATERIALIZED DELETE CTE", "WITH d AS NOT MATERIALIZED (DELETE FROM t RETURNING *) SELECT * FROM d", []string{"t"}, 0, 0},
+		{"테이블 값 함수", "SELECT * FROM pragma_table_info('t') p JOIN users ON true", []string{"users"}, 1, 0},
+		{"테이블 값 함수 별칭 뒤 쉼표", "SELECT * FROM pragma_table_info('t') p, users", []string{"users"}, 1, 0},
+		{"UPDATE table", "UPDATE table SET x = 1", []string{"table"}, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, functions, placeholders := sqlRelations(tc.sql)
+			if sortedNames(got) != sortedNames(tc.want) || functions != tc.functions || placeholders != tc.placeholders {
+				t.Fatalf("sqlRelations(%q) = %v, functions %d, placeholders %d; want %v, %d, %d",
+					tc.sql, got, functions, placeholders, tc.want, tc.functions, tc.placeholders)
+			}
+		})
+	}
 }
 
 // TestTagColumn은 struct 태그 원문에서 컬럼 이름을 읽는 규칙을 검증한다.
@@ -581,9 +766,9 @@ func TestSQLTableValuedFunctions(t *testing.T) {
 		{"SELECT * FROM pragma_table_info('t') AS p, users", []string{"users"}},
 		{"SELECT * FROM pragma_table_info('t') p JOIN users ON true", []string{"users"}},
 	} {
-		got, unresolved := sqlRelations(tc.sql)
-		if unresolved != 1 {
-			t.Fatalf("unresolved = %d, want 1", unresolved)
+		got, unresolved, placeholders := sqlRelations(tc.sql)
+		if unresolved != 1 || placeholders != 0 {
+			t.Fatalf("unresolved = %d, placeholders = %d, want 1 and 0", unresolved, placeholders)
 		}
 		if len(got) != len(tc.want) {
 			t.Fatalf("got %v, want %v", got, tc.want)
@@ -661,6 +846,66 @@ func TestSchemaFactsTableValuedOperandIsDynamic(t *testing.T) {
 	}
 	if !functions || nonLiteral {
 		t.Fatalf("operand count must stay under its own phrase: %v", doc.Limitations)
+	}
+}
+
+// 자리표시자 공백의 생산자 문구는 테이블 값 함수 문구와 따로 센다 — 함수 피연산자 수에 자리표시자를 섞으면
+// "table-valued SQL function operand(s)" 문구가 사실과 다른 수를 말한다. 둘 다 있으면 함수 문구가 먼저다.
+func TestSQLPlaceholderLimitations(t *testing.T) {
+	limitations := (&schemaScan{placeholders: 2}).limitations()
+	if len(limitations) != 1 || !strings.HasPrefix(limitations[0],
+		"unjoined-dynamic-relations: 2 SQL placeholder operand(s)") {
+		t.Fatalf("missing placeholder coverage evidence: %v", limitations)
+	}
+	both := (&schemaScan{sqlFunctions: 1, placeholders: 3}).limitations()
+	if len(both) != 2 || !strings.HasPrefix(both[0], "unjoined-dynamic-relations: 1 table-valued") ||
+		!strings.HasPrefix(both[1], "unjoined-dynamic-relations: 3 SQL placeholder") {
+		t.Fatalf("function and placeholder counts must keep their own phrases: %v", both)
+	}
+}
+
+// TestSchemaFactsPlaceholderOperandIsDynamic은 관계 자리에 자리표시자(`%s`·`?`)가 온 SQL 리터럴이 관계 대신
+// 그 위치의 dynamic 사실 하나와 자리표시자 문구를 내는지 확인한다 — `fmt.Sprintf("DELETE FROM %s …")`는 Go의
+// 흔한 관용구이고, 예전에는 동사 글자 `s`가 관계 이름으로 나가 isthmus가 거짓 relation-use-without-decl
+// error를 냈다. 함수 피연산자와 자리표시자가 함께 든 리터럴도 dynamic 사실은 하나이고, 두 수는 각자의 문구로
+// 간다. REVOKE의 FROM(권한 주체)과 IS DISTINCT FROM의 피연산자는 사실이 되지 않는다.
+func TestSchemaFactsPlaceholderOperandIsDynamic(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport \"database/sql\"\n\nvar db *sql.DB\n\nfunc main() {\n" +
+			"\tdb.Exec(\"DELETE FROM %s WHERE id = $1\")\n" +
+			"\tdb.Query(\"SELECT * FROM ? JOIN pragma_table_info('t') p ON true\")\n" +
+			"\tdb.Exec(\"REVOKE SELECT ON orders FROM bob\")\n" +
+			"\tdb.Query(\"SELECT * FROM events WHERE kind IS DISTINCT FROM $1\")\n}\n",
+	})
+	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	if err != nil {
+		t.Fatalf("SchemaFacts: %v", err)
+	}
+	dynamics := map[int]string{}
+	static := map[string]int{}
+	for _, f := range doc.Facts {
+		if fact := f.(RelationFact); fact.Dynamic {
+			dynamics[fact.Location.Line] = fact.Channel
+		} else {
+			static[fact.Channel] = fact.Location.Line
+		}
+	}
+	wantDynamic := map[int]string{
+		8: "DELETE FROM %s WHERE id = $1",
+		9: "SELECT * FROM ? JOIN pragma_table_info('t') p ON true",
+	}
+	if len(dynamics) != len(wantDynamic) || dynamics[8] != wantDynamic[8] || dynamics[9] != wantDynamic[9] {
+		t.Fatalf("want one dynamic fact per literal with a placeholder operand: %v", dynamics)
+	}
+	if len(static) != 1 || static["events"] != 11 {
+		t.Fatalf("only events is a relation (no s, bob or $1): %v", static)
+	}
+	want := []string{
+		"unjoined-dynamic-relations: 1 table-valued SQL function operand(s) have unmodeled relation dependencies",
+		"unjoined-dynamic-relations: 2 SQL placeholder operand(s)",
+	}
+	if len(doc.Limitations) != 2 || doc.Limitations[0] != want[0] || !strings.HasPrefix(doc.Limitations[1], want[1]) {
+		t.Fatalf("limitations = %v, want %v…", doc.Limitations, want)
 	}
 }
 
