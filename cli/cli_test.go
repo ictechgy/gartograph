@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ictechgy/gartograph/analysis"
 	"github.com/ictechgy/gartograph/export"
 	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
@@ -2256,6 +2257,603 @@ fileRules:
 			realPath(rep.Baselined[0].Position.File) != realPath(filepath.Join(dir, "web", "web.go")) {
 			t.Fatalf("%s: baselined entry must point at this checkout's web.go: %s", dir, out)
 		}
+	}
+}
+
+// portableFixture는 fileScope 위반(web/web.go), unreachable 심볼(lib.unusedHelper), 심볼 순환
+// (main.A↔main.B)이 함께 있는 모듈을 만든다 — baseline과 SARIF가 위치를 어떻게 적는지
+// rules·dead·cycles에서 한 번에 보려는 fixture다.
+func portableFixture(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/lib"
+
+func A() { B() }
+func B() { A() }
+
+func main() { lib.Run(); A() }
+`,
+		"lib/lib.go": `package lib
+
+func Run() {}
+func unusedHelper() {}
+`,
+		"web/web.go":    "package web\n\nimport _ \"example.com/fixture/testhelp\"\n",
+		"testhelp/t.go": "package testhelp\n",
+		".gartograph.yml": `components:
+  web: ["web"]
+  testhelp: ["testhelp"]
+deps:
+  web: ["testhelp"]
+fileRules:
+  - name: no-testdeps-in-prod
+    from: "!*_test.go"
+    to: testhelp
+`,
+	})
+}
+
+// resolvedPath는 심링크를 푼 경로를 돌려준다 — macOS 임시 디렉터리(/var → /private/var)에서
+// 수확한 위치와 테스트가 만든 경로를 같은 형태로 견주기 위해서다.
+func resolvedPath(t *testing.T, p string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatalf("resolving %s: %v", p, err)
+	}
+	return resolved
+}
+
+// assertNoCheckoutPath는 산출물에 dir의 절대 경로가 없는지 본다. 적힌 경로와 심링크를 푼 경로를,
+// JSON 문자열로 이스케이프한 형태(윈도 역슬래시)까지 함께 찾는다.
+func assertNoCheckoutPath(t *testing.T, what string, data []byte, dir string) {
+	t.Helper()
+	for _, p := range []string{dir, resolvedPath(t, dir)} {
+		quoted, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("quoting %s: %v", p, err)
+		}
+		if bytes.Contains(data, []byte(p)) || bytes.Contains(data, quoted[1:len(quoted)-1]) {
+			t.Fatalf("%s must not carry the checkout path %s:\n%s", what, p, data)
+		}
+	}
+}
+
+// TestBaselinesWriteModuleRelativePositions는 rules·dead --write-baseline이 위치 파일을 모듈 루트
+// 기준 '/' 구분 상대 경로로 쓰는지 확인한다 — 절대 경로를 쓰면 커밋한 baseline에 수확한 머신의
+// 사용자 이름과 디렉터리 구조가 남는다. 다른 경로로 복사한 체크아웃에서도 같은 baseline이 맞아야
+// 하고, 보고서의 위치(같은 실행의 위반·unreachable, 다음 실행의 baselined)는 지금처럼 그
+// 체크아웃의 절대 경로다.
+func TestBaselinesWriteModuleRelativePositions(t *testing.T) {
+	first := portableFixture(t)
+	moved := filepath.Join(t.TempDir(), "checkout")
+	if err := os.CopyFS(moved, os.DirFS(first)); err != nil {
+		t.Fatalf("copying the fixture to a second checkout: %v", err)
+	}
+	for _, c := range []struct{ cmd, file string }{
+		{"rules", "web/web.go"},
+		{"dead", "lib/lib.go"},
+	} {
+		path := filepath.Join(t.TempDir(), c.cmd+"-baseline.json")
+		code, out, errb := run(t, c.cmd, "--dir", first, "--write-baseline", path, "--format", "json")
+		if code != 0 {
+			t.Fatalf("%s --write-baseline failed: %d %s", c.cmd, code, errb)
+		}
+		var report struct {
+			Violations []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"violations"`
+			Unreachable []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"unreachable"`
+		}
+		if err := json.Unmarshal([]byte(out), &report); err != nil {
+			t.Fatalf("not JSON: %v\n%s", err, out)
+		}
+		// baseline에 쓸 사본만 상대 경로가 된다 — 같은 실행의 보고서는 바뀌지 않는다.
+		reported := append(report.Violations, report.Unreachable...)
+		if len(reported) != 1 || reported[0].Position == nil ||
+			resolvedPath(t, reported[0].Position.File) != resolvedPath(t, filepath.Join(first, filepath.FromSlash(c.file))) {
+			t.Fatalf("%s: writing the baseline must leave the report's absolute position alone: %s", c.cmd, out)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading the %s baseline: %v", c.cmd, err)
+		}
+		assertNoCheckoutPath(t, c.cmd+" baseline", data, first)
+		var written struct {
+			Violations []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"violations"`
+			Findings []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"findings"`
+		}
+		if err := json.Unmarshal(data, &written); err != nil {
+			t.Fatalf("baseline is not JSON: %v\n%s", err, data)
+		}
+		entries := append(written.Violations, written.Findings...)
+		if len(entries) != 1 || entries[0].Position == nil || entries[0].Position.File != c.file {
+			t.Fatalf("%s baseline must record %s relative to the module root:\n%s", c.cmd, c.file, data)
+		}
+		for _, dir := range []string{first, moved} {
+			code, out, errb := run(t, c.cmd, "--dir", dir,
+				"--baseline", path, "--strict", "--format", "json")
+			if code != 0 {
+				t.Fatalf("%s in %s: a baselined entry must not fail --strict: %d %s %s",
+					c.cmd, dir, code, out, errb)
+			}
+			var rep struct {
+				Violations  []json.RawMessage `json:"violations"`
+				Unreachable []json.RawMessage `json:"unreachable"`
+				Baselined   []struct {
+					Position *graph.Position `json:"position"`
+				} `json:"baselined"`
+				Stale []json.RawMessage `json:"staleBaseline"`
+			}
+			if err := json.Unmarshal([]byte(out), &rep); err != nil {
+				t.Fatalf("not JSON: %v\n%s", err, out)
+			}
+			if len(rep.Violations)+len(rep.Unreachable) != 0 || len(rep.Baselined) != 1 || len(rep.Stale) != 0 {
+				t.Fatalf("%s in %s: expected 0 fresh + 1 baselined + 0 stale: %s", c.cmd, dir, out)
+			}
+			// 보고서의 위치는 바꾸지 않는다 — 이 체크아웃의 절대 경로다.
+			if p := rep.Baselined[0].Position; p == nil ||
+				resolvedPath(t, p.File) != resolvedPath(t, filepath.Join(dir, filepath.FromSlash(c.file))) {
+				t.Fatalf("%s in %s: baselined entry must point at this checkout's %s: %s",
+					c.cmd, dir, c.file, out)
+			}
+		}
+	}
+}
+
+// TestBaselinePositionsUseModuleRoot는 --dir이 모듈의 하위 디렉터리여도 baseline 위치와 SARIF URI가
+// go.mod 디렉터리 기준인지 rules·dead·cycles에서 확인한다 — 기준이 --dir을 따르면 같은 파일이
+// 실행마다 다른 경로로 적힌다.
+func TestBaselinePositionsUseModuleRoot(t *testing.T) {
+	dir := portableFixture(t)
+	cycleDir := cycleFixture(t)
+	for _, c := range []struct {
+		args     []string
+		file     string
+		baseline bool // cycles baseline에는 위치가 없다
+	}{
+		{[]string{"dead", "--dir", filepath.Join(dir, "lib")}, "lib/lib.go", true},
+		{[]string{"rules", "--dir", filepath.Join(dir, "web"),
+			"--config", filepath.Join(dir, ".gartograph.yml")}, "web/web.go", true},
+		{[]string{"cycles", "--dir", filepath.Join(cycleDir, "a"), "--level", "symbol"}, "a/a.go", false},
+	} {
+		path := filepath.Join(t.TempDir(), "baseline.json")
+		args := append(slices.Clone(c.args), "--format", "sarif")
+		if c.baseline {
+			args = append(args, "--write-baseline", path)
+		}
+		code, out, errb := run(t, args...)
+		if code != 0 {
+			t.Fatalf("%v failed: %d %s", args, code, errb)
+		}
+		results := parseSARIFReport(t, out).Runs[0].Results
+		if len(results) == 0 {
+			t.Fatalf("%s: expected results: %s", c.args[0], out)
+		}
+		for _, r := range results {
+			if phys := r.Locations[0].PhysicalLocation; phys == nil || phys.ArtifactLocation["uri"] != c.file {
+				t.Fatalf("%s: SARIF URIs must be relative to the go.mod directory, not --dir: %s", c.args[0], out)
+			}
+		}
+		if !c.baseline {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var written struct {
+			Violations []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"violations"`
+			Findings []struct {
+				Position *graph.Position `json:"position"`
+			} `json:"findings"`
+		}
+		if err := json.Unmarshal(data, &written); err != nil {
+			t.Fatalf("baseline is not JSON: %v\n%s", err, data)
+		}
+		entries := append(written.Violations, written.Findings...)
+		if len(entries) == 0 {
+			t.Fatalf("%s: the harvest under --dir must still report entries: %s", c.args[0], data)
+		}
+		for _, e := range entries {
+			if e.Position == nil || e.Position.File != c.file {
+				t.Fatalf("%s: baseline positions must be relative to the go.mod directory, not --dir: %s",
+					c.args[0], data)
+			}
+		}
+	}
+}
+
+// TestBaselineMatchesAbsolutePathEntries는 예전 판이 절대 경로로 쓴 baseline이 계속 맞는지 확인한다 —
+// 짝짓기 키는 경로를 보지 않으므로(fileScope는 규칙·import 간선·파일 이름) 다른 체크아웃의 절대
+// 경로로 적힌 항목도 지금 위반과 같은 항목이다. 더 이상 나오지 않는 항목은 baseline에 적힌 그대로
+// staleBaseline으로 돌아온다 — 읽을 때 경로를 고쳐 쓰지 않는다.
+func TestBaselineMatchesAbsolutePathEntries(t *testing.T) {
+	dir := portableFixture(t)
+	elsewhere := filepath.Join(t.TempDir(), "old-checkout")
+	pos := func(parts ...string) map[string]any {
+		return map[string]any{"file": filepath.Join(append([]string{elsewhere}, parts...)...),
+			"line": 3, "column": 8}
+	}
+	write := func(body map[string]any) string {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encoding the baseline: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "baseline.json")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	gone := pos("web", "gone.go")
+	rulesBase := write(map[string]any{
+		"tool": "gartograph", "kind": "violations-baseline", "version": 1,
+		"violations": []map[string]any{
+			{"from": "example.com/fixture/web", "to": "example.com/fixture/testhelp",
+				"fromComponent": "web", "toComponent": "testhelp", "kind": "import",
+				"rule": "fileScope", "name": "no-testdeps-in-prod", "position": pos("web", "web.go")},
+			{"from": "example.com/fixture/web", "to": "example.com/fixture/lib",
+				"fromComponent": "web", "toComponent": "lib", "kind": "import",
+				"rule": "allow", "position": gone},
+		},
+	})
+	code, out, errb := run(t, "rules", "--dir", dir,
+		"--baseline", rulesBase, "--strict", "--format", "json")
+	if code != 0 {
+		t.Fatalf("an absolute-path baseline must still match: %d %s %s", code, out, errb)
+	}
+	var rules struct {
+		Violations []json.RawMessage `json:"violations"`
+		Baselined  []json.RawMessage `json:"baselined"`
+		Stale      []struct {
+			Position *graph.Position `json:"position"`
+		} `json:"staleBaseline"`
+	}
+	if err := json.Unmarshal([]byte(out), &rules); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(rules.Violations) != 0 || len(rules.Baselined) != 1 || len(rules.Stale) != 1 ||
+		rules.Stale[0].Position == nil || rules.Stale[0].Position.File != gone["file"] {
+		t.Fatalf("expected 0 fresh + 1 baselined + the stale entry exactly as stored: %s", out)
+	}
+
+	deadBase := write(map[string]any{
+		"tool": "gartograph", "kind": "dead-baseline", "version": 1,
+		"findings": []map[string]any{{
+			"id": "example.com/fixture/lib.unusedHelper", "kind": "func",
+			"package": "example.com/fixture/lib", "position": pos("lib", "lib.go"),
+			"exported": false, "state": "unreachable", "reason": "not reachable from retention roots",
+		}},
+	})
+	code, out, errb = run(t, "dead", "--dir", dir,
+		"--baseline", deadBase, "--strict", "--format", "json")
+	if code != 0 {
+		t.Fatalf("an absolute-path dead baseline must still match: %d %s %s", code, out, errb)
+	}
+	var dead struct {
+		Unreachable []json.RawMessage `json:"unreachable"`
+		Baselined   []json.RawMessage `json:"baselined"`
+	}
+	if err := json.Unmarshal([]byte(out), &dead); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(dead.Unreachable) != 0 || len(dead.Baselined) != 1 {
+		t.Fatalf("expected 0 fresh + 1 baselined: %s", out)
+	}
+}
+
+// sarifReportResult는 SARIF 결과 하나에서 위치 테스트들이 보는 부분이다. artifactLocation은
+// 키 집합까지 견주려고 맵으로 읽는다.
+type sarifReportResult struct {
+	Message struct {
+		Text string `json:"text"`
+	} `json:"message"`
+	Locations []struct {
+		PhysicalLocation *struct {
+			ArtifactLocation map[string]any `json:"artifactLocation"`
+		} `json:"physicalLocation"`
+	} `json:"locations"`
+}
+
+// sarifReport는 SARIF 로그에서 위치 테스트들이 보는 부분이다. originalUriBaseIds 항목도
+// 키 집합까지 견주려고 맵으로 읽는다.
+type sarifReport struct {
+	Runs []struct {
+		OriginalURIBaseIDs map[string]map[string]any `json:"originalUriBaseIds"`
+		Results            []sarifReportResult       `json:"results"`
+	} `json:"runs"`
+}
+
+// parseSARIFReport는 SARIF 출력을 읽고 실행(run)이 하나인지 확인한다.
+func parseSARIFReport(t *testing.T, out string) sarifReport {
+	t.Helper()
+	var log sarifReport
+	if err := json.Unmarshal([]byte(out), &log); err != nil {
+		t.Fatalf("not SARIF JSON: %v\n%s", err, out)
+	}
+	if len(log.Runs) != 1 {
+		t.Fatalf("expected one SARIF run: %s", out)
+	}
+	return log
+}
+
+// wantOmittedNote는 모듈 루트 밖 파일의 결과 메시지 끝에 붙어야 하는 문구다 — 구현 상수와 따로 적어 문구 회귀를 잡는다.
+const wantOmittedNote = " (location omitted: the file is not under the module root)"
+
+// TestSARIFLocationsAreModuleRelative는 rules·cycles·dead SARIF의 artifactLocation이 모듈 루트 기준
+// 상대 URI와 uriBaseId %SRCROOT%를 쓰고, run.originalUriBaseIds가 %SRCROOT%를 절대 경로 없이
+// 설명하며, 로그 어디에도 체크아웃 경로가 없는지 확인한다 — 업로드한 SARIF에 수확한 머신의
+// 경로가 남지 않아야 한다.
+func TestSARIFLocationsAreModuleRelative(t *testing.T) {
+	dir := portableFixture(t)
+	for _, c := range []struct {
+		args []string
+		uri  string
+	}{
+		{[]string{"rules"}, "web/web.go"},
+		{[]string{"cycles", "--level", "symbol"}, "main.go"},
+		{[]string{"dead"}, "lib/lib.go"},
+	} {
+		args := append(slices.Clone(c.args), "--dir", dir, "--format", "sarif")
+		code, out, errb := run(t, args...)
+		if code != 0 {
+			t.Fatalf("%v failed: %d %s", args, code, errb)
+		}
+		assertNoCheckoutPath(t, c.args[0]+" SARIF", []byte(out), dir)
+		run0 := parseSARIFReport(t, out).Runs[0]
+		if len(run0.Results) != 1 || len(run0.Results[0].Locations) != 1 {
+			t.Fatalf("%s: expected one result with one location: %s", c.args[0], out)
+		}
+		want := map[string]any{"uri": c.uri, "uriBaseId": "%SRCROOT%"}
+		if phys := run0.Results[0].Locations[0].PhysicalLocation; phys == nil ||
+			!reflect.DeepEqual(phys.ArtifactLocation, want) {
+			t.Fatalf("%s: artifactLocation must be %v: %s", c.args[0], want, out)
+		}
+		srcRoot, ok := run0.OriginalURIBaseIDs["%SRCROOT%"]
+		if _, hasURI := srcRoot["uri"]; !ok || hasURI || srcRoot["description"] == nil {
+			t.Fatalf("%s: originalUriBaseIds must describe %%SRCROOT%% without an absolute uri: %s",
+				c.args[0], out)
+		}
+	}
+}
+
+// saveDoc은 문서를 임시 파일로 저장하고 그 경로를 돌려준다 — --graph로 실제 CLI 경로를 돌리려는 것이다.
+func saveDoc(t *testing.T, doc *graph.Document) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "graph.json")
+	if err := export.SaveFile(doc, path); err != nil {
+		t.Fatalf("saving the graph document: %v", err)
+	}
+	return path
+}
+
+// TestSavedDocumentPositions는 저장 문서(--graph)의 위치를 dead SARIF·baseline이 어떻게 적는지 본다.
+//   - 모듈 루트 안 파일: SARIF URI는 경로 세그먼트마다 RFC 3986으로 퍼센트 인코딩한다. 공백·#·%·비ASCII·
+//     콜론은 인코딩하고 sub-delims와 @는 그대로 둔다(첫 세그먼트의 콜론은 scheme으로 읽힌다). baseline은
+//     인코딩하지 않은 파일 경로다. 상대 위치는 이미 모듈 루트 기준으로 본다.
+//   - 모듈 루트 밖 파일(".."로 벗어나는 상대 위치 포함): SARIF는 physicalLocation 없이 메시지로 알리고,
+//     baseline은 파일 이름만 남긴다 — "../" 경로는 머신마다 다른 위치를 담는다.
+//   - 모듈 루트를 싣지 않은 문서의 절대 위치와, 윈도에서 수확한 문서를 다른 OS에서 읽은 위치("C:\…"·
+//     "\\server\…"를 이 OS는 절대 경로로 알아보지 못한다)도 상대 형태가 없는 위치로 다룬다.
+//
+// 어느 경우든 그 머신의 경로가 산출물에 옮겨지면 안 된다.
+func TestSavedDocumentPositions(t *testing.T) {
+	work := t.TempDir()
+	modRoot := filepath.Join(work, "mod root")
+	winRoot := `C:\Users\someone\repo`
+	type symbol struct{ name, file, uri, baseline string } // uri ""는 physicalLocation 생략
+	for _, g := range []struct {
+		name, root string
+		symbols    []symbol
+	}{
+		{"module root", modRoot, []symbol{
+			{"Space", filepath.Join(modRoot, "a dir", "x#1%.go"), "a%20dir/x%231%25.go", "a dir/x#1%.go"},
+			{"Hangul", filepath.Join(modRoot, "한글", "파일.go"),
+				"%ED%95%9C%EA%B8%80/%ED%8C%8C%EC%9D%BC.go", "한글/파일.go"},
+			{"Delims", filepath.Join(modRoot, "x+y(1)@v:2.go"), "x+y(1)@v%3A2.go", "x+y(1)@v:2.go"},
+			{"Relative", "rel/r.go", "rel/r.go", "rel/r.go"},
+			{"Outside", filepath.Join(work, "other", "o.go"), "", "o.go"},
+			{"Escaping", "../up/e.go", "", "e.go"},
+		}},
+		{"no module root", "", []symbol{
+			{"Abs", filepath.Join(work, "elsewhere", "z.go"), "", "z.go"},
+			{"Rel", "a/g.go", "a/g.go", "a/g.go"},
+		}},
+		{"windows document", winRoot, []symbol{
+			{"Drive", winRoot + `\a\drive.go`, "", "drive.go"},
+			{"Share", `\\server\share\someone\a\share.go`, "", "share.go"},
+		}},
+	} {
+		t.Run(g.name, func(t *testing.T) {
+			if g.root == winRoot && runtime.GOOS == "windows" {
+				t.Skip("on windows these are ordinary absolute paths under the module root")
+			}
+			doc := &graph.Document{Version: graph.Version, Tool: graph.Tool, Level: graph.LevelSymbol,
+				Root: g.root, Module: "m", ModuleDir: g.root,
+				Vertices: []graph.Vertex{{ID: "m/a", Kind: graph.KindPackage, Name: "a"}}}
+			for _, s := range g.symbols {
+				doc.Vertices = append(doc.Vertices, graph.Vertex{ID: "m/a." + s.name, Kind: graph.KindFunc,
+					Name: s.name, Package: "m/a", Position: &graph.Position{File: s.file, Line: 3, Column: 6}})
+			}
+			graphPath := saveDoc(t, doc)
+			assertNoMachinePath := func(what string, data []byte) {
+				t.Helper()
+				assertNoCheckoutPath(t, what, data, work)
+				if bytes.Contains(data, []byte("someone")) {
+					t.Fatalf("%s must not carry the windows machine's path:\n%s", what, data)
+				}
+			}
+
+			code, out, errb := run(t, "dead", "--graph", graphPath, "--format", "sarif")
+			if code != 0 {
+				t.Fatalf("dead sarif failed: %d %s", code, errb)
+			}
+			assertNoMachinePath("dead SARIF", []byte(out))
+			results := parseSARIFReport(t, out).Runs[0].Results
+			if len(results) != len(g.symbols) {
+				t.Fatalf("expected %d results: %s", len(g.symbols), out)
+			}
+			for _, s := range g.symbols {
+				i := slices.IndexFunc(results, func(r sarifReportResult) bool {
+					return strings.Contains(r.Message.Text, " m/a."+s.name+":")
+				})
+				if i < 0 || len(results[i].Locations) != 1 {
+					t.Fatalf("%s: expected a result with one location: %s", s.name, out)
+				}
+				phys := results[i].Locations[0].PhysicalLocation
+				if s.uri == "" {
+					if phys != nil || !strings.HasSuffix(results[i].Message.Text, wantOmittedNote) {
+						t.Fatalf("%s: a file not under the module root must have no physicalLocation and say so: %s",
+							s.name, out)
+					}
+					continue
+				}
+				want := map[string]any{"uri": s.uri, "uriBaseId": "%SRCROOT%"}
+				if phys == nil || !reflect.DeepEqual(phys.ArtifactLocation, want) ||
+					strings.Contains(results[i].Message.Text, "location omitted") {
+					t.Fatalf("%s: artifactLocation must be %v: %s", s.name, want, out)
+				}
+			}
+
+			basePath := filepath.Join(t.TempDir(), "dead-baseline.json")
+			if code, _, errb := run(t, "dead", "--graph", graphPath, "--write-baseline", basePath); code != 0 {
+				t.Fatalf("dead --write-baseline failed: %d %s", code, errb)
+			}
+			data, err := os.ReadFile(basePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNoMachinePath("dead baseline", data)
+			base, err := loadDeadBaseline(basePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range g.symbols {
+				i := slices.IndexFunc(base.Findings, func(f analysis.Finding) bool { return f.ID == "m/a."+s.name })
+				if i < 0 || base.Findings[i].Position == nil || base.Findings[i].Position.File != s.baseline {
+					t.Fatalf("%s: baseline position must be %q: %s", s.name, s.baseline, data)
+				}
+			}
+		})
+	}
+}
+
+// TestSARIFOmitsOutsideFilesForRulesAndCycles는 rules·cycles SARIF도 모듈 루트 밖 위치(예: 다른
+// go.work 모듈의 파일)를 physicalLocation 없이 메시지 문구로 알리는지 확인한다 — 세 명령이 같은
+// 규칙을 따라야 한다.
+func TestSARIFOmitsOutsideFilesForRulesAndCycles(t *testing.T) {
+	work := t.TempDir()
+	root := filepath.Join(work, "mod")
+	elsewhere := func(name string) []graph.Position {
+		return []graph.Position{{File: filepath.Join(work, "sibling", name), Line: 3, Column: 8}}
+	}
+	graphPath := saveDoc(t, &graph.Document{Version: graph.Version, Tool: graph.Tool,
+		Level: graph.LevelPackage, Root: root, Module: "m", ModuleDir: root,
+		Vertices: []graph.Vertex{
+			{ID: "m/db", Kind: graph.KindPackage, Name: "db"},
+			{ID: "m/web", Kind: graph.KindPackage, Name: "web"},
+		},
+		Edges: []graph.Edge{
+			{From: "m/db", To: "m/web", Kind: graph.EdgeImport, Positions: elsewhere("db.go")},
+			{From: "m/web", To: "m/db", Kind: graph.EdgeImport, Positions: elsewhere("web.go")},
+		}})
+	cfg := filepath.Join(t.TempDir(), "rules.yml")
+	if err := os.WriteFile(cfg, []byte("components:\n  web: [web]\n  db: [db]\ndeps: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"cycles", "--graph", graphPath, "--format", "sarif"},
+		{"rules", "--graph", graphPath, "--config", cfg, "--format", "sarif"},
+	} {
+		code, out, errb := run(t, args...)
+		if code != 0 {
+			t.Fatalf("%v failed: %d %s", args, code, errb)
+		}
+		assertNoCheckoutPath(t, args[0]+" SARIF", []byte(out), work)
+		run0 := parseSARIFReport(t, out).Runs[0]
+		results := run0.Results
+		if len(results) == 0 {
+			t.Fatalf("%s: expected results: %s", args[0], out)
+		}
+		// %SRCROOT%를 쓰는 결과가 없으면 그 설명도 싣지 않는다 — 위치 없는 로그는 예전 바이트 그대로다.
+		if run0.OriginalURIBaseIDs != nil {
+			t.Fatalf("%s: a log with no %%SRCROOT%% location must not describe it: %s", args[0], out)
+		}
+		for _, r := range results {
+			if len(r.Locations) != 1 || r.Locations[0].PhysicalLocation != nil ||
+				!strings.HasSuffix(r.Message.Text, wantOmittedNote) {
+				t.Fatalf("%s: a file outside the module root must have no physicalLocation and say so: %s",
+					args[0], out)
+			}
+		}
+	}
+}
+
+// TestPositionsOutsideModuleRootFromHarvest는 실제 수확이 모듈 밖 위치를 내는 흔한 경우를 본다 —
+// 표준 라이브러리 struct를 밑 타입으로 쓰는 정의 타입(type stamp time.Time)의 필드 정점은 GOROOT의
+// 필드 선언에 놓인다. baseline은 그 위치를 파일 이름만 남기고 SARIF는 물리 위치 없이 메시지로
+// 알린다 — 어느 쪽에도 GOROOT 경로(설치 위치에 따라 사용자 이름이 든다)가 남지 않아야 한다.
+func TestPositionsOutsideModuleRootFromHarvest(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport \"time\"\n\ntype stamp time.Time\n\nfunc main() { _ = stamp{} }\n",
+	})
+	const stampFields = "example.com/fixture.(stamp)."
+	basePath := filepath.Join(t.TempDir(), "dead-baseline.json")
+	if code, _, errb := run(t, "dead", "--dir", dir, "--write-baseline", basePath); code != 0 {
+		t.Fatalf("dead --write-baseline failed: %d %s", code, errb)
+	}
+	data, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := loadDeadBaseline(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := 0
+	for _, f := range base.Findings {
+		if !strings.HasPrefix(f.ID, stampFields) {
+			continue
+		}
+		fields++
+		if f.Position == nil || f.Position.File != "time.go" {
+			t.Fatalf("%s: a field declared in GOROOT must keep only its file name: %s", f.ID, data)
+		}
+	}
+	if fields == 0 || bytes.Contains(data, []byte("/src/time/")) {
+		t.Fatalf("expected stamp's fields with no GOROOT path in the baseline: %s", data)
+	}
+
+	code, out, errb := run(t, "dead", "--dir", dir, "--format", "sarif")
+	if code != 0 {
+		t.Fatalf("dead sarif failed: %d %s", code, errb)
+	}
+	if strings.Contains(out, "/src/time/") {
+		t.Fatalf("SARIF must not carry the GOROOT path: %s", out)
+	}
+	seen := 0
+	for _, r := range parseSARIFReport(t, out).Runs[0].Results {
+		if !strings.Contains(r.Message.Text, " "+stampFields) {
+			continue
+		}
+		seen++
+		if r.Locations[0].PhysicalLocation != nil || !strings.HasSuffix(r.Message.Text, wantOmittedNote) {
+			t.Fatalf("a field declared in GOROOT must have no physicalLocation and say so: %s", out)
+		}
+	}
+	if seen != fields {
+		t.Fatalf("SARIF must report the same %d stamp fields as the baseline: %s", fields, out)
 	}
 }
 

@@ -550,7 +550,7 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	case "sarif":
-		out, err := cyclesSARIF(cycles)
+		out, err := cyclesSARIF(moduleRoot(doc), cycles)
 		if err != nil {
 			return fail(stderr, err)
 		}
@@ -667,7 +667,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 			findings, base.Findings, analysis.FindingBaselineKey)
 	}
 	if *writeBaseline != "" {
-		if err := saveDeadBaseline(*writeBaseline, all); err != nil {
+		if err := saveDeadBaseline(*writeBaseline, moduleRoot(doc), all); err != nil {
 			return fail(stderr, err)
 		}
 	}
@@ -684,7 +684,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	case "sarif":
-		out, err := deadSARIF(findings)
+		out, err := deadSARIF(moduleRoot(doc), findings)
 		if err != nil {
 			return fail(stderr, err)
 		}
@@ -995,7 +995,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	}
 	if *writeBaseline != "" {
 		// 새 baseline은 분할 전의 현재 위반 전부를 담는다.
-		if err := saveBaseline(*writeBaseline, all); err != nil {
+		if err := saveBaseline(*writeBaseline, moduleRoot(doc), all); err != nil {
 			return fail(stderr, err)
 		}
 	}
@@ -1012,7 +1012,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	case "sarif":
-		out, err := rulesSARIF(violations)
+		out, err := rulesSARIF(moduleRoot(doc), violations)
 		if err != nil {
 			return fail(stderr, err)
 		}

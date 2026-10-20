@@ -307,6 +307,13 @@ SARIF output and `--strict` see only fresh violations.
 Entries match on what they name, never on line numbers or the checkout path
 (a `fileRules` violation matches by rule, import edge, and file name),
 so a baseline committed from one machine still matches in CI.
+`--write-baseline` writes each `position.file` relative to the module root
+(the directory of `go.mod`, `/`-separated), so a committed baseline carries
+no path of the machine that wrote it. A file outside the module root — the
+standard library (fields of `type T time.Time` are declared there), a
+dependency, another go.work module — keeps only its file name. Baselines
+written with absolute paths by earlier versions still match, and
+`staleBaseline` returns entries as the file stores them.
 
 Patterns: exact match, `x/**` recursive prefix, `*` segment glob. Packages
 matching no component are reported as `unmapped` — a mapping gap is "rules
@@ -320,6 +327,19 @@ would pass silently.
 `rules`, `cycles`, and `dead` all accept `--format sarif` for CI code
 scanning — cycles report as `dependency-cycle` errors, unreachable symbols
 as `unreachable-symbol` warnings (a fact, not a deletion verdict).
+Each `artifactLocation.uri` is the file's path relative to the module root,
+percent-encoded per segment (RFC 3986), with `"uriBaseId": "%SRCROOT%"`;
+`run.originalUriBaseIds` describes `%SRCROOT%` without an absolute path, so
+an uploaded log carries no local path. A result whose file is not under the
+module root has no `physicalLocation` and says so in its message. GitHub
+code scanning reads relative URIs against the repository root, so when
+`go.mod` sits in a subdirectory, prefix the URIs before uploading:
+
+```bash
+gartograph rules --dir svc --format sarif |
+  jq '(.runs[].results[].locations[].physicalLocation | select(. != null)
+       | .artifactLocation | select(.uriBaseId == "%SRCROOT%") | .uri) |= "svc/" + .' > rules.sarif
+```
 
 ## Security
 

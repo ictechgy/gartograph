@@ -12,7 +12,7 @@ func TestBaselineDoesNotReuseTemporaryFile(t *testing.T) {
 	if err := os.WriteFile(path+".tmp", []byte("another writer"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveBaseline(path, nil); err != nil {
+	if err := saveBaseline(path, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(path + ".tmp"); err != nil || string(data) != "another writer" {

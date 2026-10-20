@@ -249,6 +249,12 @@ gartograph dead   --baseline .dead-baseline.json --strict
 항목은 가리키는 사실로 짝지어지고 줄 번호나 체크아웃 경로는 보지 않습니다
 (`fileRules` 위반은 규칙·import 간선·파일 이름으로 맞춥니다) — 한 머신에서
 커밋한 baseline이 CI에서도 그대로 맞습니다.
+`--write-baseline`은 `position.file`을 모듈 루트(`go.mod`가 있는 디렉터리) 기준
+`/` 구분 상대 경로로 씁니다. 그래서 커밋한 baseline에 그 파일을 쓴 머신의 경로가
+남지 않습니다. 모듈 루트 밖 파일은 파일 이름만 남깁니다 — 표준 라이브러리
+(`type T time.Time`의 필드는 거기 선언돼 있습니다), 의존 모듈, 다른 go.work 모듈의
+파일이 그렇습니다. 예전 판이 절대 경로로 쓴 baseline도 그대로 맞고,
+`staleBaseline`은 항목을 파일에 적힌 그대로 돌려줍니다.
 
 패턴: 정확 일치, `x/**` 재귀 접두사, `*` 세그먼트 글롭.
 규칙 파일을 읽을 때 components·`exclude`·`fileRules.from`의 그 밖의
@@ -258,6 +264,19 @@ gartograph dead   --baseline .dead-baseline.json --strict
 `rules`·`cycles`·`dead` 모두 `--format sarif`를 받습니다 — 순환은
 `dependency-cycle` error, unreachable은 `unreachable-symbol` warning
 (삭제 판정이 아니라 사실)으로 보고됩니다.
+`artifactLocation.uri`는 모듈 루트 기준 상대 경로를 세그먼트마다 퍼센트
+인코딩한 값(RFC 3986)이고 `"uriBaseId": "%SRCROOT%"`를 답니다.
+`run.originalUriBaseIds`는 `%SRCROOT%`를 절대 경로 없이 설명만 하므로, 업로드한
+로그에 로컬 경로가 남지 않습니다. 파일이 모듈 루트 밖에 있는 결과는
+`physicalLocation` 없이 그 사실을 메시지에 적습니다. GitHub code scanning은 상대
+URI를 저장소 루트 기준으로 읽습니다. 그래서 `go.mod`가 하위 디렉터리에 있으면
+업로드 전에 URI 앞에 그 디렉터리를 붙이세요.
+
+```bash
+gartograph rules --dir svc --format sarif |
+  jq '(.runs[].results[].locations[].physicalLocation | select(. != null)
+       | .artifactLocation | select(.uriBaseId == "%SRCROOT%") | .uri) |= "svc/" + .' > rules.sarif
+```
 
 ## 보안
 

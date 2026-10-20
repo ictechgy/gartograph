@@ -81,3 +81,18 @@
 - `mcp`: 수확할 때는 규칙 파일(`--config`, 없으면 `--dir`의 `.gartograph.yml`)을 수확 전에 읽는다. 없거나 깨진
   `--config`는 도구 호출 때의 `isError` 대신 기동 오류(종료 코드 2)가 된다. `--graph`로 저장 문서를 읽으면
   지금처럼 도구를 부를 때 읽는다.
+- `rules`·`dead`의 `--write-baseline`: `position.file`을 수확한 머신의 절대 경로 대신 모듈 루트(`go.mod`가 있는
+  디렉터리) 기준 `/` 구분 상대 경로로 쓴다. 커밋한 baseline에 사용자 이름과 디렉터리 구조가 남지 않는다. 모듈
+  루트 밖 파일(`type T time.Time`의 필드처럼 표준 라이브러리에 선언된 것, 의존 모듈, 다른 go.work 모듈)은 파일
+  이름만 남긴다 — `../` 경로는 머신마다 다른 GOROOT·모듈 캐시 위치를 담는다. 형식 버전은 1 그대로이고 짝짓기
+  키가 경로를 보지 않으므로(fileScope는 파일 이름) 절대 경로로 쓴 기존 baseline도 그대로 맞는다. `staleBaseline`은
+  항목을 파일에 적힌 그대로 돌려주므로 새 baseline의 항목은 상대 경로로 나온다. v0.9.2까지의 바이너리는 fileScope
+  위반을 경로 전체로 짝지어 새 baseline의 fileScope 항목을 맞추지 못한다 — baseline을 쓰는 쪽과 `--baseline`으로
+  읽는 쪽을 이 판 이후로 맞춘다.
+- `rules`·`cycles`·`dead`의 `--format sarif`: `artifactLocation.uri`가 절대 경로 대신 모듈 루트 기준 상대 경로를
+  세그먼트마다 RFC 3986으로 퍼센트 인코딩한 값이고 `"uriBaseId": "%SRCROOT%"`를 단다. `run.originalUriBaseIds`는
+  `%SRCROOT%`를 절대 경로 없이 설명만 한다(SARIF 2.1.0 §3.14.14가 허용하는 형태). 파일이 모듈 루트 밖에 있는
+  결과는 `physicalLocation`을 싣지 않고 메시지 끝에 `(location omitted: the file is not under the module root)`를
+  붙인다. GitHub code scanning은 상대 URI를 저장소 루트 기준으로 읽으므로, `go.mod`가 저장소의 하위 디렉터리에
+  있으면 업로드 전에 그 디렉터리를 URI 앞에 붙인다(README의 `jq` 예). 물리 위치가 하나도 없는 로그는 바이트가
+  같다.
