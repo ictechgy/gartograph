@@ -652,9 +652,17 @@ isthmus는 3a45450(#133)부터 go `route-call`을 받습니다. 그 빌드로 `c
 
 `gartograph mcp`는 수확한 문서를 MCP stdio(개행 구분 JSON-RPC)로 서빙합니다:
 `gartograph_summary`, `gartograph_query`, `gartograph_impact`,
-`gartograph_path`, `gartograph_cycles`, `gartograph_dead`,
+`gartograph_path`, `gartograph_shared`, `gartograph_cycles`, `gartograph_dead`,
 `gartograph_rules`, `gartograph_metrics`, `gartograph_mapping`.
 문서는 기동 시 한 번 수확해 모든 호출이 같은 스냅샷 위에서 답합니다.
+
+보고 도구는 CLI와 같은 코드로 답을 만들어 `--format json`과 같은 JSON을 돌려줍니다.
+`gartograph_cycles`는 `cycles`의 봉투 `{cycles, limitations}`를, `gartograph_dead`는 `dead` 보고
+(`algorithm: "cha"`, 루트, 같은 루트·디스패치·필드 limitation)를, `gartograph_rules`·`gartograph_metrics`·
+`gartograph_mapping`은 같은 문서의 `rules`·`metrics`·`mapping` 보고를 돌려줍니다 — `--level package`에서
+`gartograph_rules`는 패키지 레벨 문서에 `rules --graph`를 돌릴 때와 같은 `signature checks skipped`
+limitation을 답니다. 서버에는 baseline이 없어 `baselined`·`staleBaseline`은 나오지 않습니다. 형식이 틀린
+인자(`{"retainPublic": "true"}`)는 기본값으로 답하지 않고, 그 인자를 밝힌 `isError` 결과가 됩니다.
 
 ```json
 {"mcpServers": {"gartograph": {

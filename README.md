@@ -877,10 +877,23 @@ callers.
 
 `gartograph mcp` serves the harvested document over MCP stdio
 (newline-delimited JSON-RPC): `gartograph_summary`, `gartograph_query`,
-`gartograph_impact`, `gartograph_path`, `gartograph_cycles`,
-`gartograph_dead`, `gartograph_rules`, `gartograph_metrics`,
-`gartograph_mapping`. The document is harvested once at startup so every
-tool call answers over the same snapshot. Example client config:
+`gartograph_impact`, `gartograph_path`, `gartograph_shared`,
+`gartograph_cycles`, `gartograph_dead`, `gartograph_rules`,
+`gartograph_metrics`, `gartograph_mapping`. The document is harvested once
+at startup so every tool call answers over the same snapshot.
+
+The report tools build their answers with the CLI's own code and return the
+same JSON as `--format json`: `gartograph_cycles` returns the `cycles`
+envelope `{cycles, limitations}`, `gartograph_dead` the `dead` report
+(`algorithm: "cha"`, roots, and the same root, dispatch, and field
+limitations), and `gartograph_rules`, `gartograph_metrics`, and
+`gartograph_mapping` the `rules`, `metrics`, and `mapping` reports of the
+same document — under `--level package`, `gartograph_rules` carries the same
+`signature checks skipped` limitation as `rules --graph` on a package-level
+document. The server keeps no baseline, so `baselined` and `staleBaseline`
+never appear. A malformed argument (`{"retainPublic": "true"}`) is an
+`isError` result that names it, not an answer built from the default.
+Example client config:
 
 ```json
 {"mcpServers": {"gartograph": {

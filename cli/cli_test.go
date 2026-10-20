@@ -2849,11 +2849,14 @@ func TestCyclesEvidenceOnce(t *testing.T) {
 		t.Fatalf("MCP cycles errored: %v", result)
 	}
 	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
-	var mcpCycles []cycleEvidence
-	if err := json.Unmarshal([]byte(text), &mcpCycles); err != nil {
-		t.Fatalf("MCP cycles text is not JSON: %v\n%s", err, text)
+	// MCP도 CLI와 같은 {cycles, limitations} 보고를 돌려준다.
+	var mcpReport struct {
+		Cycles []cycleEvidence `json:"cycles"`
 	}
-	if got := evidenceOf(mcpCycles); got != want {
+	if err := json.Unmarshal([]byte(text), &mcpReport); err != nil {
+		t.Fatalf("MCP cycles text is not the cycles report: %v\n%s", err, text)
+	}
+	if got := evidenceOf(mcpReport.Cycles); got != want {
 		t.Fatalf("MCP evidence must match CLI:\ngot  %s\nwant %s", got, want)
 	}
 }

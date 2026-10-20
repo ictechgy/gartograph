@@ -443,14 +443,27 @@ func emit(doc *graph.Document, format string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// cyclesReport는 cycles 명령의 JSON 출력 형식이다.
+// cyclesReport는 cycles 명령과 MCP gartograph_cycles의 JSON 출력 형식이다.
 // Baselined는 baseline에 이미 있어 넘어간 순환, StaleBaseline은
-// 더 이상 발생하지 않아 baseline 재생성이 필요한 항목이다.
+// 더 이상 발생하지 않아 baseline 재생성이 필요한 항목이다(MCP에는 baseline이 없어 둘 다 빠진다).
 type cyclesReport struct {
 	Cycles        []analysis.Cycle `json:"cycles"`
 	Baselined     []analysis.Cycle `json:"baselined,omitempty"`
 	StaleBaseline []analysis.Cycle `json:"staleBaseline,omitempty"`
 	Limitations   []string         `json:"limitations,omitempty"`
+}
+
+// cyclesLimitations는 cycles 보고의 limitation을 정렬해 돌려준다 — CLI cycles와 MCP gartograph_cycles가
+// 같이 쓴다. MCP가 순환 목록만 돌려주던 때는 문서 limitation이 빠져, 순환 0개가 "다 봤다"인지 "못 본 곳이
+// 있다"인지 소비자가 가를 수 없었다. stale은 더 이상 나오지 않는 baseline 순환 수다(MCP는 0).
+func cyclesLimitations(doc *graph.Document, stale int) []string {
+	limitations := append([]string(nil), doc.Limitations...)
+	if stale > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d baseline cycles no longer occur; regenerate the baseline", stale))
+	}
+	sort.Strings(limitations)
+	return limitations
 }
 
 // cmdCycles는 순환 의존성을 찾는다.
@@ -509,12 +522,7 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	}
-	limitations := append([]string(nil), doc.Limitations...)
-	if len(stale) > 0 {
-		limitations = append(limitations, fmt.Sprintf(
-			"%d baseline cycles no longer occur; regenerate the baseline", len(stale)))
-	}
-	sort.Strings(limitations)
+	limitations := cyclesLimitations(doc, len(stale))
 
 	switch *format {
 	case "json":
@@ -553,8 +561,9 @@ func cmdCycles(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// deadReport는 dead 명령의 JSON 출력 형식이다.
+// deadReport는 dead 명령과 MCP gartograph_dead의 JSON 출력 형식이다.
 // 루트 목록을 함께 실어 "무엇에서 도달하지 못했나"를 소비자가 스스로 판단하게 한다.
+// MCP에는 baseline이 없어 Baselined·StaleBaseline이 빠진다.
 type deadReport struct {
 	Algorithm     string             `json:"algorithm"`
 	Roots         []string           `json:"roots"`
@@ -614,15 +623,6 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		return explainDead(doc, *explain, roots, *algo, *opts, stdout, stderr)
 	}
 
-	limitations := append([]string(nil), doc.Limitations...)
-	for _, u := range unknown {
-		limitations = append(limitations,
-			fmt.Sprintf("retention root %q is not in the graph", u))
-	}
-	if len(doc.Roots) == 0 && !*retainPublic {
-		limitations = append(limitations,
-			"no main or init roots found; exported API may appear unreachable (use --retain-public)")
-	}
 	reachable := analysis.Reachable(doc, roots)
 	findings := analysis.Dead(doc, reachable)
 	if *algo == "rta" {
@@ -635,20 +635,6 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 		findings = analysis.DeadRTA(doc, reachable, rtaSet)
-		limitations = append(limitations,
-			"rta under-approximates: methods reachable only via reflection or uninstantiated types may appear unreachable")
-	}
-	if *algo != "rta" && hasMethodFinding(findings) {
-		limitations = append(limitations, externalDispatchLimitation(doc))
-	}
-	// RTA는 모든 합성 init을 루트로 삼아 이 표시와 무관하다.
-	if *algo != "rta" {
-		limitations = append(limitations, initializerRootsLimitation(doc, findings)...)
-	}
-	if hasFieldFinding(findings) {
-		limitations = append(limitations,
-			"field reachability counts named accesses (x.F, T{F: v}, positional literals); "+
-				"reflection, serialization (encoding/json, gob), and whole-struct copies are invisible to this graph")
 	}
 
 	// baseline과의 비교는 보고 전에 — baselined는 strict·SARIF 어느 쪽으로도
@@ -668,11 +654,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	}
-	if len(stale) > 0 {
-		limitations = append(limitations, fmt.Sprintf(
-			"%d baseline findings no longer occur; regenerate the baseline", len(stale)))
-	}
-	sort.Strings(limitations)
+	limitations := deadLimitations(doc, *algo, *retainPublic, unknown, all, len(stale))
 
 	switch *format {
 	case "json":
@@ -716,6 +698,46 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// deadLimitations는 dead 보고의 limitation을 조립해 정렬한다 — CLI dead와 MCP gartograph_dead가 같이 쓴다.
+// 두 통로가 따로 조립하던 때 MCP는 알 수 없는 루트·main 없음·외부 디스패치·필드 limitation을 빠뜨려, main 없는
+// 라이브러리의 공개 API 전부가 unreachable인 보고가 "--retain-public을 쓰라"는 말도, reflection 디스패치를 못
+// 본다는 말도 없이 나갔다. findings는 baseline으로 거르기 전의 보고 전부다 — 메서드·필드 보고가 있는지가
+// limitation을 정하고, baselined 보고도 같은 사각지대에 있다. stale은 더 이상 나오지 않는 baseline 보고 수다
+// (MCP는 baseline이 없어 0).
+func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknown []string,
+	findings []analysis.Finding, stale int) []string {
+	limitations := append([]string(nil), doc.Limitations...)
+	for _, u := range unknown {
+		limitations = append(limitations,
+			fmt.Sprintf("retention root %q is not in the graph", u))
+	}
+	if len(doc.Roots) == 0 && !retainPublic {
+		limitations = append(limitations,
+			"no main or init roots found; exported API may appear unreachable (use --retain-public)")
+	}
+	if algo == "rta" {
+		limitations = append(limitations,
+			"rta under-approximates: methods reachable only via reflection or uninstantiated types may appear unreachable")
+	} else {
+		// RTA는 SSA 전체 프로그램으로 외부 호출까지 보고, 모든 합성 init을 루트로 삼아 아래 둘과 무관하다.
+		if hasMethodFinding(findings) {
+			limitations = append(limitations, externalDispatchLimitation(doc))
+		}
+		limitations = append(limitations, initializerRootsLimitation(doc, findings)...)
+	}
+	if hasFieldFinding(findings) {
+		limitations = append(limitations,
+			"field reachability counts named accesses (x.F, T{F: v}, positional literals); "+
+				"reflection, serialization (encoding/json, gob), and whole-struct copies are invisible to this graph")
+	}
+	if stale > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d baseline findings no longer occur; regenerate the baseline", stale))
+	}
+	sort.Strings(limitations)
+	return limitations
 }
 
 // hasMethodFinding은 unreachable 보고에 메서드가 있는지 확인한다.
@@ -846,9 +868,9 @@ func explainDead(doc *graph.Document, id string, roots []string, algo string,
 	return 0
 }
 
-// rulesReport는 rules 명령의 JSON 출력 형식이다.
+// rulesReport는 rules 명령과 MCP gartograph_rules의 JSON 출력 형식이다.
 // Baselined는 baseline에 이미 있어 넘어간 위반, StaleBaseline은
-// 더 이상 발생하지 않아 baseline 재생성이 필요한 항목이다.
+// 더 이상 발생하지 않아 baseline 재생성이 필요한 항목이다(MCP에는 baseline이 없어 둘 다 빠진다).
 // UnmappedExternal은 --deps로 들어온 외부 패키지 중 컴포넌트 미매핑,
 // UnmatchedComponents는 어느 패키지에도 매칭되지 않은 컴포넌트다.
 type rulesReport struct {
@@ -859,6 +881,43 @@ type rulesReport struct {
 	UnmappedExternal    []string             `json:"unmappedExternal,omitempty"`
 	UnmatchedComponents []string             `json:"unmatchedComponents,omitempty"`
 	Limitations         []string             `json:"limitations,omitempty"`
+}
+
+// rulesLimitations는 rules 보고의 limitation을 조립해 정렬한다 — CLI rules와 MCP gartograph_rules가 같이 쓴다.
+// MCP가 문서 limitation만 싣던 때는 `mcp --level package`에서 signature 규칙을 검사하지 못했는데도 위반 0을
+// 아무 말 없이 돌려줬고, 위치 없는 import 간선의 fileScope 미검사 수도 사라졌다. stale은 더 이상 나오지 않는
+// baseline 위반 수다(MCP는 baseline이 없어 0).
+func rulesLimitations(doc *graph.Document, cfg *config.File, rep *analysis.RuleReport, stale int) []string {
+	limitations := append([]string(nil), doc.Limitations...)
+	if len(cfg.Signature) > 0 && doc.Level.Rank() < graph.LevelSymbol.Rank() {
+		limitations = append(limitations,
+			"signature rules configured but document is below symbol level; signature checks skipped")
+	}
+	if len(rep.Unmapped) > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d packages match no component; rules did not check them", len(rep.Unmapped)))
+	}
+	if len(rep.UnmappedExternal) > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d external packages match no component; component patterns can cover them",
+			len(rep.UnmappedExternal)))
+	}
+	if len(rep.UnmatchedComponents) > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"components %v matched no packages — typo, stale, or external pattern without --deps",
+			rep.UnmatchedComponents))
+	}
+	if rep.FileScopeUnchecked > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d import edges to fileRules targets carry no positions; file scope could not be checked (re-harvest for positions)",
+			rep.FileScopeUnchecked))
+	}
+	if stale > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d baseline violations no longer occur; regenerate the baseline", stale))
+	}
+	sort.Strings(limitations)
+	return limitations
 }
 
 // cmdRules는 .gartograph.yml의 컴포넌트 의존 규칙을 검사한다.
@@ -924,35 +983,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	limitations := append([]string(nil), doc.Limitations...)
-	if len(cfg.Signature) > 0 && doc.Level.Rank() < graph.LevelSymbol.Rank() {
-		limitations = append(limitations,
-			"signature rules configured but document is below symbol level; signature checks skipped")
-	}
-	if len(unmapped) > 0 {
-		limitations = append(limitations, fmt.Sprintf(
-			"%d packages match no component; rules did not check them", len(unmapped)))
-	}
-	if len(rep.UnmappedExternal) > 0 {
-		limitations = append(limitations, fmt.Sprintf(
-			"%d external packages match no component; component patterns can cover them",
-			len(rep.UnmappedExternal)))
-	}
-	if len(rep.UnmatchedComponents) > 0 {
-		limitations = append(limitations, fmt.Sprintf(
-			"components %v matched no packages — typo, stale, or external pattern without --deps",
-			rep.UnmatchedComponents))
-	}
-	if rep.FileScopeUnchecked > 0 {
-		limitations = append(limitations, fmt.Sprintf(
-			"%d import edges to fileRules targets carry no positions; file scope could not be checked (re-harvest for positions)",
-			rep.FileScopeUnchecked))
-	}
-	if len(stale) > 0 {
-		limitations = append(limitations, fmt.Sprintf(
-			"%d baseline violations no longer occur; regenerate the baseline", len(stale)))
-	}
-	sort.Strings(limitations)
+	limitations := rulesLimitations(doc, cfg, rep, len(stale))
 
 	switch *format {
 	case "json":
@@ -1339,17 +1370,12 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 			"error: metrics needs package-level data; document is %s level\n", doc.Level)
 		return 2
 	}
-	cfg, limitations, err := optionalConfig(opts.Dir, *configPath)
+	cfg, configNotes, err := optionalConfig(opts.Dir, *configPath)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	rep := analysis.Metrics(doc, cfg)
-	limitations = append(limitations, doc.Limitations...)
-	if doc.Level.Rank() < graph.LevelType.Rank() {
-		limitations = append(limitations,
-			"abstractness/distance omitted: document has no type vertices (harvest with --level type or finer)")
-	}
-	sort.Strings(limitations)
+	limitations := metricsLimitations(doc, configNotes)
 	switch *format {
 	case "json":
 		type metricsJSON struct {
@@ -1391,6 +1417,22 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// metricsLimitations는 metrics 보고의 limitation을 조립해 정렬한다 — CLI metrics와 MCP gartograph_metrics가
+// 같이 쓴다. MCP가 따로 조립하던 때는 패키지 레벨 문서에서 abstractness/distance가 빠진 이유를 싣지 않았고
+// limitation을 정렬하지도 않았다. configNotes는 규칙 파일 해석이 남긴 문구다(파일이 없어 패키지 단위로 셌다).
+func metricsLimitations(doc *graph.Document, configNotes []string) []string {
+	limitations := append(append([]string(nil), configNotes...), doc.Limitations...)
+	if doc.Level.Rank() < graph.LevelType.Rank() {
+		limitations = append(limitations,
+			"abstractness/distance omitted: document has no type vertices (harvest with --level type or finer)")
+	}
+	sort.Strings(limitations)
+	return limitations
+}
+
+// noRulesFileNote는 규칙 파일 없이 metrics를 패키지 단위로 셌다는 limitation이다(CLI·MCP 공통).
+const noRulesFileNote = "no .gartograph.yml found; metrics computed per package"
+
 // optionalConfig는 규칙 파일을 있으면 읽고 없으면 nil을 돌려준다.
 // metrics처럼 설정이 선택인 명령 전용 — rules는 설정이 없으면 오류다.
 // 파일이 존재하는데 깨졌으면 에러다 — 고장난 설정을 무시하고 패키지 단위로
@@ -1400,8 +1442,7 @@ func optionalConfig(dir, explicit string) (*config.File, []string, error) {
 	if path == "" {
 		found, ok := config.Find(dir)
 		if !ok {
-			return nil, []string{
-				"no .gartograph.yml found; metrics computed per package"}, nil
+			return nil, []string{noRulesFileNote}, nil
 		}
 		path = found
 	}

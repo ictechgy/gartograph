@@ -58,3 +58,17 @@
 - `reach`·`impact --format language-traversal`의 `--type-edges members`: 축약된 필드 타입은 앞부분 밖의 어떤
   타입이든 담을 수 있다고 보고 구조 간선을 그 필드로도 옮긴다 — 앞부분만 보면 그 필드를 읽는 선언이 뒤쪽 타입에
   닿지 못한다.
+- **Breaking**: MCP `gartograph_cycles`: 맨 순환 배열 대신 CLI `cycles --format json`과 같은 `{cycles, limitations}`
+  객체를 돌려준다. 맨 배열에는 문서 limitation(생략한 외부 import 등)을 실을 자리가 없어, 순환 0개가 다 보고 낸
+  결과인지 소비자가 가를 수 없었다. 예전 목록은 `.cycles`에 있다.
+- MCP `gartograph_dead`·`gartograph_rules`·`gartograph_metrics`: CLI `dead`·`rules`·`metrics`와 같은 보고 조립
+  함수를 써서 같은 문서에서 같은 JSON을 낸다(서버에는 baseline이 없어 `baselined`·`staleBaseline`만 빠진다).
+  `gartograph_dead`는 `algorithm: "cha"`(예전에는 빈 문자열)와 알 수 없는 루트·main/init 루트 없음·외부
+  디스패치·필드 도달성 limitation을, `gartograph_rules`는 signature 규칙 미검사(`mcp --level package`)·unmapped·
+  fileScope 미검사 limitation을, `gartograph_metrics`는 abstractness/distance 생략 limitation을 더 싣고, 세 도구
+  모두 limitation을 정렬한다. 예전 MCP는 main 없는 라이브러리의 공개 API 전부를 unreachable로 내면서
+  `--retain-public` 안내도, reflection 디스패치를 못 본다는 말도 싣지 않았고, signature 규칙을 검사하지 못한
+  package 레벨 문서에서 위반 0을 아무 limitation 없이 돌려줬다.
+- MCP `gartograph_dead`·`gartograph_cycles`: 형식이 틀린 인자(`{"retainPublic": "true"}`, `{"level": 3}`)를 버리고
+  기본값으로 답하지 않고, 원인을 담은 `invalid arguments: …` `isError` 결과로 거부한다. `arguments`가 없거나
+  `null`인 호출은 빈 인자와 같다.
