@@ -137,3 +137,13 @@
   새 `toolchain` 줄만 있는 저장소는 그 툴체인으로 바꾸지 않고 설치된 Go로 수확한다. 예전 동작이 필요하면
   `GOTOOLCHAIN=auto`를 환경 변수로 준다 — `go env -w GOTOOLCHAIN=…`로 저장한 값은 gartograph가 넣는 환경 변수에
   덮여 쓰이지 않는다. go 줄이 설치된 Go 이하이고 더 새 `toolchain` 줄이 없는 저장소의 출력은 같다.
+- `dead --algo rta`(`--explain` 포함): 문서를 수확한 적재 결과로 SSA를 만들어 프로그램을 한 번만 타입 검사한다
+  (예전에는 같은 패키지를 다시 적재했다). 출력과 종료 코드는 같고, x/tools·pgx·이 저장소에서 실행 시간이
+  31.0~40.0% 줄었다.
+- `schema`·`routes`(`--role server`·`--role client`): 사실의 `usr`를 정하려고 만드는 symbol 문서에서 정점만
+  모으고 쓰지 않는 간선 단계를 건너뛴다. 출력과 종료 코드는 같고, 실행 시간이 합성 2000·4000 패키지 모듈에서
+  24.0~43.9%, x/tools·pgx에서 2.2~10.5% 줄었다.
+- Go 패키지 `source`를 직접 import하는 코드: 자유 함수 `RTAReachable(opts, …)`·`RTAAdjacency(opts, …)`를
+  지웠다. `LoadSession(opts)`가 symbol 문서(`opts.Level`과 무관)와 함께 돌려주는 `*Session`의 메서드
+  `RTAReachable(doc, roots)`·`RTAAdjacency(doc, roots)`를 쓴다. 문서와 SSA가 한 적재 결과를 쓰게 해 두 번째
+  적재로 돌아갈 길을 남기지 않으려는 것이다. CLI와 출력은 그대로다.
