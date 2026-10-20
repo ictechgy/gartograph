@@ -272,10 +272,10 @@ func loadSSA(opts Options) ([]*packages.Package, error) {
 	if opts.Tags != "" {
 		cfg.BuildFlags = []string{"-tags=" + opts.Tags}
 	}
-	cfg.Env = platformEnv(opts)
+	cfg.Env = loaderEnv(opts)
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
-		return nil, fmt.Errorf("loading packages for rta: %w — check go.mod and build tags", err)
+		return nil, loaderError("loading packages for rta", err, "check go.mod and build tags")
 	}
 	return pkgs, nil
 }

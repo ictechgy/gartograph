@@ -409,6 +409,28 @@ What this changes:
 The rest of the git configuration applies as usual, and `--files` needs no git
 at all.
 
+The `go` command runs with gartograph's own environment plus `GOOS`/`GOARCH`
+from `--goos`/`--goarch`, and with `GOTOOLCHAIN=local` when the `GOTOOLCHAIN`
+environment variable is unset or empty. A `go` or `toolchain` line in the
+analyzed `go.mod` or `go.work` therefore cannot make it download and run another
+Go toolchain:
+
+- A repository that needs a newer Go than the installed one fails with exit
+  code 2 and the go command's `requires go >= …` message, followed by the way
+  out: install that Go release, or, for a repository you trust, rerun with
+  `GOTOOLCHAIN=auto`.
+- A `toolchain` line newer than the installed Go no longer switches toolchains;
+  the installed Go loads the packages.
+- A `GOTOOLCHAIN` set in the environment (`auto`, `local`, `go1.N.M`, …) is
+  passed through unchanged. A value saved with `go env -w GOTOOLCHAIN=…` does
+  not apply: the environment variable gartograph sets takes precedence over it,
+  and gartograph does not run `go env` in the analyzed module to read it.
+
+Module downloads are unchanged: the go command still fetches the modules the
+analyzed `go.mod` requires that are missing from the module cache, through
+`GOPROXY`, and checks them against `go.sum`. Set `GOPROXY=off` to keep a harvest
+offline.
+
 A harvest has no overall time or memory budget. Declarations that each use the
 previous one twice — nested aliases (`type A1 = struct{ a, b A0 }`,
 `type F1 = func(F0, F0)`) and union constraints

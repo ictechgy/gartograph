@@ -3,7 +3,9 @@ package source
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -352,6 +354,218 @@ func TestPlatformDefault(t *testing.T) {
 	for _, l := range doc.Limitations {
 		if strings.Contains(l, "GOOS") {
 			t.Fatalf("default harvest must not carry a platform note: %v", l)
+		}
+	}
+}
+
+// tooNewModule은 설치된 Go보다 새 go·toolchain 줄을 가진 모듈이다. GOTOOLCHAIN=auto면 go 명령이 go1.99.0
+// 툴체인을 내려받아 실행하려 한다(GOPROXY=off라 받지 못하고 실패한다).
+func tooNewModule(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"go.mod":  "module example.com/fixture\n\ngo 1.99.0\n\ntoolchain go1.99.0\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+}
+
+// setToolchainEnv는 GOTOOLCHAIN 환경 변수를 value로 두고, unset이면 아예 지운다. 툴체인·모듈 다운로드가
+// 네트워크에 닿지 않게 GOPROXY=off도 둔다. CI(setup-go)가 GOTOOLCHAIN을 정해 둘 수 있어 테스트마다 명시적으로
+// 정한다 — t.Setenv가 테스트 끝에 원래 값을 되돌린다.
+func setToolchainEnv(t *testing.T, value string, unset bool) {
+	t.Helper()
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOTOOLCHAIN", value)
+	if unset {
+		if err := os.Unsetenv("GOTOOLCHAIN"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestHarvestKeepsTheInstalledToolchain은 GOTOOLCHAIN 환경 변수가 없거나 비었을 때, 설치된 Go보다 새 Go를
+// 요구하는 모듈을 읽는 go list 세 호출(load·loadSSA·patternRoots)이 툴체인을 내려받지 않고 원인과 해결 방향을
+// 담은 오류를 내는지 본다. 분석 대상 go.mod가 호스트에 다른 Go 툴체인을 받아 실행하게 하면 안 된다
+// (DECISIONS gartograph GOTOOLCHAIN).
+func TestHarvestKeepsTheInstalledToolchain(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		unset bool
+	}{{"unset", true}, {"empty", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			setToolchainEnv(t, "", tc.unset)
+			dir := tooNewModule(t)
+			_, loadErr := Load(Options{Dir: dir})
+			_, ssaErr := loadSSA(Options{Dir: dir})
+			_, patternErr := patternRoots(nil, dir, Options{Patterns: []string{"./..."}})
+			for _, got := range []struct {
+				call string
+				err  error
+			}{{"load", loadErr}, {"loadSSA", ssaErr}, {"patternRoots", patternErr}} {
+				if got.err == nil {
+					t.Fatalf("%s: a module that requires go 1.99.0 must not load", got.call)
+				}
+				msg := got.err.Error()
+				if strings.Contains(msg, "downloading go1.99.0") {
+					t.Errorf("%s: the go command tried to download the toolchain go.mod asks for:\n%s", got.call, msg)
+				}
+				for _, want := range []string{"requires go >= 1.99.0", "GOTOOLCHAIN=local", "install that Go release",
+					"rerun with GOTOOLCHAIN=auto"} {
+					if !strings.Contains(msg, want) {
+						t.Errorf("%s: the error must name the cause and the way out (%q):\n%s", got.call, want, msg)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestHarvestHonorsGOTOOLCHAIN은 사용자가 환경 변수로 준 GOTOOLCHAIN을 덮지 않는지 본다. auto면 go 명령이
+// 예전처럼 go.mod가 요구하는 툴체인으로 바꾸려 하고(GOPROXY=off라 받지 못한다), 그 실패에는 기본값 안내 대신
+// 예전 안내가 그대로 붙는다 — 막은 것이 gartograph의 기본값이 아니기 때문이다.
+func TestHarvestHonorsGOTOOLCHAIN(t *testing.T) {
+	setToolchainEnv(t, "auto", false)
+	_, err := Load(Options{Dir: tooNewModule(t)})
+	if err == nil || !strings.Contains(err.Error(), "downloading go1.99.0") {
+		t.Fatalf("GOTOOLCHAIN=auto from the environment must reach the go command, got %v", err)
+	}
+	if strings.Contains(err.Error(), "rerun with GOTOOLCHAIN=auto") ||
+		!strings.HasSuffix(err.Error(), " — check go.mod and build tags") {
+		t.Fatalf("a failed switch keeps the usual advice, not the default-toolchain one:\n%v", err)
+	}
+}
+
+// TestHarvestIgnoresNewerToolchainLine은 go 줄은 설치된 Go 이하이고 toolchain 줄만 더 새 모듈을 설치된 Go로
+// 수확하는지 본다(README Security 절). toolchain 줄은 권고라 GOTOOLCHAIN=local이면 go 명령이 따르지 않는다 —
+// auto였다면 go1.99.0을 내려받으려다 실패했다.
+func TestHarvestIgnoresNewerToolchainLine(t *testing.T) {
+	setToolchainEnv(t, "", true)
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod":  "module example.com/fixture\n\ngo 1.27\n\ntoolchain go1.99.0\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+	doc, err := Load(Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("a newer toolchain line alone must not stop the harvest: %v", err)
+	}
+	if !doc.HasVertex("example.com/fixture") {
+		t.Fatalf("the installed Go must load the module: %+v", doc.Vertices)
+	}
+}
+
+// fakeGoLog는 PATH 맨 앞에 진짜 go로 넘겨주는 가짜 go를 두고, 호출마다 그 프로세스가 받은 GOTOOLCHAIN·GOOS·
+// GOARCH 값을 한 줄(공백 구분, 없으면 unset)로 남길 로그 경로를 돌려준다. go/packages가 띄우는 go 명령의
+// 환경을 수확 결과가 아니라 실제 프로세스 환경으로 보기 위한 장치다.
+func fakeGoLog(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go is a POSIX shell script")
+	}
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("the go command is not on PATH: %v", err)
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls.log")
+	script := "#!/bin/sh\n" +
+		"printf '%s %s %s\\n' \"${GOTOOLCHAIN-unset}\" \"${GOOS-unset}\" \"${GOARCH-unset}\" >> \"$GARTOGRAPH_TEST_GO_LOG\"\n" +
+		"exec \"$GARTOGRAPH_TEST_REAL_GO\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GARTOGRAPH_TEST_GO_LOG", log)
+	t.Setenv("GARTOGRAPH_TEST_REAL_GO", realGo)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// loggedGoCalls는 로그를 비우고 run을 실행한 뒤, 그동안 띄운 go 명령마다 fakeGoLog가 남긴 값
+// (GOTOOLCHAIN, GOOS, GOARCH)을 돌려준다. go를 한 번도 띄우지 않았으면 실패다 — 빈 로그는 아무것도 검증하지 않는다.
+func loggedGoCalls(t *testing.T, log, name string, run func() error) [][]string {
+	t.Helper()
+	if err := os.WriteFile(log, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls [][]string
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		if fields := strings.Split(line, " "); len(fields) == 3 {
+			calls = append(calls, fields)
+		}
+	}
+	if len(calls) == 0 {
+		t.Fatalf("%s started no go command through PATH (log %q)", name, data)
+	}
+	return calls
+}
+
+// goListCalls는 go list를 띄우는 세 호출이다. patternRoots는 routes --pattern의 패턴 해석이다.
+func goListCalls(dir string) []struct {
+	name string
+	run  func(Options) error
+} {
+	return []struct {
+		name string
+		run  func(Options) error
+	}{
+		{"load", func(o Options) error { _, err := load(o); return err }},
+		{"loadSSA", func(o Options) error { _, err := loadSSA(o); return err }},
+		{"patternRoots", func(o Options) error {
+			o.Patterns = []string{"./..."}
+			_, err := patternRoots(nil, dir, o)
+			return err
+		}},
+	}
+}
+
+// TestGoCallsCarryTheToolchainPolicy는 세 go list 호출이 띄운 go 명령마다 GOTOOLCHAIN=local(환경 변수가 없거나
+// 빈 값일 때) 또는 사용자가 환경 변수로 준 값을 받는지 본다. routes --pattern의 패턴 해석도 수확과 같은 규칙이어야
+// 분석 대상 go.mod가 툴체인 전환을 일으킬 구멍이 남지 않는다.
+func TestGoCallsCarryTheToolchainPolicy(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"main.go": "package main\n\nfunc main() {}\n"})
+	for _, tc := range []struct {
+		name, value string
+		unset       bool
+		want        string
+	}{
+		{"unset", "", true, "local"},
+		{"empty", "", false, "local"},
+		{"environment", "auto", false, "auto"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := fakeGoLog(t)
+			setToolchainEnv(t, tc.value, tc.unset)
+			for _, call := range goListCalls(dir) {
+				run := func() error { return call.run(Options{Dir: dir}) }
+				for _, got := range loggedGoCalls(t, log, call.name, run) {
+					if got[0] != tc.want {
+						t.Errorf("%s: a go command ran with GOTOOLCHAIN=%s, want %s", call.name, got[0], tc.want)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestGoCallsCarryThePlatform은 --goos·--goarch 덮어쓰기가 load와 loadSSA가 띄우는 go 명령마다 그대로 가는지
+// 본다 — 환경을 GOTOOLCHAIN 규칙과 한 함수로 합친 뒤에도 graph와 dead --algo rta가 같은 플랫폼을 수확해야 한다.
+func TestGoCallsCarryThePlatform(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"main.go": "package main\n\nfunc main() {}\n"})
+	log := fakeGoLog(t)
+	setToolchainEnv(t, "", true)
+	opts := Options{Dir: dir, GOOS: "linux", GOARCH: "arm64"}
+	// load·loadSSA만 본다 — routes에는 --goos·--goarch가 없어 patternRoots의 플랫폼은 계약이 아니다.
+	for _, call := range goListCalls(dir)[:2] {
+		run := func() error { return call.run(opts) }
+		for _, got := range loggedGoCalls(t, log, call.name, run) {
+			if got[1] != "linux" || got[2] != "arm64" {
+				t.Errorf("%s: a go command ran with GOOS=%s GOARCH=%s, want linux arm64", call.name, got[1], got[2])
+			}
 		}
 	}
 }

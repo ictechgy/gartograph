@@ -21,6 +21,12 @@
   별칭 사슬 깊이 24는 3.8초·1.1GB·185MB에서 0.02초·17MB·44KB가 되며(깊이 60도 0.03초), 유니언 사슬 깊이 22는
   4.5초·615MB에서 2.6초·17MB가 된다(출력은 같다). 타입 검사(`go/types`) 자체의 지수 시간(유니언·struct 사슬)은
   남고, 수확 전체의 시간·메모리 예산은 없다 — README의 Security 절.
+- 수확하는 모든 명령(`bridges`·`diff`를 뺀 전부, `dead --algo rta`·`routes --pattern`·`mcp` 포함): `GOTOOLCHAIN`
+  환경 변수가 없거나 비었으면 go 명령(go/packages의 `go list`)을 `GOTOOLCHAIN=local`로 실행한다. 분석 대상
+  `go.mod`·`go.work`의 `go`·`toolchain` 줄이 더는 다른 Go 툴체인을 내려받아 실행하게 하지 못한다. 예전에는 호스트
+  기본값(`auto`)을 물려받아, 받을 수 있는 것은 공식 릴리스 툴체인뿐이지만 신뢰하지 않는 저장소 하나가 호스트에서
+  툴체인 다운로드와 다른 Go 바이너리 실행을 일으킬 수 있었다. 환경 변수로 준 값은 그대로 넘긴다. require 모듈
+  다운로드는 그대로다(`GOPROXY=off`로 막는다) — README의 Security 절.
 
 ### Changed
 
@@ -125,3 +131,9 @@
   `N directories could not be read, …`로 센다. 그런 디렉터리가 없는 모듈의 출력은 같다(이 저장소, x/tools, pgx,
   Kubernetes 계열 모듈, fsnotify에서 바이트 단위로 확인했다). golang.org/x/sys는 darwin·linux 수확에서 8개
   (`plan9`, `windows/...`)를 센다.
+- **Breaking**: 수확하는 모든 명령: 설치된 Go보다 새 Go를 요구하는 저장소(`go` 줄이 더 높은 `go.mod`·`go.work`)는
+  그 툴체인을 받아 실행하는 대신 go 명령의 `requires go >= … (running go …; GOTOOLCHAIN=local)` 오류와 해결
+  방향(그 Go 설치, 신뢰하는 저장소면 `GOTOOLCHAIN=auto`로 다시 실행)을 담아 종료 코드 2로 끝난다. 설치된 Go보다
+  새 `toolchain` 줄만 있는 저장소는 그 툴체인으로 바꾸지 않고 설치된 Go로 수확한다. 예전 동작이 필요하면
+  `GOTOOLCHAIN=auto`를 환경 변수로 준다 — `go env -w GOTOOLCHAIN=…`로 저장한 값은 gartograph가 넣는 환경 변수에
+  덮여 쓰이지 않는다. go 줄이 설치된 Go 이하이고 더 새 `toolchain` 줄이 없는 저장소의 출력은 같다.

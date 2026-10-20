@@ -182,21 +182,24 @@ func load(opts Options) ([]*packages.Package, error) {
 	if opts.Tags != "" {
 		cfg.BuildFlags = []string{"-tags=" + opts.Tags}
 	}
-	cfg.Env = platformEnv(opts)
+	cfg.Env = loaderEnv(opts)
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
-		return nil, fmt.Errorf("loading packages: %w — check go.mod and build tags", err)
+		return nil, loaderError("loading packages", err, "check go.mod and build tags")
 	}
 	return pkgs, nil
 }
 
-// platformEnv는 GOOS/GOARCH 덮어쓰기가 있으면 로더 환경에 주입한다.
-// packages.Config.Env가 nil이면 호스트 환경을 그대로 물려받는다 —
-// 덮어쓸 것이 없을 때는 nil을 돌려 그 기본 동작을 건드리지 않는다.
-func platformEnv(opts Options) []string {
-	if opts.GOOS == "" && opts.GOARCH == "" {
-		return nil
-	}
+// loaderEnv는 go/packages가 띄우는 go 명령의 환경이다. go list를 띄우는 세 호출(load·loadSSA·
+// patternRoots)이 함께 써서 같은 플랫폼·툴체인 규칙으로 돈다.
+//
+// GOOS/GOARCH 덮어쓰기가 있으면 더한다. GOTOOLCHAIN 환경 변수가 없거나 비었으면(go 명령도 빈 값을
+// 미지정으로 본다) GOTOOLCHAIN=local을 더한다 — 분석 대상(신뢰하지 않는 입력)의 go.mod·go.work에 있는
+// go·toolchain 줄이 다른 Go 툴체인을 내려받아 실행하게 두지 않기 위해서다(DECISIONS gartograph GOTOOLCHAIN).
+// 사용자가 환경 변수로 준 값(auto 포함)은 그대로 둔다. `go env -w`로 저장한 값은 이 환경 변수에 덮인다 —
+// 그 값을 읽으려고 분석 대상 디렉터리에서 go env를 돌리면 그 실행이 툴체인 전환을 일으킬 수 있어 읽지 않는다.
+// 늘 os.Environ()에서 시작하고(Env가 nil일 때 go/packages가 쓰는 값과 같다), 같은 키는 뒤 값이 이긴다(os/exec).
+func loaderEnv(opts Options) []string {
 	env := os.Environ()
 	if opts.GOOS != "" {
 		env = append(env, "GOOS="+opts.GOOS)
@@ -204,7 +207,35 @@ func platformEnv(opts Options) []string {
 	if opts.GOARCH != "" {
 		env = append(env, "GOARCH="+opts.GOARCH)
 	}
+	if os.Getenv("GOTOOLCHAIN") == "" {
+		env = append(env, "GOTOOLCHAIN=local")
+	}
 	return env
+}
+
+// toolchainAdvice는 go 명령이 GOTOOLCHAIN=local이라 더 새 Go를 요구하는 저장소를 거부했을 때의 원인과 해결
+// 방향이다. 기본값이 막았다는 사실과 되돌리는 방법은 go 명령의 문구만으로는 알 수 없다.
+const toolchainAdvice = "this repository needs a newer Go than the installed one, and GOTOOLCHAIN=local " +
+	"(gartograph's default when the GOTOOLCHAIN environment variable is not set) keeps the go command from " +
+	"downloading it: install that Go release, or rerun with GOTOOLCHAIN=auto if you trust this repository"
+
+// loaderError는 packages.Load 실패를 what 단계의 오류로 감싸고 해결 방향 advice를 붙인다. go 명령이
+// GOTOOLCHAIN=local 아래에서 더 새 Go 요구를 거부한 실패면 advice 대신 toolchainAdvice를 붙인다 —
+// "check go.mod" 같은 일반 안내로는 Go 설치와 GOTOOLCHAIN=auto라는 두 길이 보이지 않는다.
+func loaderError(what string, err error, advice string) error {
+	if toolchainRefused(err) {
+		advice = toolchainAdvice
+	}
+	return fmt.Errorf("%s: %w — %s", what, err, advice)
+}
+
+// toolchainRefused는 go 명령이 GOTOOLCHAIN=local이라 툴체인을 바꾸지 않고 더 새 Go 요구를 거부했는지 오류
+// 문구로 본다. 문구는 cmd/go gover.TooNewError의 "X requires go >= V (running go L; GOTOOLCHAIN=local)"이다
+// (X는 go.mod·go.work·의존 모듈). 문구가 바뀌면 일반 안내로 물러날 뿐 go 명령의 원인 문구는 그대로 남는다.
+// local+path 같은 다른 값은 맞추지 않는다 — 그 값은 사용자가 고른 전환 규칙이다.
+func toolchainRefused(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, " requires go >= ") && strings.Contains(msg, "; GOTOOLCHAIN=local)")
 }
 
 // platformNote는 플랫폼 덮어쓰기를 limitation 문장으로 만든다.

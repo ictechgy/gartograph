@@ -338,6 +338,22 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
 
 나머지 git 설정은 평소대로 적용됩니다. `--files`는 git을 쓰지 않습니다.
 
+`go` 명령은 gartograph 자신의 환경에 `--goos`·`--goarch`의 `GOOS`·`GOARCH`를 더해 실행하고,
+`GOTOOLCHAIN` 환경 변수가 없거나 비었으면 `GOTOOLCHAIN=local`로 실행합니다. 그래서 분석 대상
+`go.mod`·`go.work`의 `go`·`toolchain` 줄이 다른 Go 툴체인을 내려받아 실행하게 하지 못합니다.
+
+- 설치된 Go보다 새 Go가 필요한 저장소는 go 명령의 `requires go >= …` 문구와 해결 방향을 담아
+  종료 코드 2로 끝납니다. 그 Go를 설치하거나, 신뢰하는 저장소라면 `GOTOOLCHAIN=auto`로 다시
+  실행합니다.
+- 설치된 Go보다 새 `toolchain` 줄은 더는 툴체인을 바꾸지 않습니다. 설치된 Go가 패키지를 읽습니다.
+- 환경 변수로 준 `GOTOOLCHAIN`(`auto`, `local`, `go1.N.M` 등)은 그대로 넘깁니다.
+  `go env -w GOTOOLCHAIN=…`로 저장한 값은 쓰이지 않습니다. gartograph가 넣는 환경 변수가 그 값보다
+  우선하고, gartograph는 그 값을 읽으려고 분석 대상 모듈에서 `go env`를 실행하지 않습니다.
+
+모듈 다운로드는 그대로입니다. go 명령은 분석 대상 `go.mod`가 require하는데 모듈 캐시에 없는 모듈을
+여전히 `GOPROXY`에서 받아 `go.sum`으로 확인합니다. 수확을 오프라인으로 두려면 `GOPROXY=off`를
+줍니다.
+
 수확 전체에는 시간·메모리 예산이 없습니다. 앞 선언을 두 번씩 쓰는 선언 사슬 — 중첩 별칭
 (`type A1 = struct{ a, b A0 }`, `type F1 = func(F0, F0)`)과 유니언 제약
 (`type U1 interface{ U0 | U0 }`) — 은 더는 gartograph 자신의 표기 작업·메모리·출력을

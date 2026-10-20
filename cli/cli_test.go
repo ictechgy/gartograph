@@ -4071,6 +4071,32 @@ func TestUnusedDepsCountsDirectoriesWithoutPlatformFiles(t *testing.T) {
 	}
 }
 
+// TestHarvestRefusesToolchainSwitch는 설치된 Go보다 새 Go를 요구하는 모듈(go 1.99.0, toolchain go1.99.0)을
+// 수확하는 명령마다 툴체인을 내려받지 않고, 원인과 해결 방향을 담아 종료 코드 2로 끝나는지 본다(README
+// Security 절의 계약). GOTOOLCHAIN 환경 변수가 없을 때가 기본이다. GOPROXY=off라 회귀해도 네트워크에 닿지 않는다.
+func TestHarvestRefusesToolchainSwitch(t *testing.T) {
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOTOOLCHAIN", "")
+	if err := os.Unsetenv("GOTOOLCHAIN"); err != nil {
+		t.Fatal(err)
+	}
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod":  "module example.com/fixture\n\ngo 1.99.0\n\ntoolchain go1.99.0\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+	for _, args := range [][]string{{"graph"}, {"dead", "--algo", "rta"}, {"unused-deps"}, {"schema"},
+		{"routes", "--role", "client", "--pattern", "./..."}, {"mcp"}} {
+		code, out, errb := run(t, append(args, "--dir", dir)...)
+		if code != 2 || out != "" {
+			t.Errorf("%v: exit %d with stdout %q, want exit 2 and no output", args, code, out)
+		}
+		if strings.Contains(errb, "downloading go1.99.0") || !strings.Contains(errb, "GOTOOLCHAIN=local") ||
+			!strings.Contains(errb, "rerun with GOTOOLCHAIN=auto") {
+			t.Errorf("%v: stderr must refuse the toolchain switch and say how to proceed:\n%s", args, errb)
+		}
+	}
+}
+
 // TestRulesSARIFPosition은 rules SARIF가 위반의 물리 위치를 싣는지
 // 확인한다 — 수확 문서의 import 지점이 physicalLocation이 된다.
 func TestRulesSARIFPosition(t *testing.T) {
