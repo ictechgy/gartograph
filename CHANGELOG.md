@@ -17,8 +17,11 @@
 - `graph --level type|symbol`과 그 수확을 쓰는 명령(`dead`, `query`, `impact`, `reach`, `metrics`, `schema`,
   `routes`, MCP 등): 앞 선언을 두 번 쓰는 중첩 타입 별칭(`type A1 = struct{ a, b A0 }`, `type F1 = func(F0, F0)`)과
   유니언 제약(`type U1 interface{ U0 | U0 }`)이 정규 타입 표기를 깊이마다 두 배로 키워 메모리와 출력이 지수적으로
-  늘던 문제를 막는다. 타입마다 표기 길이와 구조 해시를 메모하고, 표기 하나를 64KiB로 묶고, 유니언의 인터페이스
-  항은 한 번만 펼치고, 의존 소스의 이름 없는 인터페이스를 거를 때 타입마다 한 번만 본다. `graph --level type`
+  늘던 문제를 막는다. 타입마다 표기 길이와 구조 해시를 메모하고, 표기 하나를 64KiB로 묶고(항을 이은 유니언
+  원소와 이름 없는 인터페이스 이름도 전체를 묶는다), 유니언의 인터페이스 항은 한 번만 펼치고, 의존 소스의 이름
+  없는 인터페이스를 거를 때 타입마다 한 번만 본다. 항이 각각 상한 아래인 100항 유니언(소스 1.3KB)의 `typeSet`
+  항목은 3.5MB에서 328바이트가 되고, 서명이 각각 상한 아래인 이름 없는 인터페이스의 `satisfies` 이름은 구현
+  메서드마다 실려 메서드 수의 제곱으로 커지던 문서(메서드 20개에서 13.9MB)가 선형이 된다(27.6KB). `graph --level type`
   기준(3회 중앙값) 별칭 struct 사슬 깊이 24는 4.1초·RSS 1.6GB·출력 285MB에서 0.17초·17MB·33KB가 되고, 함수
   별칭 사슬 깊이 24는 3.8초·1.1GB·185MB에서 0.02초·17MB·44KB가 되며(깊이 60도 0.03초), 유니언 사슬 깊이 22는
   4.5초·615MB에서 2.6초·17MB가 된다(출력은 같다). 타입 검사(`go/types`) 자체의 지수 시간(유니언·struct 사슬)은
@@ -61,10 +64,12 @@
   새 limitation `unjoined-dynamic-relations: N SQL placeholder operand(s) …`로 테이블 값 함수 수와 따로 센다.
   인용 식별자 안이나 이름 접두 뒤의 자리표시자(`"%s"`, `log_%s`)는 지금처럼 이름으로 읽는다.
   이전 판독으로 돌리는 옵션은 없다.
-- `graph`(type·symbol 레벨): 정규 타입 표기 하나(타입 하나 또는 메서드 서명 하나)가 64KiB(65536바이트)를 넘으면
-  `fields`·`methods`·`typeSet`·`satisfies` 항목에 처음 256바이트, `…sha256:`, 타입 구조의 SHA-256(hex)으로
-  축약해 적는다. 같은 타입은 같은 축약, 다른 타입은 다른 축약이라 `diff`의 문자열 비교는 그대로이고, 필드
-  이름(`name:`)과 메서드 이름은 앞에 남는다. 축약이 든 항목 수는 새 limitation `N fields/methods/typeSet/satisfies
+- `graph`(type·symbol 레벨): 정규 타입 표기 하나(타입 하나, 메서드 서명 하나, 항을 모두 이은 유니언 원소
+  하나, 이름 없는 인터페이스 이름 하나)가 64KiB(65536바이트)를 넘으면 `fields`·`methods`·`typeSet`·`satisfies`
+  항목에 처음 256바이트, `…sha256:`, 구조의 SHA-256(hex)으로 축약해 적는다. 같은 타입은 같은 축약, 다른 타입은
+  다른 축약이라 `diff`의 문자열 비교는 그대로이고, 필드 이름(`name:`)과 메서드 이름은 앞에 남는다. 유니언
+  원소와 이름 없는 인터페이스 이름은 항·메서드 서명 하나하나가 상한 아래여도 이은 전체가 넘으면 통째로
+  축약한다. 축약이 든 항목 수는 새 limitation `N fields/methods/typeSet/satisfies
   entries abbreviate a type spelling over 65536 bytes as its first 256 bytes followed by …sha256: and a structural
   hash`로 센다. 실측한 실제 저장소(x/tools·pgx·Kubernetes 모듈·이 저장소)의 가장 긴 표기는 400바이트 미만이라 그
   문서는 바이트 단위로 같다. 전체 표기로 돌리는 옵션은 없고, 이 변경 전에 만든 문서와 `diff`하면 그런 항목은 바뀐

@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"go/types"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -386,8 +387,8 @@ func abbreviationLimitation(n int) string {
 
 // TestAbbreviatedFacts는 상한을 넘는 표기가 수확 문서의 모든 사실 종류에서 같은 축약으로 적히고,
 // limitation이 문서에 실린 축약 항목을 정확히 세는지 확인한다 — 테스트 변형이 같은 선언을 다시 훑어도
-// 두 번 세지 않는다. 필드 이름과 메서드 이름은 축약 앞에 남고, 상한 아래의 긴 표기는 그대로이며, 두 번
-// 수확해도 바이트가 같다.
+// 두 번 세지 않는다. 필드 이름과 메서드 이름은 축약 앞에 남고, 이름 없는 인터페이스 이름(satisfies)은
+// 인터페이스 표기 하나로 축약되며, 상한 아래의 긴 표기는 그대로이고, 두 번 수확해도 바이트가 같다.
 func TestAbbreviatedFacts(t *testing.T) {
 	full := aliasChainSpelling("int", 14)
 	abbreviated := full[:abbreviationPrefixBytes] + graph.SpellingDigestMarker
@@ -415,8 +416,10 @@ func TestAbbreviatedFacts(t *testing.T) {
 			t.Fatalf("tests=%v: union terms must abbreviate the long term, got %.400q", tests, constraint.TypeSet)
 		}
 		take, _ := doc.VertexByID("example.com/abbrfix/a.(Taker).Take")
-		if len(take.Satisfies) != 1 || !strings.HasPrefix(take.Satisfies[0], "interface{Take"+signature) {
-			t.Fatalf("tests=%v: the anonymous interface name must abbreviate its method signature, got %.400q",
+		name := ("interface{Take(" + full)[:abbreviationPrefixBytes] + graph.SpellingDigestMarker
+		if len(take.Satisfies) != 1 || !strings.HasPrefix(take.Satisfies[0], name) ||
+			!abbreviationPattern.MatchString(take.Satisfies[0]) {
+			t.Fatalf("tests=%v: the anonymous interface name must abbreviate as one spelling, got %.400q",
 				tests, take.Satisfies)
 		}
 		if got := abbreviatedEntries(doc); got != 5 || !slices.Contains(doc.Limitations, abbreviationLimitation(got)) {
@@ -483,5 +486,162 @@ func (Taker) Take(dep.F` + top + `) {}
 		if !slices.Contains(doc.Limitations, abbreviationLimitation(3)) {
 			t.Fatalf("depth %d: the limitation must count the 3 abbreviated entries, got %q", depth, doc.Limitations)
 		}
+	}
+}
+
+// taggedStruct는 정규 표기가 정확히 total바이트인 struct 타입이다("struct{a int "태그"}"는 태그보다 16바이트
+// 길다). last는 태그의 마지막 글자다 — 길이가 같고 구조만 다른 타입을 만든다.
+func taggedStruct(total int, last byte) types.Type {
+	pkg := types.NewPackage("example.com/edge", "edge")
+	tag := strings.Repeat("x", total-17) + string(last)
+	return types.NewStruct([]*types.Var{types.NewField(token.NoPos, pkg, "a", types.Typ[types.Int], false)},
+		[]string{tag})
+}
+
+// unionOf는 틸드 없는 항들의 유니언이다.
+func unionOf(terms ...types.Type) *types.Union {
+	out := make([]*types.Term, len(terms))
+	for i, term := range terms {
+		out[i] = types.NewTerm(false, term)
+	}
+	return types.NewUnion(out)
+}
+
+// TestUnionEntryCap은 유니언 항목 하나에도 상한이 걸리는지 확인한다 — 항 하나하나는 상한 아래여도 이은
+// 길이가 maxSpellingBytes를 넘으면 항목 전체를 앞부분과 구조 해시로 축약한다. 정확히 상한이면 그대로이고,
+// 구조가 같은 항(두 인터페이스 항을 펼쳐 겹친 항)은 한 번만 센다. 같은 유니언은 같은 축약, 앞부분이 같아도
+// 항이 다르면 다른 축약이다.
+func TestUnionEntryCap(t *testing.T) {
+	spell := func(u *types.Union) (string, bool) { return newTypeSpeller().unionEntry(u) }
+	text := func(typ types.Type) string {
+		s, _ := newTypeSpeller().canonicalType(typ)
+		return s
+	}
+	joined := func(a, b types.Type) string {
+		texts := []string{text(a), text(b)}
+		slices.Sort(texts)
+		return texts[0] + " | " + texts[1]
+	}
+	small := taggedStruct(100, 'x')
+	exact := taggedStruct(maxSpellingBytes-103, 'x')
+	if got, abbreviated := spell(unionOf(small, exact)); abbreviated || len(got) != maxSpellingBytes ||
+		got != joined(small, exact) {
+		t.Fatalf("a union of exactly %d bytes must stay whole, got abbreviated=%v len=%d", maxSpellingBytes,
+			abbreviated, len(got))
+	}
+	over := taggedStruct(maxSpellingBytes-102, 'x')
+	got, abbreviated := spell(unionOf(small, over))
+	if !abbreviated || len(got) > maxAbbreviationBytes || !abbreviationPattern.MatchString(got) ||
+		!strings.HasPrefix(got, joined(small, over)[:abbreviationPrefixBytes]+graph.SpellingDigestMarker) {
+		t.Fatalf("one byte over the cap must abbreviate the whole entry, got abbreviated=%v %.300q", abbreviated, got)
+	}
+	// 틸드("~")도 한 바이트로 센다 — 틸드 항은 표기 순서에서 뒤로 간다("s" < "~").
+	tilde := func(long types.Type) *types.Union {
+		return types.NewUnion([]*types.Term{types.NewTerm(true, small), types.NewTerm(false, long)})
+	}
+	edge := taggedStruct(maxSpellingBytes-104, 'x')
+	if whole, abbreviated := spell(tilde(edge)); abbreviated || whole != text(edge)+" | ~"+text(small) {
+		t.Fatalf("a tilde union of exactly %d bytes must stay whole, got abbreviated=%v len=%d", maxSpellingBytes,
+			abbreviated, len(whole))
+	}
+	if _, abbreviated := spell(tilde(taggedStruct(maxSpellingBytes-103, 'x'))); !abbreviated {
+		t.Fatal("the tilde must count toward the cap")
+	}
+	again, _ := spell(unionOf(taggedStruct(100, 'x'), taggedStruct(maxSpellingBytes-102, 'x')))
+	other, _ := spell(unionOf(small, taggedStruct(maxSpellingBytes-102, 'y')))
+	if again != got || other == got || !strings.HasPrefix(other, got[:abbreviationPrefixBytes]) {
+		t.Fatalf("the same union must abbreviate the same way and a different one differently:\n %q\n %q\n %q",
+			got, again, other)
+	}
+	// 두 인터페이스 항이 따로 만든 같은 구조의 항을 펼친다 — 그 항을 두 번 세면 상한을 넘는다.
+	ifaceTerm := func(a, b types.Type) types.Type {
+		return types.NewInterfaceType(nil, []types.Type{unionOf(a, b)}).Complete()
+	}
+	merged, abbreviated := spell(unionOf(ifaceTerm(taggedStruct(40000, 'x'), types.Typ[types.Int]),
+		ifaceTerm(taggedStruct(40000, 'x'), types.Typ[types.String])))
+	if abbreviated || merged != "int | string | "+text(taggedStruct(40000, 'x')) {
+		t.Fatalf("terms with the same structure must count once, got abbreviated=%v %.200q", abbreviated, merged)
+	}
+}
+
+// TestUnionEntryAbbreviationIsCheap은 상한을 넘는 유니언을 축약할 때 항을 끝까지 펴지 않는지 확인한다 — 항
+// 100개(go/types의 유니언 한계)의 표기 길이가 8배(깊이 8 사슬 약 4KiB → 깊이 11 약 34KiB)가 돼도 항목 하나를
+// 만드는 할당은 두 배를 넘지 않는다(앞부분만 편다). 항을 다 펴서 이으면 할당도 표기 길이만큼 8배가 된다.
+func TestUnionEntryAbbreviationIsCheap(t *testing.T) {
+	allocated := func(depth int) uint64 {
+		chain := aliasChain(types.Typ[types.Int], depth)
+		terms := make([]types.Type, 100)
+		for i := range terms {
+			terms[i] = types.NewArray(chain, int64(i+1))
+		}
+		u := unionOf(terms...)
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		text, abbreviated := newTypeSpeller().unionEntry(u)
+		runtime.ReadMemStats(&after)
+		if !abbreviated || len(text) > maxAbbreviationBytes || !strings.HasPrefix(text, "[100]struct{a struct{") {
+			t.Fatalf("depth %d: a 100-term union over the cap must abbreviate, got abbreviated=%v %.300q",
+				depth, abbreviated, text)
+		}
+		return after.TotalAlloc - before.TotalAlloc
+	}
+	if short, long := allocated(8), allocated(11); long > 2*short {
+		t.Fatalf("abbreviating must not spell every term: %d bytes for 4 KiB terms, %d bytes for 34 KiB terms", short, long)
+	}
+}
+
+// TestJoinedSpellingsAreCapped는 표기를 이어 만드는 두 항목도 상한을 지키는지 수확 문서에서 확인한다 — 항이
+// 각각 상한 아래(약 34KiB)인 유니언의 typeSet 항목과, 서명이 각각 상한 아래인 의존 소스 이름 없는 인터페이스의
+// satisfies 이름이다. 수정 전에는 항목 하나가 항·메서드 수만큼 길어졌고, satisfies 이름은 구현 메서드마다
+// 실려 문서가 메서드 수의 제곱으로 커졌다. 축약 항목은 limitation이 센다.
+func TestJoinedSpellingsAreCapped(t *testing.T) {
+	const pair = "struct{ a, b %[1]s }"
+	doc := loadSymbol(t, testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/joinfix\n\ngo 1.27\n\n" +
+			"require example.com/dep v0.0.0\n\nreplace example.com/dep => ./dep\n",
+		"dep/go.mod": "module example.com/dep\n\ngo 1.27\n",
+		"dep/dep.go": "package dep\n\n" + chainSource("A", pair, 11) + `
+func Use(x any) {
+	if t, ok := x.(interface{ M0(A11); M1(A11); M2(A11) }); ok {
+		t.M0(A11{})
+	}
+}
+`,
+		"a/a.go": "package a\n\nimport \"example.com/dep\"\n\n" + chainSource("B", pair, 11) + `
+type U interface{ [1]B11 | [2]B11 | [3]B11 }
+
+type T struct{}
+
+func (T) M0(dep.A11) {}
+func (T) M1(dep.A11) {}
+func (T) M2(dep.A11) {}
+`,
+	}))
+	full := aliasChainSpelling("int", 11)
+	u, ok := doc.VertexByID("example.com/joinfix/a.U")
+	if !ok {
+		t.Fatal("vertex example.com/joinfix/a.U expected")
+	}
+	if len(u.TypeSet) != 1 || len(u.TypeSet[0]) > maxAbbreviationBytes ||
+		!strings.HasPrefix(u.TypeSet[0], ("[1]" + full)[:abbreviationPrefixBytes]+graph.SpellingDigestMarker) ||
+		!abbreviationPattern.MatchString(u.TypeSet[0]) {
+		t.Fatalf("a union of three long terms must abbreviate as one entry, got %.400q", u.TypeSet)
+	}
+	name := ("interface{M0(" + full)[:abbreviationPrefixBytes] + graph.SpellingDigestMarker
+	var names []string
+	for _, m := range []string{"M0", "M1", "M2"} {
+		v, ok := doc.VertexByID("example.com/joinfix/a.(T)." + m)
+		if !ok {
+			t.Fatalf("method vertex %s expected", m)
+		}
+		if len(v.Satisfies) != 1 || len(v.Satisfies[0]) > maxAbbreviationBytes ||
+			!strings.HasPrefix(v.Satisfies[0], name) || !abbreviationPattern.MatchString(v.Satisfies[0]) {
+			t.Fatalf("%s: the anonymous interface name must abbreviate as one spelling, got %.400q", m, v.Satisfies)
+		}
+		names = append(names, v.Satisfies[0])
+	}
+	if names[0] != names[1] || names[1] != names[2] || !slices.Contains(doc.Limitations, abbreviationLimitation(4)) {
+		t.Fatalf("the three methods must carry the same name and the limitation must count 4 entries: %q %q",
+			names, doc.Limitations)
 	}
 }

@@ -21,8 +21,8 @@ import (
 // 타입×인터페이스 조합에 부르지 않기 위해 이름 포함 여부부터 본다.
 // hidden은 모듈 코드가 이름으로 쓸 수 없는 명명 인터페이스(비공개 이름 —
 // context.stringer — 또는 internal 경로) 표시다 — satisfies
-// 목록 정리(pruneHidden)의 재료다. abbreviated는 이름(이름 없는 표기의 메서드 집합)에
-// 상한을 넘어 축약한 서명이 있다는 표시다 — satisfies에 실을 때 축약 항목으로 센다.
+// 목록 정리(pruneHidden)의 재료다. abbreviated는 이름(이름 없는 표기의 메서드 집합)이
+// 상한을 넘어 축약됐다는 표시다 — satisfies에 실을 때 축약 항목으로 센다.
 type externalIface struct {
 	name        string
 	iface       *types.Interface

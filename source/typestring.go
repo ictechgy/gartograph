@@ -15,6 +15,8 @@
 package source
 
 import (
+	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -28,8 +30,8 @@ import (
 	"github.com/ictechgy/gartograph/graph"
 )
 
-// maxSpellingBytes는 정규 표기 하나(타입 하나, 또는 메서드 서명 하나)의 바이트 상한이다 — 넘으면
-// 축약한다. 2026-10 실측(type·symbol 레벨, --tests 포함 문서의 fields·methods·typeSet·satisfies)에서
+// maxSpellingBytes는 정규 표기 하나(타입 하나, 메서드 서명 하나, 유니언 원소 하나(항 전부), 이름 없는
+// 인터페이스 이름 하나)의 바이트 상한이다 — 넘으면 축약한다. 2026-10 실측(type·symbol 레벨, --tests 포함 문서의 fields·methods·typeSet·satisfies)에서
 // 가장 긴 표기는 이 저장소 362바이트(테스트 파일의 익명 struct 슬라이스), sigs.k8s.io/structured-merge-diff
 // 287바이트, k8s.io/kube-openapi 281바이트, golang.org/x/tools v0.50.0 174바이트, pgx v5.11.0
 // 131바이트였다. 상한은 그보다 180배 넘게 넉넉해 손으로 쓴 코드와 생성 코드의 큰 익명 struct는
@@ -217,6 +219,93 @@ func (s *typeSpeller) abbreviate(parts []any) string {
 	}
 	sum := s.partsDigest(parts)
 	return s.render(parts, abbreviationPrefixBytes) + graph.SpellingDigestMarker + hex.EncodeToString(sum[:])
+}
+
+// unionTermParts는 유니언 항 하나의 표기 조각이다 — 틸드 항은 앞에 "~"가 붙는다.
+func unionTermParts(term *types.Term) []any {
+	if term.Tilde() {
+		return []any{"~", term.Type()}
+	}
+	return []any{term.Type()}
+}
+
+// termDigest는 유니언 항 하나(틸드 포함)의 구조 해시다.
+func (s *typeSpeller) termDigest(term *types.Term) [sha256.Size]byte {
+	s.walk(term.Type(), s.hasDigest, s.finishDigest)
+	return s.partsDigest(unionTermParts(term))
+}
+
+// distinctTerms는 구조가 같은 유니언 항을 하나만 남긴다 — 서로 다른 인터페이스 항을 펼치면 같은 항이
+// 여러 번 나온다. 표기 대신 구조 해시로 가려 긴 항도 펴지 않고 견준다. 해시가 같은 항은 표기도 같으므로
+// 표기로 가렸을 때 빠질 항만 빠진다(남은 같은 표기는 joinUnion이 마저 없앤다).
+func (s *typeSpeller) distinctTerms(terms []*types.Term) []*types.Term {
+	seen := map[[sha256.Size]byte]bool{}
+	var out []*types.Term
+	for _, term := range terms {
+		if d := s.termDigest(term); !seen[d] {
+			seen[d] = true
+			out = append(out, term)
+		}
+	}
+	return out
+}
+
+// unionSize는 항을 " | "로 이은 유니언 표기의 길이다(maxSpellingBytes+1에서 포화). 항을 펴지 않고
+// 메모한 길이로 잰다.
+func (s *typeSpeller) unionSize(terms []*types.Term) int {
+	n := 0
+	for i, term := range terms {
+		if i > 0 {
+			n += len(" | ")
+		}
+		if n += s.termSize(term); n > maxSpellingBytes {
+			return maxSpellingBytes + 1
+		}
+	}
+	return n
+}
+
+// termSize는 유니언 항 하나가 joinUnion에서 차지하는 길이다(~ 포함) — 상한을 넘는 항은 그 축약 길이다.
+func (s *typeSpeller) termSize(term *types.Term) int {
+	n := s.size([]any{term.Type()})
+	if n > maxSpellingBytes {
+		text, _ := s.canonicalType(term.Type())
+		n = len(text)
+	}
+	if term.Tilde() {
+		n++
+	}
+	return n
+}
+
+// unionKey는 축약할 유니언 항 하나의 정렬 열쇠다 — 표기 앞부분과 구조 해시.
+type unionKey struct {
+	parts  []any
+	prefix string
+	digest [sha256.Size]byte
+}
+
+// abbreviateUnion은 상한을 넘는 유니언 항목을 "앞부분…sha256:구조 해시"로 줄인다. 항을 앞부분
+// (abbreviationPrefixBytes바이트)으로, 앞부분이 같으면 구조 해시로 정렬해 이은 조각 목록을 abbreviate에
+// 넘긴다 — 앞부분은 항을 표기 순으로 이은 표기의 앞부분이고, 해시는 항 집합 전체를 덮는다. 항을 끝까지
+// 펴지 않는다 — 항이 많고 길어도 앞부분만 편다.
+func (s *typeSpeller) abbreviateUnion(terms []*types.Term) string {
+	keys := make([]unionKey, len(terms))
+	for i, term := range terms {
+		parts := unionTermParts(term)
+		keys[i] = unionKey{parts: parts, prefix: s.render(parts, abbreviationPrefixBytes), digest: s.termDigest(term)}
+	}
+	slices.SortFunc(keys, func(a, b unionKey) int {
+		return cmp.Or(strings.Compare(a.prefix, b.prefix), bytes.Compare(a.digest[:], b.digest[:]))
+	})
+	var parts []any
+	for i, k := range keys {
+		if i > 0 {
+			parts = append(parts, " | ")
+		}
+		parts = append(parts, k.parts...)
+	}
+	return s.abbreviate(parts)
 }
 
 // render는 조각 목록을 정규 표기로 편다. limit이 0 이상이면 표기가 그 바이트에 이르는 대로 멈추고

@@ -14,7 +14,6 @@ import (
 	"go/token"
 	"go/types"
 	"sort"
-	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -219,20 +218,16 @@ func fieldTypes(st *types.Struct) []types.Type {
 }
 
 // methodSetName은 이름 없는 인터페이스의 결정적 이름을 만든다 — 임베드를 펼친
-// 메서드 집합을 파라미터 이름 없이 적는다("interface{Unwrap() error}").
+// 메서드 집합을 파라미터 이름 없이 적은 정규 표기다("interface{Unwrap() error}",
+// interfaceParts — 메서드 항목은 methods 사실의 methodEntry와 같은 표기다).
 // types.TypeString은 파라미터 이름과 임베드 형태를 그대로 옮겨, 같은 인터페이스가
 // 표기마다 다른 이름이 되고 upstream의 이름 변경이 문서 diff가 된다.
 // 비공개 메서드는 패키지 경로로 한정한다 — 다른 패키지의 같은 이름은 다른 메서드다.
-// 두 번째 값은 축약한 메서드 항목이 있는지다.
+// 상한은 이름 전체에 건다 — 서명마다 걸면 서명 하나하나가 상한 아래여도 이름이 메서드 수만큼
+// 길어지고, 그 이름이 구현 메서드마다 satisfies로 실려 문서가 메서드 수의 제곱으로 커진다.
+// 두 번째 값은 이름을 축약했는지다.
 func (s *typeSpeller) methodSetName(iface *types.Interface) (string, bool) {
-	methods := make([]string, iface.NumMethods())
-	abbreviated := false
-	for i := range methods {
-		var abbr bool
-		methods[i], abbr = s.methodEntry(iface.Method(i))
-		abbreviated = abbreviated || abbr
-	}
-	return "interface{" + strings.Join(methods, "; ") + "}", abbreviated
+	return s.canonicalType(iface)
 }
 
 // methodEntry는 인터페이스 메서드 하나를 "Name(params) results"로 적는다 — 파라미터

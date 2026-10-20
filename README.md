@@ -450,13 +450,17 @@ previous one twice — nested aliases (`type A1 = struct{ a, b A0 }`,
 `type F1 = func(F0, F0)`) and union constraints
 (`type U1 interface{ U0 | U0 }`) — no longer make gartograph's own spelling
 work, memory, or output grow exponentially: it memoizes each type's spelling
-length, caps a spelling at 64 KiB (see [Graph document](#graph-document)),
-expands each interface term of a union once, and visits each type once when it
-filters anonymous interfaces. Type checking (`go/types`) itself still takes
-time exponential in the depth of some of these chains (union chains, struct
-alias chains, and named struct chains such as `type S1 struct{ a, b S0 }`),
-and a document still grows with the number of declarations, up to 64 KiB per
-entry. Run gartograph on an untrusted repository under an external limit: a
+length, caps each spelling at 64 KiB (a type, a method signature, a whole
+union element, or an anonymous interface's name; see
+[Graph document](#graph-document)), expands each interface term of a union
+once, and visits each type once when it filters anonymous interfaces. Type
+checking (`go/types`) itself still takes time exponential in the depth of some
+of these chains (union chains, struct alias chains, and named struct chains
+such as `type S1 struct{ a, b S0 }`). A document still grows with the number
+of declarations, fields, and methods: each entry holds up to 64 KiB of spelling
+besides its field or method name, and nothing bounds the document as a whole —
+that would need a document-wide spelling budget, which gartograph does not
+have. Run gartograph on an untrusted repository under an external limit: a
 timeout, `ulimit`, or a container.
 
 ## Output contract (for agents)
@@ -551,16 +555,19 @@ with them. Documents without `workspaceModules` — single-module harvests and
 workspace documents saved by earlier versions — are read against `module`
 alone, so re-harvest an old workspace document.
 
-A canonical spelling — one type, or one method signature — is capped at
-64 KiB (65536 bytes). Real code stays far below it (the longest spelling in
-x/tools, pgx, the Kubernetes modules we measured, and this repository is under
-400 bytes), but declarations that each use the previous one twice double a
+A canonical spelling — one type, one method signature, one union element with
+all its terms, or the name of an anonymous interface — is capped at 64 KiB
+(65536 bytes). Real code stays far below it (the longest spelling in x/tools,
+pgx, the Kubernetes modules we measured, and this repository is under 400
+bytes), but declarations that each use the previous one twice double a
 spelling at every level (`type A1 = struct{ a, b A0 }`,
 `type A2 = struct{ a, b A1 }`, …). Past the cap, a `fields`, `methods`,
-`typeSet`, or `satisfies` entry spells that type as its first 256 bytes,
-`…sha256:`, and a hex SHA-256 of the type's structure: equal types still give
-equal entries and different types different ones, so `diff` compares them as
-before. Field names (`name:`) and method names stay in front. A `limitations`
+`typeSet`, or `satisfies` entry spells it as its first 256 bytes, `…sha256:`,
+and a hex SHA-256 of its structure: equal types still give equal entries and
+different types different ones, so `diff` compares them as before. Field names
+(`name:`) and method names stay in front. A union element and an anonymous
+interface's name are abbreviated as a whole once their terms or methods
+together pass the cap, even when each one alone is under it. A `limitations`
 entry counts the entries that carry an abbreviation, and
 `--type-edges members` treats an abbreviated field type as naming any type,
 since the rest may lie past the prefix.

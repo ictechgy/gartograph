@@ -308,10 +308,21 @@ func isUnion(t types.Type) bool {
 // 쓰는 공개 제약의 변경으로 보이게. 여러 원소(교집합)인 인터페이스 항은 유니언 항으로 펼칠
 // 수 없어 이름을 남긴다. 이미 펼친 인터페이스는 다시 펼치지 않는다(expandOnce) — 결과가 정렬·중복
 // 제거된 항 집합이라 같고, `U1 interface{ U0 | U0 }` 같은 사슬이 깊이마다 항을 두 배로 늘리지
-// 않는다(순환 임베드도 여기서 끝난다). 두 번째 값은 축약 표기가 든 항이 있는지다.
+// 않는다(순환 임베드도 여기서 끝난다). 이은 항목에도 상한을 건다 — 항 하나하나가 상한 아래여도 항을
+// 이으면(유니언은 100항까지, 인터페이스 항을 펼치면 더) 상한의 몇 배가 되므로, 서로 다른 항을 이은
+// 길이가 maxSpellingBytes를 넘으면 항목 전체를 축약한다(abbreviateUnion). 두 번째 값은 축약 표기가
+// 들었는지다.
 func (s *typeSpeller) unionEntry(u *types.Union) (string, bool) {
-	var terms []string
-	abbreviated := false
+	terms := s.distinctTerms(flattenUnion(u))
+	if s.unionSize(terms) > maxSpellingBytes {
+		return s.abbreviateUnion(terms), true
+	}
+	return s.joinUnion(terms)
+}
+
+// flattenUnion은 유니언의 항을 인터페이스 항까지 펼친 목록이다(expandOnce — 같은 인터페이스는 한 번).
+func flattenUnion(u *types.Union) []*types.Term {
+	var out []*types.Term
 	expanded := map[*types.Interface]bool{}
 	stack := unionTerms(u)
 	for len(stack) > 0 {
@@ -321,12 +332,23 @@ func (s *typeSpeller) unionEntry(u *types.Union) (string, bool) {
 			stack = append(stack, more...)
 			continue
 		}
-		text, abbr := s.termString(term)
-		terms = append(terms, text)
+		out = append(out, term)
+	}
+	return out
+}
+
+// joinUnion은 상한 아래 유니언의 항 표기를 정렬해 " | "로 잇는다. 두 번째 값은 상한을 넘어 축약한 항이
+// 있는지다.
+func (s *typeSpeller) joinUnion(terms []*types.Term) (string, bool) {
+	texts := make([]string, len(terms))
+	abbreviated := false
+	for i, term := range terms {
+		var abbr bool
+		texts[i], abbr = s.termString(term)
 		abbreviated = abbreviated || abbr
 	}
-	sort.Strings(terms)
-	return strings.Join(slices.Compact(terms), " | "), abbreviated
+	sort.Strings(texts)
+	return strings.Join(slices.Compact(texts), " | "), abbreviated
 }
 
 // expandOnce는 인터페이스 항을 펼친다(expandInterfaceTerm). 이 유니언에서 이미 펼친 인터페이스면
