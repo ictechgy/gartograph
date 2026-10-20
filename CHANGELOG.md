@@ -112,3 +112,16 @@
   싣는다. 형식 버전은 2 그대로다(선택 필드만 더했다). 이 목록이 없는 문서(단일 모듈, 이 판 이전에 저장한
   워크스페이스 문서)는 예전처럼 문서 `module` 하나로 해석하므로, `--graph`로 읽는 옛 워크스페이스 문서는 다시
   수확해야 새 해석을 쓴다.
+- `unused-deps`: 이 플랫폼·빌드 태그로 빌드할 파일이 하나도 없는 디렉터리(예: `_windows.go`만 있는 패키지)를 새
+  limitation `N directories have Go files but none for this platform or build tags, so go list loaded no package
+  from them; …`으로 센다. go list는 그런 디렉터리를 패키지로 내지 않아 그 import를 읽지 못한다 — 거기서만 쓰는
+  require는 지금처럼 `unused`에 남고(판정과 `--strict` 종료 코드는 그대로다), limitation이 그 공백을 알린다.
+  `--goos`·`--goarch`·`--tags`로 그 플랫폼을 수확해 다시 확인한다. 순회는 go list `./...`와 tidy의 규칙을 따른다.
+  `.`·`_`로 시작하는 디렉터리, `testdata`, 하위 모듈, vendor 밑, go.mod `ignore` 지시문이 가리키는 디렉터리는
+  건너뛰고, 디렉터리 심링크는 따라가지 않으며, tidy도 읽지 않는 `//go:build ignore` 파일만 있는 디렉터리는 세지
+  않는다. 범위는 `/...`로 끝나는 패턴(기본 `./...`, `./x/...`, 주 모듈을 덮는 import 경로 `…/...`)과 `all`·`work`다.
+  와일드카드 없는 패턴은 걷지 않는다 — go list가 파일 없는 디렉터리도 오류 패키지로 실어 지금처럼 로드 오류
+  limitation이 센다. 목록을 읽지 못한 디렉터리에서는 그 패턴의 순회를 멈추고(go list도 같은 자리에서 멈춘다)
+  `N directories could not be read, …`로 센다. 그런 디렉터리가 없는 모듈의 출력은 같다(이 저장소, x/tools, pgx,
+  Kubernetes 계열 모듈, fsnotify에서 바이트 단위로 확인했다). golang.org/x/sys는 darwin·linux 수확에서 8개
+  (`plan9`, `windows/...`)를 센다.

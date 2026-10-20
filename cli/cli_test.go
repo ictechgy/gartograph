@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3970,7 +3971,8 @@ replace (
 // TestUnusedDepsExcludedFileLimitationCountsUnseenImports는 제외 파일 limitation이 실제 공백만 세는지
 // 확인한다 — 제외 파일이 std나 이미 로드된 패키지만 import하면 그 패키지의 의존은 이미 셌거나(로드됨)
 // require에 기대지 않는다(std). 대부분 저장소의 OS별 파일이 그렇다 — 알릴 것이 없으면 조용해야 한다.
-// 이 플랫폼 파일이 없어 로드되지 않은 주 모듈 패키지를 import하는 제외 파일은 공백이다.
+// 이 플랫폼 파일이 없어 로드되지 않은 주 모듈 패키지를 import하는 제외 파일은 공백이다. 그 패키지의
+// 디렉터리(winonly)도 이 플랫폼 파일이 없는 디렉터리로 따로 센다 — 두 limitation은 다른 공백이다.
 func TestUnusedDepsExcludedFileLimitationCountsUnseenImports(t *testing.T) {
 	otherOS := "windows"
 	if runtime.GOOS == "windows" {
@@ -3995,8 +3997,9 @@ func TestUnusedDepsExcludedFileLimitationCountsUnseenImports(t *testing.T) {
 	files["winonly/w_"+otherOS+".go"] = "package winonly\n\nfunc W() {}\n"
 	files["svc_"+otherOS+".go"] = "package main\n\nimport \"example.com/fixture/winonly\"\n\nfunc init() { winonly.W() }\n"
 	rep = runUnusedDepsJSON(t, testutil.WriteModule(t, files))
-	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
-		"1 source files excluded by build constraints import packages that were not loaded;") {
+	if len(rep.Limitations) != 2 || !strings.HasPrefix(rep.Limitations[0],
+		"1 source files excluded by build constraints import packages that were not loaded;") ||
+		rep.Limitations[1] != platformGapLimitation(1) {
 		t.Fatalf("an excluded file importing an unloaded module package must be counted: %v", rep.Limitations)
 	}
 }
@@ -4022,6 +4025,49 @@ func TestUnusedDepsLoadErrors(t *testing.T) {
 	code, out, _ := run(t, "unused-deps", "--dir", dir)
 	if code != 0 || !strings.Contains(out, "limitation: 1 packages reported load errors;") {
 		t.Fatalf("text output must show the limitation: %d %s", code, out)
+	}
+}
+
+// platformGapLimitation은 이 플랫폼 파일이 없는 디렉터리 n개를 알리는 unused-deps limitation 문구다.
+func platformGapLimitation(n int) string {
+	return fmt.Sprintf("%d directories have Go files but none for this platform or build tags, so go list "+
+		"loaded no package from them; requires imported only there may be reported as unused "+
+		"(load them with --goos, --goarch, or --tags)", n)
+}
+
+// TestUnusedDepsCountsDirectoriesWithoutPlatformFiles는 이 플랫폼 파일이 없어 go list가 패키지로 내지 않는
+// 디렉터리(다른 OS 전용 svc)를 JSON·텍스트 보고의 limitation으로 싣는지 확인한다. 판정과 종료 코드는 그대로다
+// — 그 디렉터리의 import는 읽지 않으므로 거기서만 쓰는 require는 여전히 unused이고 --strict는 1이다. 그 OS로
+// 수확하면(--goos) 디렉터리가 패키지가 되어 require가 쓰이고 알릴 것이 없다.
+func TestUnusedDepsCountsDirectoriesWithoutPlatformFiles(t *testing.T) {
+	otherOS := "windows"
+	if runtime.GOOS == "windows" {
+		otherOS = "linux"
+	}
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/winreq v0.0.0\n\n" +
+			"replace example.com/winreq => ./winreq\n",
+		"main.go":                    "package main\n\nfunc main() {}\n",
+		"svc/svc_" + otherOS + ".go": "package svc\n\nimport \"example.com/winreq\"\n\nfunc Run() { winreq.Do() }\n",
+		"winreq/go.mod":              "module example.com/winreq\n\ngo 1.27\n",
+		"winreq/winreq.go":           "package winreq\n\nfunc Do() {}\n",
+	})
+	rep := runUnusedDepsJSON(t, dir)
+	if !slices.Equal(rep.Unused, []string{"example.com/winreq"}) ||
+		!slices.Equal(rep.Limitations, []string{platformGapLimitation(1)}) {
+		t.Fatalf("the %s-only directory must be counted and the verdict kept: %+v", otherOS, rep)
+	}
+	code, out, _ := run(t, "unused-deps", "--dir", dir)
+	if code != 0 || !strings.Contains(out, "\nlimitation: "+platformGapLimitation(1)+"\n") {
+		t.Fatalf("text output must show the limitation: %d %s", code, out)
+	}
+	if code, _, _ := run(t, "unused-deps", "--dir", dir, "--strict"); code != 1 {
+		t.Fatalf("the require is still reported unused, strict must exit 1: %d", code)
+	}
+	code, out, errb := run(t, "unused-deps", "--dir", dir, "--goos", otherOS, "--format", "json")
+	if code != 0 || strings.Contains(out, "limitations") ||
+		!strings.Contains(out, `"unused": []`) || !strings.Contains(out, `"usedRequires": 1`) {
+		t.Fatalf("harvested for %s the directory is a package: %d %s %s", otherOS, code, out, errb)
 	}
 }
 

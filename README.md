@@ -122,7 +122,14 @@ gartograph shared example.com/a example.com/b
 # like go mod tidy, imports in files excluded by build constraints (not //go:build ignore)
 # and imports that failed to load count too; limitations count the load errors and the
 # excluded files importing packages this run did not load (std-only files are silent).
-# A package with no file for this platform is not loaded: check it with --goos
+# A directory with no file for this platform or tags (say, a windows-only package) loads
+# no package, so its imports are not read and requires used only there stay in unused:
+# limitations count such directories under patterns ending in /... (./..., ./x/...,
+# module-path/...) and all/work, skipping what go list ./... and tidy skip (testdata, _x,
+# .x, nested modules, vendor subtrees, go.mod ignore) and //go:build ignore-only ones —
+# check them with --goos, --goarch, or --tags. A literal pattern's directory with no file
+# is a load error instead. An unreadable directory stops that pattern's walk (go list
+# stops there too) and is counted
 gartograph unused-deps --strict
 
 # Compare two saved documents: structure drift and breaking signals

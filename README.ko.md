@@ -94,7 +94,15 @@ gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 
                                                #  //go:build ignore 제외 — limitations는 로드 오류와,
                                                #  이번에 로드하지 않은 패키지를 import하는 제외 파일을 셈.
                                                #  std만 쓰는 제외 파일은 조용하다.
-                                               #  이 플랫폼 파일이 없는 패키지는 로드되지 않아 --goos로 확인)
+                                               #  이 플랫폼·태그 파일이 하나도 없는 디렉터리(windows 전용
+                                               #  패키지 등)는 패키지가 되지 않아 import를 읽지 못하고, 거기서만
+                                               #  쓰는 require는 unused에 남는다 — limitations가 그런 디렉터리를
+                                               #  센다. 범위는 /...로 끝나는 패턴(./..., ./x/..., 모듈 경로/...)과
+                                               #  all·work이고, go list ./...·tidy가 건너뛰는 곳(testdata, _x, .x,
+                                               #  하위 모듈, vendor 밑, go.mod ignore)과 //go:build ignore만 있는
+                                               #  곳은 세지 않는다. --goos·--goarch·--tags로 확인. 와일드카드 없는
+                                               #  패턴의 파일 없는 디렉터리는 로드 오류로 센다. 읽지 못한
+                                               #  디렉터리는 그 패턴의 순회를 멈추고(go list도 같다) 센다)
 gartograph diff old.json new.json --strict     # 문서 비교 — breaking 신호에 1
 # (breaking: 공개 심볼 제거·비공개화·kind 변경·시그니처 참조 소실·
 #  인터페이스 메서드 추가·서명 변경(직접·임베드 경유 — 두 문서에 메서드 집합이 있으면
