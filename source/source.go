@@ -190,8 +190,8 @@ func load(opts Options) ([]*packages.Package, error) {
 	return pkgs, nil
 }
 
-// loaderEnv는 go/packages가 띄우는 go 명령의 환경이다. go list를 띄우는 세 호출(load·loadSSA·
-// patternRoots)이 함께 써서 같은 플랫폼·툴체인 규칙으로 돈다.
+// loaderEnv는 go/packages가 띄우는 go 명령의 환경이다. go list를 띄우는 두 호출(load·patternRoots)이 함께 써서
+// 같은 플랫폼·툴체인 규칙으로 돈다 — dead --algo rta의 SSA도 load가 적재한 패키지로 만든다(LoadSession).
 //
 // GOOS/GOARCH 덮어쓰기가 있으면 더한다. GOTOOLCHAIN 환경 변수가 없거나 비었으면(go 명령도 빈 값을
 // 미지정으로 본다) GOTOOLCHAIN=local을 더한다 — 분석 대상(신뢰하지 않는 입력)의 go.mod·go.work에 있는

@@ -383,7 +383,7 @@ func setToolchainEnv(t *testing.T, value string, unset bool) {
 }
 
 // TestHarvestKeepsTheInstalledToolchain은 GOTOOLCHAIN 환경 변수가 없거나 비었을 때, 설치된 Go보다 새 Go를
-// 요구하는 모듈을 읽는 go list 세 호출(load·loadSSA·patternRoots)이 툴체인을 내려받지 않고 원인과 해결 방향을
+// 요구하는 모듈을 읽는 go list 세 호출(Load·LoadSession·patternRoots)이 툴체인을 내려받지 않고 원인과 해결 방향을
 // 담은 오류를 내는지 본다. 분석 대상 go.mod가 호스트에 다른 Go 툴체인을 받아 실행하게 하면 안 된다
 // (DECISIONS gartograph GOTOOLCHAIN).
 func TestHarvestKeepsTheInstalledToolchain(t *testing.T) {
@@ -395,12 +395,12 @@ func TestHarvestKeepsTheInstalledToolchain(t *testing.T) {
 			setToolchainEnv(t, "", tc.unset)
 			dir := tooNewModule(t)
 			_, loadErr := Load(Options{Dir: dir})
-			_, ssaErr := loadSSA(Options{Dir: dir})
+			_, _, sessionErr := LoadSession(Options{Dir: dir})
 			_, patternErr := patternRoots(nil, dir, Options{Patterns: []string{"./..."}})
 			for _, got := range []struct {
 				call string
 				err  error
-			}{{"load", loadErr}, {"loadSSA", ssaErr}, {"patternRoots", patternErr}} {
+			}{{"load", loadErr}, {"LoadSession", sessionErr}, {"patternRoots", patternErr}} {
 				if got.err == nil {
 					t.Fatalf("%s: a module that requires go 1.99.0 must not load", got.call)
 				}
@@ -504,7 +504,8 @@ func loggedGoCalls(t *testing.T, log, name string, run func() error) [][]string 
 	return calls
 }
 
-// goListCalls는 go list를 띄우는 세 호출이다. patternRoots는 routes --pattern의 패턴 해석이다.
+// goListCalls는 go list를 띄우는 세 호출이다. LoadSession은 dead --algo rta의 적재(symbol 수확과 같은 load)이고,
+// patternRoots는 routes --pattern의 패턴 해석이다.
 func goListCalls(dir string) []struct {
 	name string
 	run  func(Options) error
@@ -514,7 +515,7 @@ func goListCalls(dir string) []struct {
 		run  func(Options) error
 	}{
 		{"load", func(o Options) error { _, err := load(o); return err }},
-		{"loadSSA", func(o Options) error { _, err := loadSSA(o); return err }},
+		{"LoadSession", func(o Options) error { _, _, err := LoadSession(o); return err }},
 		{"patternRoots", func(o Options) error {
 			o.Patterns = []string{"./..."}
 			_, err := patternRoots(nil, dir, o)
@@ -552,14 +553,14 @@ func TestGoCallsCarryTheToolchainPolicy(t *testing.T) {
 	}
 }
 
-// TestGoCallsCarryThePlatform은 --goos·--goarch 덮어쓰기가 load와 loadSSA가 띄우는 go 명령마다 그대로 가는지
+// TestGoCallsCarryThePlatform은 --goos·--goarch 덮어쓰기가 load와 LoadSession이 띄우는 go 명령마다 그대로 가는지
 // 본다 — 환경을 GOTOOLCHAIN 규칙과 한 함수로 합친 뒤에도 graph와 dead --algo rta가 같은 플랫폼을 수확해야 한다.
 func TestGoCallsCarryThePlatform(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{"main.go": "package main\n\nfunc main() {}\n"})
 	log := fakeGoLog(t)
 	setToolchainEnv(t, "", true)
 	opts := Options{Dir: dir, GOOS: "linux", GOARCH: "arm64"}
-	// load·loadSSA만 본다 — routes에는 --goos·--goarch가 없어 patternRoots의 플랫폼은 계약이 아니다.
+	// load·LoadSession만 본다 — routes에는 --goos·--goarch가 없어 patternRoots의 플랫폼은 계약이 아니다.
 	for _, call := range goListCalls(dir)[:2] {
 		run := func() error { return call.run(opts) }
 		for _, got := range loggedGoCalls(t, log, call.name, run) {

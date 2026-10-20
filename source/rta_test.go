@@ -1,6 +1,8 @@
 package source
 
 import (
+	"bytes"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -18,7 +20,10 @@ func TestRTARootsEverySyntheticInit(t *testing.T) {
 		"main.go": "package main\n\nimport _ \"example.com/fixture/r\"\n\nfunc main() {}\n",
 		"r/r.go":  "package r\n\nvar X = rreg()\n\nfunc rreg() int { return 1 }\n",
 	})
-	doc := loadSymbol(t, dir)
+	doc, session, err := LoadSession(Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
 	const blank, target = "example.com/fixture/r._", "example.com/fixture/r.rreg"
 	doc.Vertices = slices.DeleteFunc(doc.Vertices, func(v graph.Vertex) bool { return v.ID == blank })
 	roots := map[string]bool{}
@@ -27,20 +32,47 @@ func TestRTARootsEverySyntheticInit(t *testing.T) {
 			roots[r] = true
 		}
 	}
-	opts := Options{Dir: dir, Level: graph.LevelSymbol}
-	reach, err := RTAReachable(opts, doc, roots)
+	reach, err := session.RTAReachable(doc, roots)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reach[target] {
 		t.Fatal("rta must root every synthetic init, not only packages with an init-root vertex")
 	}
-	adj, _, err := RTAAdjacency(opts, doc, roots)
+	adj, _, err := session.RTAAdjacency(doc, roots)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(adj["example.com/fixture/r"+PackageInitSuffix], target) {
 		t.Fatalf("synthetic init without an init root must appear as pkg#init, adj=%v", adj)
+	}
+}
+
+// TestLoadSessionDocumentIsTheSymbolHarvest는 LoadSession의 문서가 같은 디렉터리의 symbol Load와 바이트가 같은지
+// 본다 — dead --algo rta가 RTA에 쓸 적재로 문서도 만들지만, 그 문서(정점 ID·루트·limitation)는 CHA dead가 보는
+// 것과 같아야 한다. opts.Level은 쓰지 않는다: package를 줘도 RTA가 답하는 함수·메서드 정점이 있는 symbol 문서다.
+func TestLoadSessionDocumentIsTheSymbolHarvest(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport \"example.com/fixture/r\"\n\nfunc init() { r.Touch() }\n\nfunc main() { _ = r.Map(1, r.Double) }\n",
+		"r/r.go": "package r\n\nimport \"fmt\"\n\nvar _ = register()\n\nfunc register() int { return 1 }\n\n" +
+			"func Touch() {}\n\nfunc Double(x int) int { return 2 * x }\n\n" +
+			"func Map[T any](x T, f func(T) T) T { return f(x) }\n\n" +
+			"type Name string\n\n//gartograph:keep\nfunc (n Name) String() string { return fmt.Sprint(string(n)) }\n",
+	})
+	want, err := json.Marshal(loadSymbol(t, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, _, err := LoadSession(Options{Dir: dir, Level: graph.LevelPackage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("the session document must be the symbol harvest\n got: %s\nwant: %s", got, want)
 	}
 }
 
@@ -61,12 +93,16 @@ func TestRTAWithoutWellTypedPackages(t *testing.T) {
 		"ill-typed":       {Dir: dir, Level: graph.LevelSymbol},
 		"pattern-nothing": {Dir: dir, Level: graph.LevelSymbol, Patterns: []string{"./nothing/..."}},
 	} {
+		_, session, err := LoadSession(opts)
+		if err != nil {
+			t.Fatalf("%s: the load itself must succeed: %v", name, err)
+		}
 		reachErr := callWithoutPanic(t, name+" RTAReachable", func() error {
-			_, err := RTAReachable(opts, doc, roots)
+			_, err := session.RTAReachable(doc, roots)
 			return err
 		})
 		adjErr := callWithoutPanic(t, name+" RTAAdjacency", func() error {
-			_, _, err := RTAAdjacency(opts, doc, roots)
+			_, _, err := session.RTAAdjacency(doc, roots)
 			return err
 		})
 		for _, err := range []error{reachErr, adjErr} {

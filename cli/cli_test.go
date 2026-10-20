@@ -3144,6 +3144,92 @@ func runRecovered(t *testing.T, args ...string) (int, string, string) {
 	return run(t, args...)
 }
 
+// TestDeadRTALoadsTheProgramOnce는 dead --algo rta(--explain 포함)가 문서를 수확한 적재 결과로 SSA를 만들어, CHA
+// dead와 같은 수의 go 명령만 띄우는지 본다. 예전에는 RTA가 같은 패턴·태그·환경으로 packages.Load를 한 번 더 불러
+// 같은 프로그램을 두 번 파싱·타입체크했다(수확에서 가장 비싼 단계). 한 번의 packages.Load는 같은 적재 모드면 같은
+// 수의 go 명령(버전·크기 조회와 패키지 목록)을 띄우므로, 그 수로 적재 횟수를 센다.
+func TestDeadRTALoadsTheProgramOnce(t *testing.T) {
+	dir := deadFixture(t)
+	log := goCommandLog(t)
+	cha := goCommandsDuring(t, log, "dead", "--dir", dir)
+	for _, args := range [][]string{
+		{"dead", "--dir", dir, "--algo", "rta"},
+		{"dead", "--dir", dir, "--algo", "rta", "--explain", "example.com/fixture/lib.helper"},
+	} {
+		if got := goCommandsDuring(t, log, args...); got != cha {
+			t.Errorf("%v started %d go commands, the CHA harvest alone %d: rta must build SSA from the harvest's load",
+				args[3:], got, cha)
+		}
+	}
+}
+
+// goCommandLog는 PATH 맨 앞에 진짜 go로 넘겨주는 가짜 go를 두고, go 명령을 띄울 때마다 그 인자를 한 줄로 남길
+// 로그 경로를 돌려준다 — 패키지 적재 횟수를 수확 결과가 아니라 실제로 띄운 프로세스로 센다.
+func goCommandLog(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go is a POSIX shell script")
+	}
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("the go command is not on PATH: %v", err)
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GARTOGRAPH_TEST_GO_LOG\"\nexec \"$GARTOGRAPH_TEST_REAL_GO\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GARTOGRAPH_TEST_GO_LOG", log)
+	t.Setenv("GARTOGRAPH_TEST_REAL_GO", realGo)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// goCommandsDuring은 로그를 비우고 CLI를 args로 실행한 뒤 그동안 띄운 go 명령 수를 돌려준다. 실행이 실패했거나
+// go를 한 번도 띄우지 않았으면 테스트 실패다 — 빈 로그는 아무것도 검증하지 않는다.
+func goCommandsDuring(t *testing.T, log string, args ...string) int {
+	t.Helper()
+	if err := os.WriteFile(log, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errb := run(t, args...); code != 0 {
+		t.Fatalf("%v: exit %d %s", args, code, errb)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Count(string(data), "\n")
+	if calls == 0 {
+		t.Fatalf("%v started no go command through PATH", args)
+	}
+	return calls
+}
+
+// TestDeadHonorsConfigExcludeForBothAlgorithms는 dead가 --algo rta에서도 .gartograph.yml의 exclude로 수확하는지
+// 본다. rta는 RTA 세션을 함께 얻느라 수확 경로가 CHA와 따로다(loadDeadDoc) — 범위가 갈리면 같은 저장소가
+// 알고리즘에 따라 다른 그래프가 된다. 제외된 패키지는 정점이 없어 그 심볼이 보고되지 않고, 제외 사실은 limitation이다.
+func TestDeadHonorsConfigExcludeForBothAlgorithms(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		".gartograph.yml": "components: {gen: [gen]}\nexclude: [gen, gen/**]\n",
+		"main.go":         "package main\n\nimport _ \"example.com/fixture/gen\"\n\nfunc main() {}\n",
+		"gen/gen.go":      "package gen\n\nfunc Unused() {}\n",
+	})
+	for _, algo := range []string{"cha", "rta"} {
+		code, out, errb := run(t, "dead", "--dir", dir, "--algo", algo, "--format", "json")
+		if code != 0 {
+			t.Fatalf("dead --algo %s failed: %d %s", algo, code, errb)
+		}
+		if strings.Contains(out, "gen.Unused") {
+			t.Errorf("--algo %s: a symbol of an excluded package must not be reported: %s", algo, out)
+		}
+		if !strings.Contains(out, "matched exclude patterns") {
+			t.Errorf("--algo %s: the exclusion must be a limitation: %s", algo, out)
+		}
+	}
+}
+
 // TestExcludeConfig는 .gartograph.yml의 exclude가 수확에서 패키지를
 // 빼는지 확인한다 — 설정과 수확이 같은 해석을 써야 한다.
 func TestExcludeConfig(t *testing.T) {

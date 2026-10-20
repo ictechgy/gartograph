@@ -212,6 +212,20 @@ func loadDoc(opts *source.Options, graphPath string) (*graph.Document, error) {
 	return source.Load(*opts)
 }
 
+// loadDeadDoc은 dead의 loadDoc이다. --algo rta면 문서와 함께 RTA 세션을 한 번의 적재로 얻는다 — 문서를 수확한
+// 적재 결과로 SSA를 만들어야 같은 프로그램을 두 번 파싱·타입체크하지 않는다. 수확 범위(.gartograph.yml exclude)는
+// loadDoc의 수확 경로와 같다. rta는 저장 문서(--graph)로 돌 수 없어 cmdDead가 먼저 거부한다. cha면 세션은 nil이다.
+func loadDeadDoc(opts *source.Options, graphPath, algo string) (*graph.Document, *source.Session, error) {
+	if algo != "rta" {
+		doc, err := loadDoc(opts, graphPath)
+		return doc, nil, err
+	}
+	if err := applyConfigExclude(opts); err != nil {
+		return nil, nil, err
+	}
+	return source.LoadSession(*opts)
+}
+
 // loadDocWithRules는 규칙 파일을 쓰는 명령(rules·metrics·mapping·mcp)의 loadDoc이다. 수확 exclude는 그 명령이
 // 쓰는 규칙 파일 cfg에서만 온다 — --config FILE을 줬으면 그 파일, 아니면 --dir의 .gartograph.yml이다.
 // --config를 줘도 .gartograph.yml에서 exclude를 읽던 때는 한 실행이 두 설정을 섞었다. .gartograph.yml이 뺀
@@ -627,7 +641,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	opts.Level = graph.LevelSymbol
-	doc, err := loadDoc(opts, *graphPath)
+	doc, session, err := loadDeadDoc(opts, *graphPath, *algo)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -637,7 +651,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 	roots, unknown := analysis.RetentionRoots(doc, *retainPublic, extraRoots)
 
 	if *explain != "" {
-		return explainDead(doc, *explain, roots, *algo, *opts, stdout, stderr)
+		return explainDead(doc, *explain, roots, *algo, session, stdout, stderr)
 	}
 
 	reachable := analysis.Reachable(doc, roots)
@@ -647,7 +661,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		for _, r := range roots {
 			rootSet[r] = true
 		}
-		rtaSet, err := source.RTAReachable(*opts, doc, rootSet)
+		rtaSet, err := session.RTAReachable(doc, rootSet)
 		if err != nil {
 			return fail(stderr, err)
 		}
@@ -827,14 +841,15 @@ func hasSatisfies(doc *graph.Document) bool {
 // explainDead는 한 정점이 왜 살아 있는지(또는 왜 못 찾았는지) 보여준다.
 // --algo rta면 RTA 호출 그래프 위에서 설명한다 — CHA 수확 그래프의 경로를
 // 보여주면 "RTA가 왜 죽였다/살렸다"의 답이 아니라 다른 알고리즘의 말이 된다.
+// session은 rta일 때 문서를 수확한 적재 결과다(loadDeadDoc). cha면 nil이다.
 func explainDead(doc *graph.Document, id string, roots []string, algo string,
-	opts source.Options, stdout, stderr io.Writer) int {
+	session *source.Session, stdout, stderr io.Writer) int {
 	if algo == "rta" {
 		rootSet := make(map[string]bool, len(roots))
 		for _, r := range roots {
 			rootSet[r] = true
 		}
-		adj, rtaReach, err := source.RTAAdjacency(opts, doc, rootSet)
+		adj, rtaReach, err := session.RTAAdjacency(doc, rootSet)
 		if err != nil {
 			return fail(stderr, err)
 		}
