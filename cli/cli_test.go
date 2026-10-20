@@ -844,6 +844,85 @@ func TestGitTreatsFilteredFilesAsChanged(t *testing.T) {
 	}
 }
 
+// removeLooseObject는 저장소의 loose 객체 하나를 지운다 — 부분 clone처럼 객체가 빠진 저장소를 만든다.
+// 커밋 직후의 객체는 loose다(pack이 아니면 테스트를 끝낸다).
+func removeLooseObject(t *testing.T, dir, oid string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(dir, ".git", "objects", oid[:2], oid[2:])); err != nil {
+		t.Fatalf("fixture: object %s must be loose: %v", oid, err)
+	}
+}
+
+// TestGitCallsDoNotFetchMissingObjects는 분석 대상 저장소가 promisor remote(부분 clone의 설정)를 두고 객체가
+// 빠져 있어도 분석용 git이 그 객체를 받으려고 fetch를 띄우지 않는지 본다(DECISIONS D1). 받으려 하면 git은
+// 그 remote의 uploadpack 명령(분석 대상 설정)을 실행한다 — 수정 전에는 impact --since의 diff와 순회 revision
+// 판독의 status가 그 명령을 실행했다. 객체가 없으니 impact --since는 부분 clone 안내와 --files를 담아 종료
+// 2로 끝나고, 순회는 status가 실패해 revision을 싣지 않는다.
+func TestGitCallsDoNotFetchMissingObjects(t *testing.T) {
+	cases := []struct {
+		name, missing string
+		args          []string
+	}{
+		{"impact --since", "HEAD~1^{tree}", []string{"impact", "--since", "HEAD~1"}},
+		{"reach", "HEAD^{tree}", []string{"reach", fx + ".main"}},
+		{"impact language-traversal", "HEAD^{tree}", []string{"impact", "--format", "language-traversal", fx + ".handleUsers"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := traversalFixture(t)
+			git := commitFixture(t, dir, nil)
+			mainGo := filepath.Join(dir, "main.go")
+			src, err := os.ReadFile(mainGo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeTestFile(t, mainGo, string(src)+"\n// second\n", 0)
+			git("commit", "-qam", "second")
+			markers := t.TempDir()
+			git("config", "remote.origin.url", t.TempDir())
+			git("config", "remote.origin.promisor", "true")
+			git("config", "remote.origin.uploadpack",
+				markerCommand(t, filepath.Join(markers, "upload-pack.sh"), markers, "fetch", "exit 1"))
+			removeLooseObject(t, dir, git("rev-parse", c.missing))
+
+			code, out, errb := run(t, append(c.args, "--dir", dir)...)
+			assertNoRepositoryCommandRan(t, markers, c.name)
+			if c.missing == "HEAD~1^{tree}" {
+				if code != 2 || out != "" || !strings.Contains(errb, "partial clone") || !strings.Contains(errb, "--files") {
+					t.Fatalf("a missing base tree must stop impact --since with the partial clone hint: %d %q %q",
+						code, out, errb)
+				}
+				return
+			}
+			if doc := parseTraversal(t, out); code != 0 || doc.Revision != nil {
+				t.Fatalf("%v: a missing HEAD tree must leave the revision out: %d %s %s", c.args, code, out, errb)
+			}
+		})
+	}
+}
+
+// TestGitProcessBlocksFetching은 분석용 git 프로세스의 실효 환경이 fetch를 막는지 본다 — 빠진 객체를 받는
+// fetch를 끄고(GIT_NO_LAZY_FETCH, git 2.44+) 허용 전송 목록을 비운다(GIT_ALLOW_PROTOCOL, 2.44 미만 git의
+// 방어). 실행 환경이 다른 값을 줘도 덮는다. 두 변수는 서로를 대신하는 방어라 행동 테스트(git 하나로 돈다)만으로는
+// 하나가 빠져도 드러나지 않아 환경을 직접 고정한다.
+func TestGitProcessBlocksFetching(t *testing.T) {
+	t.Setenv("GIT_NO_LAZY_FETCH", "0")
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file:ssh:ext")
+	env := gitProcess([]string{"status"}).Environ()
+	for _, want := range []string{"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL="} {
+		key, _, _ := strings.Cut(want, "=")
+		var got []string
+		for _, kv := range env {
+			if strings.HasPrefix(kv, key+"=") {
+				got = append(got, kv)
+			}
+		}
+		if !slices.Equal(got, []string{want}) {
+			t.Errorf("the git environment must set exactly %q, got %q", want, got)
+		}
+	}
+}
+
 // TestChangedFilesSinceExplainsUsageErrors는 git diff가 인자를 사용법 오류(종료 코드 129)로 거부하면
 // 원인과 해결 방향을 담은 한 줄 오류를 내는지 본다. git 2.24보다 오래된 git은 --end-of-options를 모르는
 // 옵션으로 보고 수십 줄 사용법만 찍는다 — 그대로 옮기면 왜 실패했는지 보이지 않는다. 그런 git을

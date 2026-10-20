@@ -10,8 +10,10 @@
   설정이 정한 명령을 더는 실행하지 않는다. git 호출마다 바로 앞에서 설정된 filter 드라이버(clean·smudge·process)를
   모아 빈 명령으로 덮고, fsmonitor 훅·외부 diff·textconv·서명 표시를 끄며, `git diff`가 index를 갱신하지 않게
   한다(index를 쓰면서 `post-index-change` 훅이 돌았다). 서브모듈 안에서는 git을 띄우지 않아 서브모듈 저장소의
-  설정도 실행하지 않는다. 드라이버를 모으지 못하거나 이름에 `=`·제어 문자가 있어 덮을 수 없으면 git을 실행하지
-  않는다. 자세한 내용은 README의 Security 절에 있다.
+  설정도 실행하지 않는다. 부분 clone(promisor remote)에서 빠진 객체를 받으려는 `git fetch`도 띄우지 않는다
+  (`GIT_NO_LAZY_FETCH=1`, 빈 `GIT_ALLOW_PROTOCOL`) — 그 fetch가 분석 대상 설정의 전송 명령
+  (`remote.<이름>.uploadpack`, `core.sshCommand` 등)을 실행했다. 드라이버를 모으지 못하거나 이름에 `=`·제어
+  문자가 있어 덮을 수 없으면 git을 실행하지 않는다. 자세한 내용은 README의 Security 절에 있다.
 - `graph --level type|symbol`과 그 수확을 쓰는 명령(`dead`, `query`, `impact`, `reach`, `metrics`, `schema`,
   `routes`, MCP 등): 앞 선언을 두 번 쓰는 중첩 타입 별칭(`type A1 = struct{ a, b A0 }`, `type F1 = func(F0, F0)`)과
   유니언 제약(`type U1 interface{ U0 | U0 }`)이 정규 타입 표기를 깊이마다 두 배로 키워 메모리와 출력이 지수적으로
@@ -41,6 +43,12 @@
   깨끗하다고 보지 않아 `revision`을 싣지 않는다(fail-safe). 서브모듈이 있는 작업 트리와 덮을 수 없는 filter
   드라이버 이름이 있는 저장소는 `revision`을 싣지 않고, `revision-unverified:` limitation으로 이유를 알린다.
   `revision`이 필요하면 `--revision`으로 준다.
+- `impact --since`·`reach`·`impact --format language-traversal`(부분 clone): git이 clone에 없는 객체를 더는
+  받아 오지 않는다. `--since` revision의 트리가 로컬에 없으면(treeless clone, `--filter=tree:0`)
+  `impact --since`는 git 오류와 부분 clone 안내(`--files` 포함)를 담아 종료 코드 2로 끝나고, `HEAD` 트리가
+  없으면 순회 문서는 `revision`을 싣지 않는다. 예전에는 git이 빠진 트리를 promisor remote에서 받아 와 성공했다.
+  blobless clone(`--filter=blob:none`)은 트리를 모두 가지고 있어 출력이 같다. 신뢰하는 checkout이면 같은
+  `git diff`를 한 번 직접 실행해 받아 두거나 `--files`를 쓴다.
 - `schema`: SQL 리터럴의 관계 판독이 계열 생산자 공통 규칙(isthmus GRAPH-EXCHANGE)을 따른다. 같은 문장의 CTE
   이름, 함수 인자 안의 `FROM`(`EXTRACT`·`TRIM`·`SUBSTRING` 등), `IS [NOT] DISTINCT FROM`의 피연산자를
   relation-use로 내지 않는다 — isthmus가 이 이름들을 선언과 잇지 못해 완전한 카탈로그와 맞추면 거짓

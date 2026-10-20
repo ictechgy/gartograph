@@ -85,8 +85,9 @@ gartograph impact <정점ID> --depth 2           # 역방향 전이 — 바꾸�
 gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분석
                                               # (git 2.24 이상. --files cli/cli.go도 가능. '-'로 시작하거나
                                               #  제어 문자가 든 값은 사용법 오류. git은 저장소의 filter 드라이버·
-                                              #  fsmonitor 훅·diff 드라이버·index 갱신 없이 돌고 서브모듈 안으로
-                                              #  들어가지 않는다 — 보안 절. 시각이 바뀐 파일은 바뀐 파일로 센다)
+                                              #  fsmonitor 훅·diff 드라이버·index 갱신·객체 받기 없이 돌고
+                                              #  서브모듈 안으로 들어가지 않는다 — 보안 절. 시각이 바뀐 파일은
+                                              #  바뀐 파일로 센다)
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
 gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트별 고유분
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
@@ -318,6 +319,11 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
 - 서브모듈 안에서는 git을 띄우지 않습니다. `git diff`에는 `--ignore-submodules=dirty`를
   주고, index에 서브모듈이 있으면 `git status`를 아예 실행하지 않습니다(없으면
   `--ignore-submodules=all`).
+- git이 아무것도 받아 오지 못하게 합니다(`GIT_NO_LAZY_FETCH=1`, 빈 `GIT_ALLOW_PROTOCOL`).
+  부분 clone에서 호출에 필요한 객체가 없으면 git은 그 객체를 받으려고 `git fetch`를 띄우고,
+  그 fetch는 저장소 설정의 전송 명령(`remote.<이름>.uploadpack`, `core.sshCommand`, 자격 증명
+  도우미)을 실행합니다. 빈 프로토콜 목록은 `GIT_NO_LAZY_FETCH`를 모르는 2.44 미만 git에서도
+  모든 전송을 막습니다.
 - 드라이버를 모으지 못하거나 이름에 `=`·제어 문자가 든 드라이버가 있으면(git의 `-c`는
   첫 `=`에서 나누므로 그 드라이버를 덮을 수 없습니다) 다른 git 명령을 실행하지 않습니다.
   `impact --since`는 원인과 `--files` 안내를 담아 종료 코드 2로 끝나고, 순회 문서는
@@ -335,6 +341,12 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
   내지만, 서브모듈 안의 커밋하지 않은 변경은 내지 않습니다. 서브모듈이 있는 작업 트리는
   `revision`을 자동으로 싣지 않고 `revision-unverified:` 한계로 알립니다 — 필요하면
   `--revision`으로 줍니다.
+- 부분 clone: clone에 없는 객체가 필요한 호출은 객체를 받지 않고 실패합니다. `--since`
+  revision의 트리가 로컬에 없으면(treeless clone, `--filter=tree:0`) `impact --since`는 git의
+  오류와 부분 clone 안내를 담아 종료 코드 2로 끝나고, `HEAD`의 트리가 없으면 순회 문서는
+  `revision`을 싣지 않습니다. blobless clone(`--filter=blob:none`)은 트리를 모두 가지고 있어
+  예전처럼 동작합니다. 신뢰하는 checkout이면 같은 `git diff`를 한 번 직접 실행해 빠진 객체를
+  받아 두거나 `--files`를 씁니다.
 
 나머지 git 설정은 평소대로 적용됩니다. `--files`는 git을 쓰지 않습니다.
 

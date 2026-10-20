@@ -515,7 +515,7 @@ var errFilterDriverName = errors.New("the git configuration defines a filter dri
 //     빈 명령으로, required를 false로 덮는다. 빈 명령은 git이 실행하지 않는다. --attr-source는
 //     .git/info/attributes를 막지 못해 쓰지 않는다.
 //   - fsmonitor 훅·untracked cache·서명 확인 표시를 끈다(gitBaseArgs). 선택 잠금을 꺼 index를 고치지
-//     않는다(gitProcess).
+//     않고, 빠진 객체를 받으려는 fetch를 막는다(gitProcess).
 //
 // 드라이버를 모을 수 없거나 -c로 덮을 수 없는 이름이 있으면 명령을 만들지 않고 오류를 돌린다
 // (fail-closed). 모든 git 호출(runGit·changedFilesSince)이 이 함수를 지난다 — 호출마다 따로 쓰면
@@ -538,12 +538,27 @@ func gitBaseArgs(dir string) []string {
 }
 
 // gitProcess는 인자 그대로 git 프로세스를 만든다. 선택 잠금을 꺼 index를 고치지 않고(isthmus
-// capture와 같은 설정), 프롬프트를 막고, 메시지를 C 로캘로 고정한다.
+// capture와 같은 설정), 프롬프트를 막고, 메시지를 C 로캘로 고정한다. 아무것도 받아 오지 않게도 한다
+// (gitFetchBlockers) — 분석용 질의는 로컬 객체만 읽으면 된다.
 func gitProcess(args []string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = append(append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"),
+		gitFetchBlockers...)
 	return cmd
 }
+
+// gitFetchBlockers는 git이 빠진 객체를 받으려고 fetch를 띄우지 못하게 하는 환경 변수다(DECISIONS D1).
+// 부분 clone처럼 promisor remote(remote.<이름>.promisor)를 둔 저장소에서 diff·status가 읽을 객체가
+// 없으면 git은 자식 git fetch로 그 객체를 받는다. 그 fetch는 분석 대상 설정의 전송 명령
+// (remote.<이름>.uploadpack, core.sshCommand, 자격 증명 도우미 등)을 실행한다.
+//   - GIT_NO_LAZY_FETCH=1: 그 fetch 자체를 띄우지 않는다(git 2.44 이상).
+//   - 빈 GIT_ALLOW_PROTOCOL: 허용 전송 목록을 비워 어떤 전송도 시작하지 못하게 한다. 환경 변수라
+//     저장소의 protocol.*.allow 설정보다 우선하고, 2.44 미만 git(GIT_NO_LAZY_FETCH를 모른다)에서도
+//     fetch가 명령을 띄우기 전에 실패한다.
+//
+// 그래서 빠진 객체가 필요한 질의는 실패한다 — impact --since는 오류로 끝나고(partialCloneHint),
+// revision은 생략된다(fail-closed).
+var gitFetchBlockers = []string{"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL="}
 
 // filterDriverNames는 dir에서 git이 읽는 설정 전체(시스템·사용자·저장소·worktree·include·환경 변수)에
 // 정의된 filter 드라이버 이름을 모은다. git config의 종료 1(출력 없음)은 "일치 없음"이다. 그 밖의

@@ -108,8 +108,9 @@ gartograph impact github.com/ictechgy/gartograph/graph --depth 2
 # Diff-aware impact: what breaks given the files changed since a revision
 # (needs git 2.24+; a value that starts with '-' or holds control characters
 # is a usage error). git runs without the repository's filter drivers,
-# fsmonitor hook, diff drivers, and index refresh, and stays out of submodules
-# (see Security); a file whose timestamps changed counts as changed.
+# fsmonitor hook, diff drivers, index refresh, and object fetching, and stays
+# out of submodules (see Security); a file whose timestamps changed counts as
+# changed.
 gartograph impact --since origin/main...HEAD          # or --files cli/cli.go
 
 # Shortest dependency path: why does 'from' reach 'to'
@@ -386,6 +387,12 @@ from running commands:
 - It never starts git inside a submodule: `git diff` gets
   `--ignore-submodules=dirty`, and `git status` does not run at all when the
   index has a submodule (`--ignore-submodules=all` otherwise).
+- It lets git fetch nothing (`GIT_NO_LAZY_FETCH=1` and an empty
+  `GIT_ALLOW_PROTOCOL`). In a partial clone, git otherwise starts `git fetch`
+  for an object a call needs but the clone lacks, and that fetch runs the
+  transport commands the repository configures (`remote.<name>.uploadpack`,
+  `core.sshCommand`, credential helpers). The empty protocol list stops every
+  transport, also on git older than 2.44, which ignores `GIT_NO_LAZY_FETCH`.
 - When the drivers cannot be listed, or a driver name contains `=` or a control
   character (git's `-c` splits at the first `=`, so such a driver cannot be
   overridden), no other git command runs: `impact --since` exits 2 with the
@@ -405,6 +412,13 @@ What this changes:
   other than the recorded one, but not uncommitted changes inside it. A work
   tree with submodules gets no automatic `revision` and a
   `revision-unverified:` limitation; pass `--revision` to record one.
+- Partial clones: a call that needs an object the clone lacks fails instead of
+  fetching it. When the trees of the `--since` revision are not local (a
+  treeless clone, `--filter=tree:0`), `impact --since` exits 2 with git's error
+  and a partial-clone hint; when `HEAD`'s tree is missing, a traversal document
+  records no `revision`. A blobless clone (`--filter=blob:none`) keeps every
+  tree and works as before. In a checkout you trust, run the same `git diff`
+  once to fetch what is missing, or pass `--files`.
 
 The rest of the git configuration applies as usual, and `--files` needs no git
 at all.
