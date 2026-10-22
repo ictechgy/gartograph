@@ -2,6 +2,14 @@
 
 세션 이어받기용 상태 파일. 지금 어디까지 왔고 다음이 무엇인지만 적는다.
 
+## 릴리스 준비 — v0.10.0 (2026-10-22 UTC)
+
+- PR #50은 Git base/head 또는 작업 트리의 독립 소스 캡처와 이전/현재 영향 후보를 CLI/MCP에 연결한다. 내용 fingerprint, 파일 seed, 과거 삭제/rename 호출자, 검토 경로와 연결된 테스트 후보를 보존한다.
+- `cli.Version`은 0.10.0이다. 기존 snapshot 명령 및 graph/language-traversal 문서는 호환하며, 깊이·출력 제한과 freshness는 추가 필드로 드러낸다. README의 Patch impact and migration 절에 준비 범위·한계가 있다.
+- 전체 Windows 테스트 및 91.9% coverage, build/vet/자기 분석은 최초 구현에서 통과했다. 후속 mode-only·캡처 경계·상위 설정 변경 회귀도 통과했다. 최종 head CI와 독립 리뷰를 확인한 뒤 머지한다.
+- 머지된 커밋에 새 `v0.10.0` 태그를 발행하면 기존 Release workflow가 다섯 플랫폼 바이너리·체크섬을 만든다. 기존 태그는 덮어쓰지 않는다. 배포 완료 판정에는 공개 asset 및 깨끗한 Windows 설치본의 대표 patch/MCP 흐름 검증이 필요하다.
+- Homebrew tap은 기존 `HOMEBREW_TAP_TOKEN` 설정 여부에 따라 자동 갱신을 건너뛸 수 있다. 인증정보 생성이나 권한 확장은 승인 범위가 아니다.
+
 ## 릴리스 준비 — v0.9.2 (2026-10-11 UTC, release/v0.9.2)
 
 - main `3a676b2`의 PR #40: 그래프·baseline·bridge/schema/route 산출물 저장을 고유 임시 파일과 교체로 통합했다.
