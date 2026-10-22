@@ -61,6 +61,11 @@ func runChangeImpact(opts source.Options, base, head string, depth, maxEntries i
 	if base == "" {
 		return nil, fmt.Errorf("patch impact needs a base revision")
 	}
+	for _, pattern := range opts.Patterns {
+		if (pattern != "." && !strings.HasPrefix(pattern, "./")) || !filepath.IsLocal(filepath.FromSlash(pattern)) {
+			return nil, fmt.Errorf("patch patterns must be repository-relative within --dir (such as . or ./...); absolute paths, file= queries and external package patterns cannot prove captured input")
+		}
+	}
 	start := time.Now()
 	repo, err := runGit(opts.Dir, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -132,6 +137,7 @@ func runChangeImpact(opts source.Options, base, head string, depth, maxEntries i
 			"content hashes cover captured repository files, not the Go toolchain, environment, module cache or remote dependencies",
 			"working-tree capture includes tracked and non-ignored untracked regular files; ignored/generated files and submodules are not reconstructed",
 			"rename is represented as old-path removal and new-path addition; file seeds are conservative, not changed-line precision",
+			"changed paths outside --dir remain relative to that directory (including ../); unmapped module, workspace and configuration inputs require review",
 			"HTTP and DB data contracts, runtime configuration and callback registration are not fully assessed; no candidates does not mean safe",
 		}}, nil
 }
@@ -353,7 +359,7 @@ func changedCaptureFiles(before, after map[string][]byte, subdir string, gitFile
 			continue
 		}
 		relative, err := filepath.Rel(subdir, filepath.FromSlash(name))
-		if err != nil || !filepath.IsLocal(relative) {
+		if err != nil {
 			continue
 		}
 		if oldOK {

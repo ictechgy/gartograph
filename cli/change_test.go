@@ -187,3 +187,40 @@ func TestChangeImpactModeOnlyGitPatch(t *testing.T) {
 		t.Fatalf("mode-only patch lost: %+v", report)
 	}
 }
+
+func TestChangeCaptureRejectsNonLocalPatterns(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"value.go": "package fixture\nfunc Value() {}\n"})
+	changeGit(t, dir, "init")
+	changeGit(t, dir, "add", ".")
+	changeGit(t, dir, "commit", "-m", "before")
+	for _, pattern := range []string{filepath.Join(dir, "value.go"), "file=" + filepath.Join(dir, "value.go"), "../...", "./../../...", "example.org/external/..."} {
+		_, err := runChangeImpact(source.Options{Dir: dir, Patterns: []string{pattern}}, "HEAD", "HEAD", 1, 5)
+		if err == nil || !strings.Contains(err.Error(), "repository-relative") {
+			t.Errorf("pattern %q escaped capture validation: %v", pattern, err)
+		}
+	}
+}
+
+func TestChangeImpactSubdirectoryRetainsAncestorModuleChange(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"pkg/value.go": "package pkg\nfunc Value() {}\n"})
+	changeGit(t, dir, "init")
+	changeGit(t, dir, "add", ".")
+	changeGit(t, dir, "commit", "-m", "before")
+	file := filepath.Join(dir, "go.mod")
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, append(data, []byte("\n// module configuration edit\n")...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := runChangeImpact(source.Options{Dir: filepath.Join(dir, "pkg"), Patterns: []string{"."}}, "HEAD", "", 1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, side := range []changeSnapshot{report.Before, report.After} {
+		if len(side.Files) != 1 || side.Files[0] != "../go.mod" || len(side.UnmappedFiles) != 1 || side.UnmappedFiles[0] != "../go.mod" {
+			t.Fatalf("ancestor module change disappeared from subdirectory scope: %+v", side)
+		}
+	}
+}

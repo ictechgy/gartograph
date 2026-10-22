@@ -52,6 +52,11 @@ There is no harvest time or memory budget. Symlinks, submodules, external local
 module replacements and `GOFLAGS` overlays/modfiles require explicit source
 preparation and produce an error. Ignored/generated files are not reconstructed;
 Go toolchain, environment and module-cache contents are outside the content hash.
+Patch `--pattern` accepts `.` and local `./...` patterns within `--dir`; absolute
+paths, `file=` queries and external package patterns are rejected to keep source
+selection inside each capture. Changes elsewhere in the repository remain in
+`files`/`unmappedFiles` relative to `--dir` (for example `../go.mod`), so ancestor
+module/workspace changes are still visible when analyzing a subdirectory.
 Runtime callback wiring, reflection, HTTP/DB payload compatibility and dynamic
 configuration remain unassessed or limited by the harvested graph.
 
