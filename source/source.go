@@ -24,6 +24,8 @@ import (
 
 // Options는 수확 범위를 결정한다.
 type Options struct {
+	// Captured는 격리 소스 캡처의 go.work만 읽게 한다. 외부 GOWORK는 다른 revision을 섞는다.
+	Captured bool
 	// Dir은 분석 루트다. 빈 문자열은 현재 디렉터리다.
 	Dir string
 	// Patterns은 packages.Load에 넘길 패턴이다. 빈 슬라이스는 "./..."다.
@@ -214,6 +216,9 @@ func load(opts Options) ([]*packages.Package, error) {
 // 늘 os.Environ()에서 시작하고(Env가 nil일 때 go/packages가 쓰는 값과 같다), 같은 키는 뒤 값이 이긴다(os/exec).
 func loaderEnv(opts Options) []string {
 	env := os.Environ()
+	if opts.Captured {
+		env = append(env, "GOWORK=auto")
+	}
 	if opts.GOOS != "" {
 		env = append(env, "GOOS="+opts.GOOS)
 	}

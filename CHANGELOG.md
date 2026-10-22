@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `impact --base COMMIT [--head COMMIT]` 및 MCP `gartograph_impact`의 `base/head`: 실제 Git 또는 작업 트리 입력을 content hash로 기록하고 이전/이후 소스를 별도 수확·순회한다. 삭제·rename의 과거 선언과 호출자, 파일 seed 이유, `via` 경로, 연결된 테스트 후보를 보존한다. 파일 전체 seed, 미해결 설정·동적 경로와 캡처·깊이·출력 제한을 명시한다.
+- 기존 한쪽 snapshot impact는 호환성을 유지하고 `mode`, `freshness`, `max`, `depthLimited`, `outputLimited`를 추가한다. 기존 `truncated`는 출력 상한 의미를 유지하며 patch 모드에서는 깊이/출력 제한의 합집합이다.
+
 ### Security
 
 - `impact --since`, `reach`·`impact --format language-traversal`의 `revision` 판독: 분석 대상 저장소의 git

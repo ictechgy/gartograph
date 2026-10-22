@@ -15,6 +15,11 @@ import (
 // UnmappedFiles는 어떤 정점으로도 해석되지 않은 파일이다 — .go가 아니거나,
 // 삭제됐거나, 수확 범위 밖이다. 조용히 버리면 "변경 없음"으로 오독된다.
 type Affected struct {
+	Mode          string        `json:"mode"`
+	Freshness     string        `json:"freshness"`
+	Max           int           `json:"max"`
+	DepthLimited  bool          `json:"depthLimited"`
+	OutputLimited bool          `json:"outputLimited"`
 	Files         []string      `json:"files"`
 	Roots         []string      `json:"roots"`
 	UnmappedFiles []string      `json:"unmappedFiles,omitempty"`
@@ -46,8 +51,9 @@ func AffectedByFiles(d *graph.Document, files, extraRoots []string,
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, strings.Join(missing, ", "))
 	}
 	roots = dedupeSorted(roots)
-	dep, trunc := impactFrom(graph.KindedIncoming(d), byID, roots, depth, maxEntries)
+	dep, trunc, depthLimited := impactFrom(graph.KindedIncoming(d), byID, roots, depth, maxEntries)
 	return &Affected{
+		Mode: "snapshot-files", Freshness: "unverified", Max: maxEntries, DepthLimited: depthLimited, OutputLimited: trunc,
 		Files: dedupeSorted(append([]string(nil), files...)),
 		Roots: roots, UnmappedFiles: unmapped,
 		Depth: depth, Dependers: dep, Truncated: trunc,

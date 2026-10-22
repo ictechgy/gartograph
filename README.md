@@ -23,6 +23,50 @@ builds **one versioned graph** at four levels (module/package/type/symbol) and
 expresses every analysis as a query over it, with a deterministic JSON contract
 meant for coding agents: facts and evidence, never delete verdicts.
 
+## Patch impact and migration
+
+`impact --base COMMIT [--head COMMIT]` returns `mode: "patch"` with separate
+`before` and `after` candidate sets. Without `--head`, the latter captures the
+working tree, including non-ignored untracked files. Commits are resolved once;
+each source snapshot is copied into a temporary directory and harvested separately.
+No Git worktree, index, hooks, filters or source files are modified. Renames are
+old-path removals plus new-path additions, so removed declarations remain visible
+on the before side. Snapshot content hashes include function bodies and configuration,
+not just topology. Concurrent edits detected during working-tree capture fail the
+request; the result describes captured contents, not a promise of future freshness.
+
+Each candidate has its reason, declaration location and `via` predecessor IDs on
+the same snapshot. Follow `via` toward a depth-zero seed to inspect propagation.
+`--tests` includes test packages and marks connected Go test entry candidates.
+These are review candidates: they neither predict test failures nor justify
+skipping tests. File seeds include **all declarations and their package**; changes
+to configuration or other unmapped files remain explicit. No candidates is not
+a safety result, and `complete` stays false.
+
+`depthLimited` and `outputLimited` distinguish the restrictions; patch `truncated`
+is their union. `--max` caps reported candidates (including seeds), not graph
+harvesting or traversal work. `preparationMillis` measures source acquisition;
+`analysisMillis` includes materialization and both harvests/traversals. Source
+capture is limited to 20,000 files and 128 MiB per side; exceeding it is an error.
+There is no harvest time or memory budget. Symlinks, submodules, external local
+module replacements and `GOFLAGS` overlays/modfiles require explicit source
+preparation and produce an error. Ignored/generated files are not reconstructed;
+Go toolchain, environment and module-cache contents are outside the content hash.
+Runtime callback wiring, reflection, HTTP/DB payload compatibility and dynamic
+configuration remain unassessed or limited by the harvested graph.
+
+Existing `impact ID`, `--files`, `--since`, saved-graph and language-traversal
+commands remain available. `--since` still maps files onto **one current graph**;
+it does not become a historical analysis. Snapshot JSON adds `mode`, `freshness:
+"unverified"`, `max`, `depthLimited` and `outputLimited`; its legacy `truncated`
+continues to mean the output cap. For historical callers migrate to `--base`.
+
+MCP `gartograph_impact` accepts `{"base":"HEAD~1","head":"HEAD"}` or
+`{"base":"HEAD"}` with the same result and the server's startup scope flags.
+`id` and `files` keep querying the fixed session graph. Patch mode requires a
+source-backed MCP session without `--graph` or explicit `--config`; each captured
+side reads its own `.gartograph.yml`. `base/head` cannot be combined with `id/files`.
+
 ## Install
 
 ```bash
@@ -102,16 +146,20 @@ gartograph rules --strict
 gartograph query github.com/ictechgy/gartograph/cli --depth 2
 gartograph query 'github.com/ictechgy/gartograph/graph.(Document).Sort'
 
-# Reverse transitive closure: what breaks if this vertex changes
+# Current-snapshot reverse dependencies to review if this vertex changes
 gartograph impact github.com/ictechgy/gartograph/graph --depth 2
 
-# Diff-aware impact: what breaks given the files changed since a revision
+# Current-snapshot file candidates (does not reconstruct historical callers)
 # (needs git 2.24+; a value that starts with '-' or holds control characters
 # is a usage error). git runs without the repository's filter drivers,
 # fsmonitor hook, diff drivers, index refresh, and object fetching, and stays
 # out of submodules (see Security); a file whose timestamps changed counts as
 # changed.
 gartograph impact --since origin/main...HEAD          # or --files cli/cli.go
+
+# Actual patch: capture each side and traverse it independently.
+gartograph impact --base origin/main --head HEAD --tests
+gartograph impact --base HEAD --tests                 # staged + unstaged + untracked
 
 # Shortest dependency path: why does 'from' reach 'to'
 gartograph path github.com/ictechgy/gartograph/cmd/gartograph github.com/ictechgy/gartograph/graph
