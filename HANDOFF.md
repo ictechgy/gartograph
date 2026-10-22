@@ -8,6 +8,7 @@
 - `cli.Version`은 0.10.0이다. 기존 snapshot 명령 및 graph/language-traversal 문서는 호환하며, 깊이·출력 제한과 freshness는 추가 필드로 드러낸다. README의 Patch impact and migration 절에 준비 범위·한계가 있다.
 - 전체 Windows 테스트 및 91.9% coverage, build/vet/자기 분석은 최초 구현에서 통과했다. 후속 mode-only·캡처 경계·상위 설정 변경 회귀도 통과했다. 최종 head CI와 독립 리뷰를 확인한 뒤 머지한다.
 - 독립 리뷰의 GOENV 저장 플래그와 임시 경로 상위 go.work 누출을 실제 Go fixture로 재현했다. patch 로딩은 GOENV/GOFLAGS/외부 driver를 끄고, 각 캡처 내부의 가장 가까운 go.work만 명시적으로 사용하며 결과에 설정을 남긴다.
+- base 파일을 HEAD에서 삭제했다가 같은 내용의 untracked 파일로 복원한 경우 net 변경이 없음을 회귀로 고정했다. 양쪽 캡처의 바이트와 Git 파일 모드를 직접 비교하고 해시에 포함하므로 mode-only 변경도 보존한다.
 - 머지된 커밋에 새 `v0.10.0` 태그를 발행하면 기존 Release workflow가 다섯 플랫폼 바이너리·체크섬을 만든다. 기존 태그는 덮어쓰지 않는다. 배포 완료 판정에는 공개 asset 및 깨끗한 Windows 설치본의 대표 patch/MCP 흐름 검증이 필요하다.
 - Homebrew tap은 기존 `HOMEBREW_TAP_TOKEN` 설정 여부에 따라 자동 갱신을 건너뛸 수 있다. 인증정보 생성이나 권한 확장은 승인 범위가 아니다.
 

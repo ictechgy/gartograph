@@ -51,6 +51,7 @@ type changeReport struct {
 
 type capturedSource struct {
 	files  map[string][]byte
+	modes  map[string]string
 	origin changeOrigin
 }
 
@@ -94,16 +95,8 @@ func runChangeImpact(opts source.Options, base, head string, depth, maxEntries i
 	if err != nil {
 		return nil, fmt.Errorf("capture head: %w", err)
 	}
-	diffRevision := before.origin.Revision
-	if head != "" {
-		diffRevision += ".." + after.origin.Revision
-	}
 	// 내용은 같아도 실행 비트 등 Git 파일 모드가 달라진 patch를 누락하지 않는다.
-	gitFiles, err := changedFilesSince(repo, diffRevision)
-	if err != nil {
-		return nil, err
-	}
-	oldFiles, newFiles := changedCaptureFiles(before.files, after.files, subdir, gitFiles)
+	oldFiles, newFiles := changedCaptureFiles(before, after, subdir)
 	preparation := time.Since(start).Milliseconds()
 	startedAnalysis := time.Now()
 	beforeSide, err := analyzeCapture(before, subdir, opts, oldFiles, depth, maxEntries)
@@ -161,6 +154,7 @@ func captureRevision(repo, rev string) (*capturedSource, error) {
 		return nil, fmt.Errorf("read commit tree: %w", err)
 	}
 	var names, ids []string
+	modes := map[string]string{}
 	for _, entry := range strings.Split(tree, "\x00") {
 		if entry == "" {
 			continue
@@ -175,6 +169,7 @@ func captureRevision(repo, rev string) (*capturedSource, error) {
 		}
 		names = append(names, name)
 		ids = append(ids, fields[2])
+		modes[name] = fields[0]
 	}
 	if len(names) > changeCaptureFiles {
 		return nil, fmt.Errorf("source capture exceeds %d files", changeCaptureFiles)
@@ -232,31 +227,35 @@ func captureRevision(repo, rev string) (*capturedSource, error) {
 		return nil, fmt.Errorf("read Git blobs: %w: %s", err, errs.String())
 	}
 	finished = true
-	return captured(files, "git-commit", commit), nil
+	return captured(files, modes, "git-commit", commit), nil
 }
 
 func captureWorkingTree(repo string) (*capturedSource, error) {
-	files, err := readWorkingFiles(repo)
+	res, err := readWorkingFiles(repo)
 	if err != nil {
 		return nil, err
 	}
-	res := captured(files, "working-tree", "")
 	again, err := readWorkingFiles(repo)
 	if err != nil {
 		return nil, err
 	}
-	if res.origin.ContentHash != captureHash(again) {
+	if res.origin.ContentHash != again.origin.ContentHash {
 		return nil, fmt.Errorf("working tree changed during capture; retry after edits finish")
 	}
 	return res, nil
 }
 
-func readWorkingFiles(repo string) (map[string][]byte, error) {
+func readWorkingFiles(repo string) (*capturedSource, error) {
 	listed, err := runGit(repo, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("list working files: %w", err)
 	}
+	indexModes, trustModes, err := workingFileModes(repo)
+	if err != nil {
+		return nil, err
+	}
 	files := map[string][]byte{}
+	modes := map[string]string{}
 	total := 0
 	for _, name := range strings.Split(listed, "\x00") {
 		if name == "" {
@@ -307,8 +306,43 @@ func readWorkingFiles(repo string) (map[string][]byte, error) {
 		}
 		total += len(data)
 		files[name] = data
+		mode := "100644"
+		if trustModes && info.Mode().Perm()&0100 != 0 {
+			mode = "100755"
+		} else if !trustModes && indexModes[name] != "" {
+			mode = indexModes[name]
+		}
+		modes[name] = mode
 	}
-	return files, nil
+	return captured(files, modes, "working-tree", ""), nil
+}
+
+// workingFileModes는 Git이 실행 비트를 신뢰하지 않는 파일시스템에서 index 모드를 보존한다.
+func workingFileModes(repo string) (map[string]string, bool, error) {
+	trust, err := runGit(repo, "config", "--type=bool", "--default", "true", "--get", "core.filemode")
+	if err != nil {
+		return nil, false, fmt.Errorf("read Git file mode policy: %w", err)
+	}
+	entries, err := runGit(repo, "ls-files", "--stage", "-z")
+	if err != nil {
+		return nil, false, fmt.Errorf("read index file modes: %w", err)
+	}
+	modes := map[string]string{}
+	for _, entry := range strings.Split(entries, "\x00") {
+		if entry == "" {
+			continue
+		}
+		meta, name, ok := strings.Cut(entry, "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 || fields[2] != "0" {
+			return nil, false, fmt.Errorf("cannot capture an unmerged index; resolve conflicts before analysis")
+		}
+		if fields[0] != "100644" && fields[0] != "100755" {
+			return nil, false, fmt.Errorf("cannot capture non-regular index entry %q; prepare regular source files", name)
+		}
+		modes[name] = fields[0]
+	}
+	return modes, strings.TrimSpace(trust) == "true", nil
 }
 
 func capturePath(name string) error {
@@ -323,11 +357,11 @@ func capturePath(name string) error {
 	return nil
 }
 
-func captured(files map[string][]byte, kind, revision string) *capturedSource {
-	return &capturedSource{files: files, origin: changeOrigin{Kind: kind, Revision: revision, ContentHash: captureHash(files), Freshness: "captured-content", FileCount: len(files)}}
+func captured(files map[string][]byte, modes map[string]string, kind, revision string) *capturedSource {
+	return &capturedSource{files: files, modes: modes, origin: changeOrigin{Kind: kind, Revision: revision, ContentHash: captureHash(files, modes), Freshness: "captured-content", FileCount: len(files)}}
 }
 
-func captureHash(files map[string][]byte) string {
+func captureHash(files map[string][]byte, modes map[string]string) string {
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
@@ -336,28 +370,24 @@ func captureHash(files map[string][]byte) string {
 	hash := sha256.New()
 	for _, name := range names {
 		sum := sha256.Sum256(files[name])
-		fmt.Fprintf(hash, "%d:%s:%x\n", len(name), name, sum)
+		fmt.Fprintf(hash, "%d:%s:%s:%x\n", len(name), name, modes[name], sum)
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func changedCaptureFiles(before, after map[string][]byte, subdir string, gitFiles []string) ([]string, []string) {
+func changedCaptureFiles(before, after *capturedSource, subdir string) ([]string, []string) {
 	names := map[string]bool{}
-	gitChanged := map[string]bool{}
-	for _, name := range gitFiles {
-		gitChanged[name] = true
-	}
-	for name := range before {
+	for name := range before.files {
 		names[name] = true
 	}
-	for name := range after {
+	for name := range after.files {
 		names[name] = true
 	}
 	var oldFiles, newFiles []string
 	for name := range names {
-		old, oldOK := before[name]
-		current, newOK := after[name]
-		if oldOK && newOK && bytes.Equal(old, current) && !gitChanged[name] {
+		old, oldOK := before.files[name]
+		current, newOK := after.files[name]
+		if oldOK && newOK && bytes.Equal(old, current) && before.modes[name] == after.modes[name] {
 			continue
 		}
 		relative, err := filepath.Rel(subdir, filepath.FromSlash(name))

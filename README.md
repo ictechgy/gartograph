@@ -31,8 +31,11 @@ working tree, including non-ignored untracked files. Commits are resolved once;
 each source snapshot is copied into a temporary directory and harvested separately.
 No Git worktree, index, hooks, filters or source files are modified. Renames are
 old-path removals plus new-path additions, so removed declarations remain visible
-on the before side. Snapshot content hashes include function bodies and configuration,
-not just topology. Concurrent edits detected during working-tree capture fail the
+on the before side. Snapshot content hashes include function bodies, configuration
+and Git file modes, not just topology. Candidate seeds compare the captured endpoints;
+an intervening index deletion followed by identical restoration is not a net change.
+Working-tree modes follow Git's `core.filemode` policy (index modes for tracked files
+when executable bits are not trusted). Concurrent edits detected during capture fail the
 request; the result describes captured contents, not a promise of future freshness.
 
 Each candidate has its reason, declaration location and `via` predecessor IDs on

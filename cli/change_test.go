@@ -178,6 +178,14 @@ func TestChangeImpactModeOnlyGitPatch(t *testing.T) {
 	changeGit(t, dir, "commit", "-m", "before")
 	base := changeGit(t, dir, "rev-parse", "HEAD")
 	changeGit(t, dir, "update-index", "--chmod=+x", "value.go")
+	changeGit(t, dir, "config", "core.filemode", "false")
+	staged, err := runChangeImpact(source.Options{Dir: dir}, base, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged.After.Files) != 1 || staged.After.Files[0] != "value.go" || staged.Before.Origin.ContentHash == staged.After.Origin.ContentHash {
+		t.Fatalf("staged mode-only change lost: %+v", staged)
+	}
 	changeGit(t, dir, "commit", "-m", "mode only")
 	report, err := runChangeImpact(source.Options{Dir: dir}, base, "HEAD", 0, 0)
 	if err != nil {
@@ -185,6 +193,40 @@ func TestChangeImpactModeOnlyGitPatch(t *testing.T) {
 	}
 	if len(report.Before.Files) != 1 || report.Before.Files[0] != "value.go" || len(report.After.Candidates) == 0 {
 		t.Fatalf("mode-only patch lost: %+v", report)
+	}
+}
+
+func TestChangeImpactRestoredUntrackedFileHasNoNetChange(t *testing.T) {
+	body := "package fixture\nfunc Value() {}\n"
+	dir := testutil.WriteModule(t, map[string]string{"value.go": body, "keep.go": "package fixture\n"})
+	changeGit(t, dir, "init")
+	changeGit(t, dir, "add", ".")
+	changeGit(t, dir, "commit", "-m", "base")
+	base := changeGit(t, dir, "rev-parse", "HEAD")
+	changeGit(t, dir, "rm", "value.go")
+	changeGit(t, dir, "commit", "-m", "delete")
+	if err := os.WriteFile(filepath.Join(dir, "value.go"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := runChangeImpact(source.Options{Dir: dir}, base, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Before.Files) != 0 || len(report.After.Files) != 0 || len(report.Before.Candidates) != 0 || len(report.After.Candidates) != 0 {
+		t.Fatalf("index deletion leaked into net before/after diff: %+v", report)
+	}
+}
+
+func TestChangeCaptureRejectsIndexSymlinkPlaceholder(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"value.go": "package fixture\nfunc Value() {}\n"})
+	changeGit(t, dir, "init")
+	changeGit(t, dir, "add", ".")
+	changeGit(t, dir, "commit", "-m", "base")
+	blob := changeGit(t, dir, "rev-parse", "HEAD:value.go")
+	changeGit(t, dir, "update-index", "--cacheinfo", "120000,"+blob+",value.go")
+	_, err := captureWorkingTree(dir)
+	if err == nil || !strings.Contains(err.Error(), "non-regular index") {
+		t.Fatalf("index symlink placeholder accepted as regular source: %v", err)
 	}
 }
 
