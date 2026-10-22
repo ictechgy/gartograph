@@ -14,6 +14,7 @@ import (
 	"github.com/ictechgy/gartograph/analysis"
 	"github.com/ictechgy/gartograph/config"
 	"github.com/ictechgy/gartograph/graph"
+	"github.com/ictechgy/gartograph/source"
 )
 
 // rpcRequest는 들어오는 JSON-RPC 메시지다. ID가 비어 있으면 알림이다 —
@@ -47,10 +48,12 @@ type toolCallParams struct {
 
 // mcpServer는 수확된 문서 하나를 서빙한다.
 type mcpServer struct {
-	doc      *graph.Document
-	dir      string
-	cfgPath  string
-	protocol string
+	// captureOptions는 시작 때 선택한 범위다. patch 호출은 현재 세션 그래프와 섞지 않고 새 캡처를 만든다.
+	captureOptions *source.Options
+	doc            *graph.Document
+	dir            string
+	cfgPath        string
+	protocol       string
 	// index는 doc 위의 질의 색인(ID 색인·인접 목록)이다. 문서는 기동 때 한 번 수확하고 바꾸지
 	// 않으므로, 처음 쓰는 도구 호출이 만든 색인을 다음 호출이 그대로 쓴다 — 호출마다 다시 만들면
 	// 답이 몇 줄이어도 호출마다 문서 크기만큼 기다린다. serve가 요청을 한 줄씩 차례로 처리하므로
@@ -96,11 +99,15 @@ func mcpRun(args []string, in io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	captureOptions := *opts
 	doc, err := loadDocWithRules(opts, *graphPath, rules)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	srv := &mcpServer{doc: doc, dir: opts.Dir, cfgPath: cfgPath, protocol: "2024-11-05"}
+	if *graphPath == "" && *configPath == "" {
+		srv.captureOptions = &captureOptions
+	}
 	return srv.serve(in, stdout, stderr)
 }
 
@@ -240,12 +247,42 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		return marshal(res)
 	case "gartograph_impact":
 		var a struct {
-			ID    string `json:"id"`
-			Depth int    `json:"depth"`
-			Max   int    `json:"max"`
+			ID    string   `json:"id"`
+			Depth int      `json:"depth"`
+			Max   int      `json:"max"`
+			Base  string   `json:"base"`
+			Head  string   `json:"head"`
+			Files []string `json:"files"`
 		}
-		if err := json.Unmarshal(args, &a); err != nil || a.ID == "" {
-			return "", fmt.Errorf("impact needs an \"id\" argument")
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", err
+		}
+		if a.Base != "" || a.Head != "" {
+			if a.ID != "" || len(a.Files) > 0 {
+				return "", fmt.Errorf("patch impact base/head cannot be combined with id/files")
+			}
+			if s.captureOptions == nil {
+				return "", fmt.Errorf("patch impact needs a source-backed MCP session without --graph or an external --config; use CLI impact --base with the same scope")
+			}
+			res, err := runChangeImpact(*s.captureOptions, a.Base, a.Head, a.Depth, a.Max)
+			if err != nil {
+				return "", err
+			}
+			return marshal(res)
+		}
+		if len(a.Files) > 0 {
+			var roots []string
+			if a.ID != "" {
+				roots = []string{a.ID}
+			}
+			res, err := analysis.AffectedByFiles(s.doc, a.Files, roots, a.Depth, a.Max)
+			if err != nil {
+				return "", err
+			}
+			return marshal(res)
+		}
+		if a.ID == "" {
+			return "", fmt.Errorf("impact needs id, files or base (with optional head)")
 		}
 		res, err := s.queries().FindImpact(a.ID, a.Depth, a.Max)
 		if err != nil {
@@ -414,10 +451,12 @@ func mcpTools() []map[string]any {
 				"id": idProp["id"], "depth": num("neighbor depth (default 1)"), "max": num("max neighbors per direction"),
 			}, []string{"id"})},
 		{"name": "gartograph_impact",
-			"description": "Reverse transitive closure: what breaks if this vertex changes",
+			"description": "Static review candidates: id/files query the session snapshot; base with optional head captures and analyzes separate Git revisions (head omitted: working tree). Never a safety or test-failure prediction.",
 			"inputSchema": obj(map[string]any{
 				"id": idProp["id"], "depth": depthProp["depth"], "max": num("max dependers"),
-			}, []string{"id"})},
+				"base": str("base Git commit for patch mode"), "head": str("head Git commit; omit for working tree"),
+				"files": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "changed paths in the current session snapshot (no historical caller reconstruction)"},
+			}, nil)},
 		{"name": "gartograph_path",
 			"description": "Shortest dependency path between two vertices — why does 'from' reach 'to'",
 			"inputSchema": obj(map[string]any{

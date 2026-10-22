@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"time"
 )
 
 // WriteFile은 그래프·baseline 산출물을 같은 디렉터리의 고유 임시 파일로 교체한다.
@@ -51,9 +54,31 @@ func WriteFile(path string, data []byte) (err error) {
 	if closeErr != nil {
 		return fmt.Errorf("closing output %s: %w", path, closeErr)
 	}
-	if err := os.Rename(file.Name(), path); err != nil {
+	if err := replaceOutput(file.Name(), path); err != nil {
 		return fmt.Errorf("replacing output %s: %w", path, err)
 	}
 	committed = true
 	return nil
+}
+
+// replaceOutput은 Windows에서 다른 writer의 닫히는 핸들이 잠깐 막은 교체만 재시도한다.
+// 목적지를 먼저 지우지 않아 실패하면 원본이 남는다. 다른 플랫폼·오류는 곧바로 돌려준다.
+var outputReplaceMu sync.Mutex
+
+func replaceOutput(from, to string) error {
+	if runtime.GOOS == "windows" {
+		outputReplaceMu.Lock()
+		defer outputReplaceMu.Unlock()
+	}
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		err = os.Rename(from, to)
+		if err == nil || runtime.GOOS != "windows" || !errors.Is(err, os.ErrPermission) {
+			return err
+		}
+		if attempt < 7 {
+			time.Sleep(time.Duration(1<<attempt) * time.Millisecond)
+		}
+	}
+	return err
 }

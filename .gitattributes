@@ -1,0 +1,2 @@
+# Vendored conformance bytes are pinned by SHA-256, including their line endings.
+conformance/*.json -text

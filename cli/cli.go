@@ -25,7 +25,7 @@ import (
 
 // Version은 CLI가 스스로를 보고하는 버전 문자열이다. 릴리스는
 // -ldflags "-X .../cli.Version=<태그>"로 이 값을 덮어쓴다.
-var Version = "0.9.2"
+var Version = "0.10.0"
 
 // Run은 인자를 해석해 명령을 실행하고 종료 코드를 돌려준다.
 // os.Exit 대신 반환값을 쓰는 것은 종료 코드 계약을 테스트하기 위함이다.
@@ -103,6 +103,7 @@ Usage:
   gartograph query  <id> [--depth N] [--max N] [--level L] [flags]
   gartograph impact <id> [--depth N] [--max N] [--level L] [flags]
   gartograph impact --since <git-rev>|--files F... [--depth N] [flags]
+  gartograph impact --base <git-rev> [--head <git-rev>] [--tests] [--depth N] [--max N]
   gartograph impact --format language-traversal <id>... [--roots-from FILE|-] [--depth N] [--max N]
                     [--type-edges members|all] [--revision REV] [--generated-at TS] [flags]
                     isthmus dependents traversal
@@ -1110,6 +1111,8 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 	depth := fs.Int("depth", 0, "max reverse-dependency depth (0 = full transitive closure)")
 	maxN := fs.Int("max", 0, "max dependers to report (0 = unlimited)")
 	since := fs.String("since", "", "git revision to diff for changed files (e.g. HEAD~1, origin/main...HEAD)")
+	base := fs.String("base", "", "capture and analyze this Git commit before the patch (separate from --since current-snapshot mode)")
+	head := fs.String("head", "", "capture this Git commit after the patch (default with --base: working tree including untracked files)")
 	var files stringsFlag
 	fs.Var(&files, "files", "changed file path relative to --dir (repeatable)")
 	level := idLevelFlag(fs)
@@ -1131,10 +1134,29 @@ func cmdImpact(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	case formatTraversal:
+		if *base != "" || *head != "" {
+			return fail(stderr, fmt.Errorf("--base/--head need --format json"))
+		}
 		return impactTraversal(fs, positional, opts, *graphPath, *depth, *maxN, tf, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "error: unknown --format %q: want json|language-traversal\n", *format)
 		return 2
+	}
+	if *base != "" || *head != "" {
+		if *since != "" || len(files) > 0 || len(positional) > 0 || *graphPath != "" || tf.revisionSet || tf.rootsFrom != "" || tf.generatedAt != "" {
+			return fail(stderr, fmt.Errorf("--base/--head cannot be combined with --since, --files, IDs, --graph or traversal metadata"))
+		}
+		if _, err := graph.ParseLevel(*level); err != nil {
+			return fail(stderr, err)
+		}
+		res, err := runChangeImpact(*opts, *base, *head, *depth, *maxN)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if err := emitJSON(stdout, res); err != nil {
+			return fail(stderr, err)
+		}
+		return 0
 	}
 	if len(positional) > 1 {
 		fmt.Fprintln(stderr,

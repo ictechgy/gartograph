@@ -76,7 +76,7 @@ func TestImportEdgePositions(t *testing.T) {
 		t.Fatalf("import edge must carry its decl site: %+v", doc.Edges)
 	}
 	pos := e.Positions[0]
-	if !strings.HasSuffix(pos.File, "a/a.go") || pos.Line != 3 {
+	if !strings.HasSuffix(filepath.ToSlash(pos.File), "a/a.go") || pos.Line != 3 {
 		t.Fatalf("position must point at the import spec in a/a.go: %+v", pos)
 	}
 }

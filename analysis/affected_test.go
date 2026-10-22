@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -19,16 +20,17 @@ import (
 // /mod/a/a.go에 m/a.F와 패키지 m/a, /mod/b/b.go에 m/b.G와 패키지 m/b,
 // 간선은 m/b.G → m/a.F(call)와 m/b → m/a(import).
 func affectedDoc() *graph.Document {
+	root := filepath.Join(filepath.VolumeName(os.TempDir())+string(filepath.Separator), "mod")
 	return &graph.Document{
-		Root:   "/mod",
+		Root:   root,
 		Module: "m",
 		Vertices: []graph.Vertex{
 			{ID: "m/a", Kind: graph.KindPackage},
 			{ID: "m/b", Kind: graph.KindPackage},
 			{ID: "m/a.F", Kind: graph.KindFunc, Package: "m/a",
-				Position: &graph.Position{File: "/mod/a/a.go", Line: 3}},
+				Position: &graph.Position{File: filepath.Join(root, "a", "a.go"), Line: 3}},
 			{ID: "m/b.G", Kind: graph.KindFunc, Package: "m/b",
-				Position: &graph.Position{File: "/mod/b/b.go", Line: 3}},
+				Position: &graph.Position{File: filepath.Join(root, "b", "b.go"), Line: 3}},
 		},
 		Edges: []graph.Edge{
 			{From: "m/b.G", To: "m/a.F", Kind: graph.EdgeCall},
@@ -93,13 +95,18 @@ func TestAffectedSubdirRoot(t *testing.T) {
 // moduleDir 밖의 파일을 unmapped로 둔다. 의존자는 형제 모듈 패키지를 import한 패키지까지 모인다.
 func TestAffectedWorkspaceFiles(t *testing.T) {
 	d := workspaceDoc()
-	d.WorkspaceModules = append(d.WorkspaceModules, graph.WorkspaceModule{Path: "example.com/c", Dir: "/w/a/c"})
+	root := t.TempDir()
+	d.Root = filepath.Join(root, "a")
+	d.ModuleDir = d.Root
+	d.WorkspaceModules[0].Dir = d.Root
+	d.WorkspaceModules[1].Dir = filepath.Join(root, "b")
+	d.WorkspaceModules = append(d.WorkspaceModules, graph.WorkspaceModule{Path: "example.com/c", Dir: filepath.Join(root, "a", "c")})
 	d.Vertices = append(d.Vertices, graph.Vertex{ID: "example.com/c", Kind: graph.KindPackage, Module: "example.com/c"})
 	cases := []struct {
 		file, want string
 	}{
 		{"../b/util/util.go", "example.com/b/util"},
-		{"/w/b/util/util_test.go", "example.com/b/util"},
+		{filepath.Join(root, "b", "util", "util_test.go"), "example.com/b/util"},
 		{"app/app.go", "example.com/a/app"},
 		{"c/c.go", "example.com/c"},
 	}

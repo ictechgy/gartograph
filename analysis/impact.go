@@ -25,11 +25,16 @@ type ImpactEntry struct {
 // query의 dependedBy와 달리 한 방향만 보고, 각 항목에 거리를 싣는다.
 // contains는 소유 관계라 의존 전이에 섞지 않는다.
 type Impact struct {
-	ID        string           `json:"id"`
-	Kind      graph.VertexKind `json:"kind"`
-	Depth     int              `json:"depth"`
-	Dependers []ImpactEntry    `json:"dependers"`
-	Truncated bool             `json:"truncated,omitempty"`
+	Mode          string           `json:"mode"`
+	Freshness     string           `json:"freshness"`
+	Max           int              `json:"max"`
+	DepthLimited  bool             `json:"depthLimited"`
+	OutputLimited bool             `json:"outputLimited"`
+	ID            string           `json:"id"`
+	Kind          graph.VertexKind `json:"kind"`
+	Depth         int              `json:"depth"`
+	Dependers     []ImpactEntry    `json:"dependers"`
+	Truncated     bool             `json:"truncated,omitempty"`
 	// Limitations은 수확이 보지 못한 영역이다 — 부분 수확 위의
 	// 클로저는 하한이지 전체 목록이 아님을 소비자에게 남긴다.
 	Limitations []string `json:"limitations,omitempty"`
@@ -49,8 +54,8 @@ func (x *Index) FindImpact(id string, depth, maxEntries int) (*Impact, error) {
 	if vtx == nil {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	out, truncated := impactFrom(x.incoming(), x.vertices(), []string{id}, depth, maxEntries)
-	return &Impact{ID: id, Kind: vtx.Kind, Depth: depth, Dependers: out,
+	out, truncated, depthLimited := impactFrom(x.incoming(), x.vertices(), []string{id}, depth, maxEntries)
+	return &Impact{Mode: "snapshot", Freshness: "unverified", Max: maxEntries, DepthLimited: depthLimited, OutputLimited: truncated, ID: id, Kind: vtx.Kind, Depth: depth, Dependers: out,
 		Truncated: truncated, Limitations: x.doc.Limitations}, nil
 }
 
@@ -61,7 +66,7 @@ func (x *Index) FindImpact(id string, depth, maxEntries int) (*Impact, error) {
 // graph.VertexIndex)에서 읽는다 — 의존자마다 문서 전체 간선·정점을 훑으면 비용이 클로저 크기 ×
 // 문서 크기가 된다. 두 색인은 호출하는 쪽이 만들어 루트 확인과 함께 쓴다.
 func impactFrom(in map[string][]graph.Neighbor, byID map[string]*graph.Vertex,
-	roots []string, depth, maxEntries int) ([]ImpactEntry, bool) {
+	roots []string, depth, maxEntries int) ([]ImpactEntry, bool, bool) {
 	seen := map[string]bool{}
 	for _, r := range roots {
 		seen[r] = true
@@ -112,5 +117,15 @@ func impactFrom(in map[string][]graph.Neighbor, byID map[string]*graph.Vertex,
 		}
 		return out[i].ID < out[j].ID
 	})
-	return out, truncated
+	depthLimited := false
+	if depth > 0 {
+		for _, cur := range frontier {
+			for _, n := range in[cur] {
+				if !seen[n.ID] {
+					depthLimited = true
+				}
+			}
+		}
+	}
+	return out, truncated, depthLimited
 }
