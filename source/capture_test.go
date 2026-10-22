@@ -28,16 +28,12 @@ func TestValidateCaptureLocalModules(t *testing.T) {
 	}
 }
 
-func TestValidateCaptureExternalWorkspaceAndOverlay(t *testing.T) {
+func TestValidateCaptureExternalWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.work"), []byte("go 1.27\nuse ../other\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := ValidateCapture(dir); err == nil || !strings.Contains(err.Error(), "outside repository") {
 		t.Fatalf("external workspace accepted: %v", err)
-	}
-	t.Setenv("GOFLAGS", "-overlay=/outside/overlay.json")
-	if err := ValidateCapture(t.TempDir()); err == nil {
-		t.Fatal("external overlay accepted")
 	}
 }

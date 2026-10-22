@@ -26,6 +26,8 @@ import (
 type Options struct {
 	// Captured는 격리 소스 캡처의 go.work만 읽게 한다. 외부 GOWORK는 다른 revision을 섞는다.
 	Captured bool
+	// CapturedWorkspace는 검증한 캡처 내부 go.work 절대 경로다. 빈 값은 workspace를 끈다.
+	CapturedWorkspace string
 	// Dir은 분석 루트다. 빈 문자열은 현재 디렉터리다.
 	Dir string
 	// Patterns은 packages.Load에 넘길 패턴이다. 빈 슬라이스는 "./..."다.
@@ -217,7 +219,12 @@ func load(opts Options) ([]*packages.Package, error) {
 func loaderEnv(opts Options) []string {
 	env := os.Environ()
 	if opts.Captured {
-		env = append(env, "GOWORK=auto")
+		workspace := opts.CapturedWorkspace
+		if workspace == "" {
+			workspace = "off"
+		}
+		// 저장된 GOENV와 드라이버/플래그가 다른 소스 revision을 읽지 않게 한다.
+		env = append(env, "GOENV=off", "GOFLAGS=", "GO111MODULE=on", "GOPACKAGESDRIVER=off", "GOWORK="+workspace)
 	}
 	if opts.GOOS != "" {
 		env = append(env, "GOOS="+opts.GOOS)

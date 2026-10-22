@@ -33,7 +33,8 @@ type changeOrigin struct {
 }
 
 type changeSnapshot struct {
-	Origin changeOrigin `json:"origin"`
+	Origin    changeOrigin `json:"origin"`
+	Workspace string       `json:"workspace"`
 	*analysis.ChangeSide
 }
 
@@ -130,11 +131,12 @@ func runChangeImpact(opts source.Options, base, head string, depth, maxEntries i
 			goarch = runtime.GOARCH
 		}
 	}
-	return &changeReport{Mode: "patch", Complete: false, Before: changeSnapshot{before.origin, beforeSide}, After: changeSnapshot{after.origin, afterSide},
-		Scope:             map[string]any{"directory": filepath.ToSlash(subdir), "patterns": patterns, "level": "symbol", "tests": opts.Tests, "dependencies": opts.IncludeDeps, "tags": opts.Tags, "goos": goos, "goarch": goarch, "captureMaxBytes": changeCaptureBytes, "captureMaxFiles": changeCaptureFiles},
+	return &changeReport{Mode: "patch", Complete: false, Before: changeSnapshot{before.origin, capturedWorkspace(before, subdir), beforeSide}, After: changeSnapshot{after.origin, capturedWorkspace(after, subdir), afterSide},
+		Scope:             map[string]any{"directory": filepath.ToSlash(subdir), "patterns": patterns, "level": "symbol", "tests": opts.Tests, "dependencies": opts.IncludeDeps, "tags": opts.Tags, "goos": goos, "goarch": goarch, "captureMaxBytes": changeCaptureBytes, "captureMaxFiles": changeCaptureFiles, "loaderEnvironment": map[string]string{"GOENV": "off", "GOFLAGS": "", "GO111MODULE": "on", "GOPACKAGESDRIVER": "off", "GOWORK": "per-snapshot workspace"}},
 		PreparationMillis: preparation, AnalysisMillis: time.Since(startedAnalysis).Milliseconds(), Limitations: []string{
 			"before and after candidates are separate traversals; paths must never be joined across snapshots",
 			"content hashes cover captured repository files, not the Go toolchain, environment, module cache or remote dependencies",
+			"patch loading disables persistent GOENV, inherited GOFLAGS and external package drivers; pass build tags with --tags; workspace is the nearest captured go.work or off",
 			"working-tree capture includes tracked and non-ignored untracked regular files; ignored/generated files and submodules are not reconstructed",
 			"rename is represented as old-path removal and new-path addition; file seeds are conservative, not changed-line precision",
 			"changed paths outside --dir remain relative to that directory (including ../); unmapped module, workspace and configuration inputs require review",
@@ -404,9 +406,28 @@ func analyzeCapture(capture *capturedSource, subdir string, opts source.Options,
 	opts.Dir = filepath.Join(dir, subdir)
 	opts.Level = graph.LevelSymbol
 	opts.Captured = true
+	if workspace := capturedWorkspace(capture, subdir); workspace != "off" {
+		opts.CapturedWorkspace = filepath.Join(dir, filepath.FromSlash(workspace))
+	} else {
+		opts.CapturedWorkspace = ""
+	}
 	doc, err := loadDoc(&opts, "")
 	if err != nil {
 		return nil, err
 	}
 	return analysis.ChangeCandidates(doc, files, depth, maxEntries), nil
+}
+
+// capturedWorkspace는 임시 디렉터리 밖 상위 workspace를 찾지 않는다.
+func capturedWorkspace(capture *capturedSource, subdir string) string {
+	for {
+		file := filepath.ToSlash(filepath.Join(subdir, "go.work"))
+		if _, ok := capture.files[file]; ok {
+			return file
+		}
+		if subdir == "." {
+			return "off"
+		}
+		subdir = filepath.Dir(subdir)
+	}
 }

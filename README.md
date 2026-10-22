@@ -49,8 +49,14 @@ harvesting or traversal work. `preparationMillis` measures source acquisition;
 `analysisMillis` includes materialization and both harvests/traversals. Source
 capture is limited to 20,000 files and 128 MiB per side; exceeding it is an error.
 There is no harvest time or memory budget. Symlinks, submodules, external local
-module replacements and `GOFLAGS` overlays/modfiles require explicit source
-preparation and produce an error. Ignored/generated files are not reconstructed;
+module replacements require explicit source preparation and produce an error.
+Patch loading fixes `GOENV=off`, empty `GOFLAGS`, `GO111MODULE=on` and
+`GOPACKAGESDRIVER=off`; inherited or persisted overlays, modfiles and other build
+flags are ignored. Use `--tags`, `--goos` and `--goarch` for explicit build scope.
+Each side uses only the nearest captured `go.work`, or disables workspace mode;
+its `workspace` records that repository-relative path or `off` and
+`scope.loaderEnvironment` records the fixed settings. Other environment/toolchain
+settings remain outside the source hash. Ignored/generated files are not reconstructed;
 Go toolchain, environment and module-cache contents are outside the content hash.
 Patch `--pattern` accepts `.` and local `./...` patterns within `--dir`; absolute
 paths, `file=` queries and external package patterns are rejected to keep source

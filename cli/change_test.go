@@ -224,3 +224,99 @@ func TestChangeImpactSubdirectoryRetainsAncestorModuleChange(t *testing.T) {
 		}
 	}
 }
+
+func TestChangeCaptureIgnoresPersistentModfile(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"value.go": "package fixture\nfunc Value() {}\n"})
+	changeGit(t, dir, "init")
+	changeGit(t, dir, "add", ".")
+	changeGit(t, dir, "commit", "-m", "before")
+	external := t.TempDir()
+	modfile := filepath.Join(external, "external.mod")
+	if err := os.WriteFile(modfile, []byte("module example.com/uncaptured\ngo 1.27\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	goenv := filepath.Join(external, "goenv")
+	if err := os.WriteFile(goenv, []byte("GOFLAGS=-modfile="+filepath.ToSlash(modfile)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", goenv)
+	t.Setenv("GOFLAGS", "")
+	if err := os.WriteFile(filepath.Join(dir, "value.go"), []byte("package fixture\nfunc Value() { println(1) }\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := runChangeImpact(source.Options{Dir: dir}, "HEAD", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, side := range []changeSnapshot{report.Before, report.After} {
+		found := false
+		for _, candidate := range side.Candidates {
+			found = found || candidate.ID == "example.com/fixture.Value"
+			if strings.Contains(candidate.ID, "uncaptured") {
+				t.Fatalf("persistent modfile changed captured identity: %+v", side)
+			}
+		}
+		if !found {
+			t.Fatalf("captured declaration missing: %+v", side)
+		}
+	}
+	environment := report.Scope["loaderEnvironment"].(map[string]string)
+	if environment["GOENV"] != "off" || environment["GOFLAGS"] != "" || report.Before.Workspace != "off" || report.After.Workspace != "off" {
+		t.Fatalf("effective loader settings omitted: %+v", report)
+	}
+}
+
+func TestChangeCaptureIgnoresAncestorWorkspace(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"value.go": "package fixture\nfunc Value() {}\n"})
+	changeGit(t, dir, "init")
+	changeGit(t, dir, "add", ".")
+	changeGit(t, dir, "commit", "-m", "before")
+	parent := t.TempDir()
+	if err := os.WriteFile(filepath.Join(parent, "go.work"), []byte("go 1.27\nuse ./uncaptured\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, parent)
+	}
+	report, err := runChangeImpact(source.Options{Dir: dir}, "HEAD", "HEAD", 0, 0)
+	if err != nil {
+		t.Fatalf("ancestor workspace escaped capture boundary: %v", err)
+	}
+	if len(report.Before.Limitations) > 0 && strings.Contains(strings.Join(report.Before.Limitations, " "), "uncaptured") {
+		t.Fatalf("ancestor workspace influenced captured analysis: %+v", report)
+	}
+}
+
+func TestChangeCaptureUsesSnapshotWorkspaceAndIgnoresProcessFlags(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"pkg/value.go": "package pkg\nfunc Value() {}\n"})
+	changeGit(t, dir, "init")
+	changeGit(t, dir, "add", ".")
+	changeGit(t, dir, "commit", "-m", "before")
+	for name, body := range map[string]string{
+		"go.work":      "go 1.27\nuse .\n",
+		"pkg/value.go": "package pkg\nfunc Value() {println(1)}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GOFLAGS", "-overlay="+filepath.Join(t.TempDir(), "missing-overlay.json"))
+	t.Setenv("GOPACKAGESDRIVER", filepath.Join(t.TempDir(), "missing-driver"))
+	t.Setenv("GO111MODULE", "off")
+	report, err := runChangeImpact(source.Options{Dir: filepath.Join(dir, "pkg"), Patterns: []string{"."}}, "HEAD", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Before.Workspace != "off" || report.After.Workspace != "go.work" {
+		t.Fatalf("per-snapshot workspace identity lost: %+v", report)
+	}
+	for _, side := range []changeSnapshot{report.Before, report.After} {
+		found := false
+		for _, candidate := range side.Candidates {
+			found = found || candidate.ID == "example.com/fixture/pkg.Value"
+		}
+		if !found {
+			t.Fatalf("captured subdirectory declaration missing: %+v", side)
+		}
+	}
+}

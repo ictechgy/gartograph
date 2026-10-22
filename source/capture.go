@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"golang.org/x/mod/modfile"
 )
@@ -31,9 +30,6 @@ func ReadCaptureFile(path string, maxBytes int64) ([]byte, error) {
 // ValidateCapture는 복제한 소스가 원 작업 트리나 다른 revision을 로드하지 않게 한다.
 // 저장소 밖의 로컬 모듈은 해시로 고정하지 못하므로 부분 성공 대신 준비 방법을 알린다.
 func ValidateCapture(root string) error {
-	if flags := os.Getenv("GOFLAGS"); strings.Contains(flags, "-modfile") || strings.Contains(flags, "-overlay") {
-		return fmt.Errorf("patch capture cannot freeze GOFLAGS -modfile/-overlay inputs; unset them or prepare those inputs in the repository")
-	}
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
