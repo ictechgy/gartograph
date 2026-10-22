@@ -88,7 +88,16 @@ func runChangeImpact(opts source.Options, base, head string, depth, maxEntries i
 	if err != nil {
 		return nil, fmt.Errorf("capture head: %w", err)
 	}
-	oldFiles, newFiles := changedCaptureFiles(before.files, after.files, subdir)
+	diffRevision := before.origin.Revision
+	if head != "" {
+		diffRevision += ".." + after.origin.Revision
+	}
+	// 내용은 같아도 실행 비트 등 Git 파일 모드가 달라진 patch를 누락하지 않는다.
+	gitFiles, err := changedFilesSince(repo, diffRevision)
+	if err != nil {
+		return nil, err
+	}
+	oldFiles, newFiles := changedCaptureFiles(before.files, after.files, subdir, gitFiles)
 	preparation := time.Since(start).Milliseconds()
 	startedAnalysis := time.Now()
 	beforeSide, err := analyzeCapture(before, subdir, opts, oldFiles, depth, maxEntries)
@@ -324,8 +333,12 @@ func captureHash(files map[string][]byte) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func changedCaptureFiles(before, after map[string][]byte, subdir string) ([]string, []string) {
+func changedCaptureFiles(before, after map[string][]byte, subdir string, gitFiles []string) ([]string, []string) {
 	names := map[string]bool{}
+	gitChanged := map[string]bool{}
+	for _, name := range gitFiles {
+		gitChanged[name] = true
+	}
 	for name := range before {
 		names[name] = true
 	}
@@ -336,7 +349,7 @@ func changedCaptureFiles(before, after map[string][]byte, subdir string) ([]stri
 	for name := range names {
 		old, oldOK := before[name]
 		current, newOK := after[name]
-		if oldOK && newOK && bytes.Equal(old, current) {
+		if oldOK && newOK && bytes.Equal(old, current) && !gitChanged[name] {
 			continue
 		}
 		relative, err := filepath.Rel(subdir, filepath.FromSlash(name))

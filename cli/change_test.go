@@ -170,3 +170,20 @@ func TestChangeCaptureRejectsUnsafeInputs(t *testing.T) {
 		t.Fatalf("invalid mode produced output: %s %s", out.String(), errs.String())
 	}
 }
+
+func TestChangeImpactModeOnlyGitPatch(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"value.go": "package fixture\nfunc Value() {}\n"})
+	changeGit(t, dir, "init")
+	changeGit(t, dir, "add", ".")
+	changeGit(t, dir, "commit", "-m", "before")
+	base := changeGit(t, dir, "rev-parse", "HEAD")
+	changeGit(t, dir, "update-index", "--chmod=+x", "value.go")
+	changeGit(t, dir, "commit", "-m", "mode only")
+	report, err := runChangeImpact(source.Options{Dir: dir}, base, "HEAD", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Before.Files) != 1 || report.Before.Files[0] != "value.go" || len(report.After.Candidates) == 0 {
+		t.Fatalf("mode-only patch lost: %+v", report)
+	}
+}
