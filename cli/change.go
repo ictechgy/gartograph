@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ictechgy/gartograph/analysis"
 	"github.com/ictechgy/gartograph/graph"
@@ -74,9 +75,19 @@ func runChangeImpact(opts source.Options, base, head string, depth, maxEntries i
 		return nil, fmt.Errorf("locate Git repository: %w", err)
 	}
 	repo = filepath.Clean(filepath.FromSlash(strings.TrimSpace(repo)))
+	// Git과 호출자가 같은 디렉터리를 /private/var와 /var 등 다른 별칭으로 고를 수 있다.
+	// 캡처 안 원문 경로는 그대로 두고, 선택한 디렉터리만 물리 경로로 비교한다.
+	repo, err = filepath.EvalSymlinks(repo)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Git worktree directory: %w", err)
+	}
 	requested, err := filepath.Abs(opts.Dir)
 	if err != nil {
 		return nil, err
+	}
+	requested, err = filepath.EvalSymlinks(requested)
+	if err != nil {
+		return nil, fmt.Errorf("resolve analysis directory: %w", err)
 	}
 	subdir, err := filepath.Rel(repo, requested)
 	if err != nil || (subdir != "." && !filepath.IsLocal(subdir)) {
@@ -166,6 +177,9 @@ func captureRevision(repo, rev string) (*capturedSource, error) {
 		}
 		if err := capturePath(name); err != nil {
 			return nil, err
+		}
+		if _, exists := modes[name]; exists {
+			return nil, fmt.Errorf("duplicate Git source path %q", name)
 		}
 		names = append(names, name)
 		ids = append(ids, fields[2])
@@ -346,10 +360,13 @@ func workingFileModes(repo string) (map[string]string, bool, error) {
 }
 
 func capturePath(name string) error {
-	if !filepath.IsLocal(filepath.FromSlash(name)) || strings.ContainsAny(name, "\\:") || strings.Contains(name, "\x00") {
+	if !utf8.ValidString(name) || !filepath.IsLocal(filepath.FromSlash(name)) || strings.ContainsAny(name, "\\:") || strings.Contains(name, "\x00") {
 		return fmt.Errorf("unsafe or non-portable source path %q", name)
 	}
 	for _, part := range strings.Split(name, "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("noncanonical source path %q", name)
+		}
 		if strings.EqualFold(part, ".git") {
 			return fmt.Errorf("Git metadata is not source: %q", name)
 		}
@@ -412,23 +429,8 @@ func analyzeCapture(capture *capturedSource, subdir string, opts source.Options,
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
-	seen := map[string]bool{}
-	for name, data := range capture.files {
-		key := name
-		if runtime.GOOS == "windows" {
-			key = strings.ToLower(name)
-		}
-		if seen[key] {
-			return nil, fmt.Errorf("source paths collide on this platform: %s", name)
-		}
-		seen[key] = true
-		full := filepath.Join(dir, filepath.FromSlash(name))
-		if err = os.MkdirAll(filepath.Dir(full), 0700); err != nil {
-			return nil, err
-		}
-		if err = os.WriteFile(full, data, 0600); err != nil {
-			return nil, err
-		}
+	if err := materializeCapture(dir, capture); err != nil {
+		return nil, err
 	}
 	if err = source.ValidateCapture(dir); err != nil {
 		return nil, err
@@ -446,6 +448,65 @@ func analyzeCapture(capture *capturedSource, subdir string, opts source.Options,
 		return nil, err
 	}
 	return analysis.ChangeCandidates(doc, files, depth, maxEntries), nil
+}
+
+// 임시 root는 새로 만든 전용 디렉터리다. 그 안에서도 이름별 FS 신원이 겹치면 원문을 덮지 않는다.
+func materializeCapture(dir string, capture *capturedSource) error {
+	names := make([]string, 0, len(capture.files))
+	for name := range capture.files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	seen := map[string]bool{}
+	directories := map[string]bool{"": true}
+	for _, name := range names {
+		if err := capturePath(name); err != nil {
+			return err
+		}
+		key := name
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(name)
+		}
+		if seen[key] {
+			return fmt.Errorf("source paths collide on this platform: %q", name)
+		}
+		seen[key] = true
+		parts := strings.Split(name, "/")
+		for depth := 1; depth < len(parts); depth++ {
+			prefix := strings.Join(parts[:depth], "/")
+			if directories[prefix] {
+				continue
+			}
+			// 다른 원문 prefix가 기존 디렉터리를 가리키면 case/Unicode 별칭이 겹친 것이다.
+			if err := os.Mkdir(filepath.Join(dir, filepath.FromSlash(prefix)), 0700); err != nil {
+				if os.IsExist(err) {
+					return fmt.Errorf("source paths collide on this platform: %q", prefix)
+				}
+				return err
+			}
+			directories[prefix] = true
+		}
+		file, err := os.OpenFile(filepath.Join(dir, filepath.FromSlash(name)), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			if os.IsExist(err) {
+				return fmt.Errorf("source paths collide on this platform: %q", name)
+			}
+			return err
+		}
+		data := capture.files[name]
+		n, writeErr := file.Write(data)
+		closeErr := file.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		if n != len(data) {
+			return io.ErrShortWrite
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	return nil
 }
 
 // capturedWorkspace는 임시 디렉터리 밖 상위 workspace를 찾지 않는다.

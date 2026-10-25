@@ -66,6 +66,14 @@ paths, `file=` queries and external package patterns are rejected to keep source
 selection inside each capture. Changes elsewhere in the repository remain in
 `files`/`unmappedFiles` relative to `--dir` (for example `../go.mod`), so ancestor
 module/workspace changes are still visible when analyzing a subdirectory.
+Directory symlink aliases in the selected `--dir` and Git worktree root are
+resolved before checking containment. This preserves the root or subdirectory
+scope when macOS reports a temporary path through its `/private/var` alias.
+This does not allow symlinks inside captured source. Raw Git paths must have
+canonical UTF-8 components; duplicate entries and names that collide under the
+capture filesystem's case or Unicode rules fail instead of overwriting inputs.
+The directory hierarchy must remain stable during capture; it is not an atomic
+filesystem snapshot.
 Runtime callback wiring, reflection, HTTP/DB payload compatibility and dynamic
 configuration remain unassessed or limited by the harvested graph.
 
