@@ -14,6 +14,19 @@ kartograph(Kotlin/Android) · dartograph(Dart/Flutter) ·
 [schemagraph](https://github.com/ictechgy/schemagraph)(DB) ·
 isthmus(언어 경계 조인).
 
+## 빠른 시작
+
+검사하려는 Go module에서 실행한다. 설치는 발행된 v0.10.0을 고정하며 findings와 limitations는 검토 근거이다.
+
+```sh
+go install github.com/ictechgy/gartograph/cmd/gartograph@v0.10.0
+gartograph --version
+gartograph graph --level symbol
+gartograph dead
+```
+
+[Contributing](CONTRIBUTING.md)
+
 ## 왜
 
 Go에는 이미 `deadcode`, `goda`, `go-arch-lint`, `go-callvis`가 있지만 각자

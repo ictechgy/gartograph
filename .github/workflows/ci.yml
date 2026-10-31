@@ -41,6 +41,8 @@ jobs:
       - run: Scripts/coverage.sh
 
       # 도그푸딩 — 이 도구로 이 저장소를 분석한다
+      # 기존 직렬화·공개 API findings를 임의의 strict baseline으로 승인하지 않고 근거를 보고한다.
+      - run: go run ./cmd/gartograph dead --format json
       - run: go run ./cmd/gartograph rules --strict
       - run: go run ./cmd/gartograph cycles --level type --strict
       - run: go run ./cmd/gartograph cycles --level symbol --strict

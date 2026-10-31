@@ -15,6 +15,19 @@ kartograph (Kotlin/Android) · dartograph (Dart/Flutter) ·
 [schemagraph](https://github.com/ictechgy/schemagraph) (databases) ·
 isthmus (cross-language joins).
 
+## Quick start
+
+Run these commands in a Go module you want to inspect. Install pins the published v0.10.0; findings and limitations are evidence for review.
+
+```sh
+go install github.com/ictechgy/gartograph/cmd/gartograph@v0.10.0
+gartograph --version
+gartograph graph --level symbol
+gartograph dead
+```
+
+[Contributing](CONTRIBUTING.md)
+
 ## Why
 
 Go already has `deadcode`, `goda`, `go-arch-lint`, and `go-callvis` — but each
