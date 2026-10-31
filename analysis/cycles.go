@@ -26,9 +26,18 @@ type Cycle struct {
 
 // Cycles는 Document의 의존 간선 위에서 Tarjan SCC로 순환을 찾는다.
 // 크기 2 이상의 SCC와 자기루프를 순환으로 본다.
-// contains 간선은 소유 관계라 대상이 아니다(Adjacency가 이미 걸러 준다).
+// contains는 소유 관계이고 CHA 후보는 확정 호출이 아니므로 순환 증거에서 제외한다.
 func Cycles(d *graph.Document) []Cycle {
-	adj := graph.Adjacency(d)
+	adj := make(map[string][]string, len(d.Vertices))
+	for _, edge := range d.Edges {
+		if edge.Kind != graph.EdgeContains && !edge.Candidate {
+			adj[edge.From] = append(adj[edge.From], edge.To)
+		}
+	}
+	for from := range adj {
+		slices.Sort(adj[from])
+		adj[from] = slices.Compact(adj[from])
+	}
 	index := make(map[string]int)
 	low := make(map[string]int)
 	onStack := make(map[string]bool)
@@ -112,7 +121,7 @@ func attachEvidence(cycles []Cycle, d *graph.Document) {
 		}
 	}
 	for _, e := range d.Edges {
-		if e.Kind == graph.EdgeContains {
+		if e.Kind == graph.EdgeContains || e.Candidate {
 			continue
 		}
 		fromCycle, ok := owner[e.From]
