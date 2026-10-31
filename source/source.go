@@ -8,6 +8,7 @@ package source
 import (
 	"bufio"
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io"
@@ -506,6 +507,11 @@ func markGenerated(doc *graph.Document, kept map[string]*packages.Package) {
 	fileGen := make(map[string]bool)
 	pkgAllGen := make(map[string]bool)
 	for _, p := range kept {
+		for _, file := range p.GoFiles {
+			if _, known := fileGen[file]; !known {
+				fileGen[file] = isGeneratedFile(file)
+			}
+		}
 		files := p.CompiledGoFiles
 		if len(files) == 0 {
 			files = p.GoFiles
@@ -519,10 +525,43 @@ func markGenerated(doc *graph.Document, kept map[string]*packages.Package) {
 		}
 		pkgAllGen[p.PkgPath] = all
 	}
+	// //line은 보고 위치만 바꾼다. 로드한 실제 token file의 생성 출처를 별도로 보존한다.
+	needed := make(map[graph.Position]bool)
+	for _, vertex := range doc.Vertices {
+		if vertex.Position != nil {
+			if _, known := fileGen[vertex.Position.File]; !known {
+				needed[*vertex.Position] = true
+			}
+		}
+	}
+	provenance := make(map[graph.Position]bool)
+	for _, p := range kept {
+		for _, file := range p.Syntax {
+			physical := p.Fset.PositionFor(file.Pos(), false).Filename
+			generated, known := fileGen[physical]
+			if !known {
+				generated = isGeneratedFile(physical)
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				if node == nil {
+					return true
+				}
+				logical := position(p, node.Pos())
+				if logical != nil && needed[*logical] {
+					previous, seen := provenance[*logical]
+					provenance[*logical] = generated && (!seen || previous)
+				}
+				return true
+			})
+		}
+	}
 	for i := range doc.Vertices {
 		v := &doc.Vertices[i]
 		if v.Position != nil {
 			v.Generated = fileGen[v.Position.File]
+			if generated, known := provenance[*v.Position]; known {
+				v.Generated = generated
+			}
 		} else if v.Kind == graph.KindPackage {
 			v.Generated = pkgAllGen[v.ID]
 		}

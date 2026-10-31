@@ -166,14 +166,25 @@ func countExports(fset *token.FileSet, path string) int {
 		return 0
 	}
 	n := 0
-	for _, group := range f.Comments {
-		for _, c := range group.List {
-			if strings.HasPrefix(c.Text, "//export ") {
-				n++
-			}
+	for _, declaration := range f.Decls {
+		if function, ok := declaration.(*ast.FuncDecl); ok && cgoExported(function) {
+			n++
 		}
 	}
 	return n
+}
+
+// cgoExported는 함수 이름과 일치하는 실제 cgo export 지시자만 인정한다.
+func cgoExported(function *ast.FuncDecl) bool {
+	if function.Recv != nil || function.Doc == nil {
+		return false
+	}
+	for _, comment := range function.Doc.List {
+		if name, ok := strings.CutPrefix(comment.Text, "//export "); ok && strings.TrimSpace(name) == function.Name.Name {
+			return true
+		}
+	}
+	return false
 }
 
 // realPath는 계약이 요구하는 POSIX realpath 정규화를 한다.

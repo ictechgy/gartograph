@@ -14,6 +14,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ictechgy/gartograph/graph"
 	"golang.org/x/tools/go/packages"
@@ -674,7 +676,9 @@ func (h *harvester) addBodyEdges(internal []*packages.Package, wantSymbols bool)
 		}
 		for _, file := range p.Syntax {
 			h.revisit = h.revisits(p, file.Pos())
-			if !h.revisit {
+			physical := p.Fset.PositionFor(file.Pos(), false).Filename
+			logical := p.Fset.Position(file.Pos()).Filename
+			if !h.revisit && (!h.isGenerated(physical) || (h.loadedFiles[logical] && !h.isGenerated(logical))) {
 				h.linkname += countLinknames(file)
 			}
 			for _, decl := range file.Decls {
@@ -773,7 +777,7 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 		}
 		// //deadcode:keep·//gartograph:keep은 선언 옆에 "의도적으로
 		// 남긴다"를 적는 표지다 — 루트 목록은 그래프 사실이라 문서에 남는다.
-		if keepMarked(d.Doc) {
+		if keepMarked(d.Doc) || cgoExported(d) {
 			h.root(from)
 		}
 		h.sigTypeEdges(p, d.Type, from)
@@ -834,6 +838,12 @@ func (h *harvester) isGenerated(file string) bool {
 func loadedFileSet(pkgs []*packages.Package) map[string]bool {
 	out := make(map[string]bool)
 	for _, p := range pkgs {
+		for _, syntax := range p.Syntax {
+			out[p.Fset.PositionFor(syntax.Pos(), false).Filename] = true
+		}
+		for _, file := range p.GoFiles {
+			out[file] = true
+		}
 		files := p.CompiledGoFiles
 		if len(files) == 0 {
 			files = p.GoFiles
@@ -1457,10 +1467,43 @@ func isTestEntry(p *packages.Package, d *ast.FuncDecl) bool {
 	if !strings.HasSuffix(file, "_test.go") {
 		return false
 	}
-	for _, prefix := range []string{"Test", "Benchmark", "Example", "Fuzz"} {
-		if strings.HasPrefix(d.Name.Name, prefix) {
-			return true
+	if d.Recv != nil || d.Type.TypeParams != nil {
+		return false
+	}
+	for prefix, argument := range map[string]string{"Test": "T", "Benchmark": "B", "Example": "", "Fuzz": "F"} {
+		if !strings.HasPrefix(d.Name.Name, prefix) {
+			continue
 		}
+		suffix := strings.TrimPrefix(d.Name.Name, prefix)
+		if suffix != "" {
+			next, _ := utf8.DecodeRuneInString(suffix)
+			if unicode.IsLower(next) {
+				continue
+			}
+		}
+		if d.Name.Name == "TestMain" {
+			argument = "M"
+		}
+		object := p.TypesInfo.Defs[d.Name]
+		if object == nil {
+			return false
+		}
+		signature, ok := object.Type().(*types.Signature)
+		if !ok || signature.Results().Len() != 0 {
+			return false
+		}
+		if argument == "" {
+			return signature.Params().Len() == 0
+		}
+		if signature.Params().Len() != 1 || signature.Variadic() {
+			return false
+		}
+		pointer, ok := signature.Params().At(0).Type().(*types.Pointer)
+		if !ok {
+			return false
+		}
+		named, ok := types.Unalias(pointer.Elem()).(*types.Named)
+		return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "testing" && named.Obj().Name() == argument
 	}
 	return false
 }
