@@ -1481,9 +1481,6 @@ func isTestEntry(p *packages.Package, d *ast.FuncDecl) bool {
 				continue
 			}
 		}
-		if d.Name.Name == "TestMain" {
-			argument = "M"
-		}
 		object := p.TypesInfo.Defs[d.Name]
 		if object == nil {
 			return false
@@ -1503,7 +1500,8 @@ func isTestEntry(p *packages.Package, d *ast.FuncDecl) bool {
 			return false
 		}
 		named, ok := types.Unalias(pointer.Elem()).(*types.Named)
-		return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "testing" && named.Obj().Name() == argument
+		return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "testing" &&
+			(named.Obj().Name() == argument || d.Name.Name == "TestMain" && named.Obj().Name() == "M")
 	}
 	return false
 }

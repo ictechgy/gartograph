@@ -26,7 +26,7 @@ gartograph graph --level symbol
 gartograph dead
 ```
 
-[Contributing](CONTRIBUTING.md)
+[Contributing](https://github.com/ictechgy/gartograph/blob/main/CONTRIBUTING.md)
 
 ## Why
 

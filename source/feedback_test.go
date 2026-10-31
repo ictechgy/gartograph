@@ -42,6 +42,25 @@ func Fuzzdata() {}
 	}
 }
 
+func TestReviewTestMainAcceptsBothRunnerSignatures(t *testing.T) {
+	for _, parameter := range []string{"T", "M"} {
+		t.Run(parameter, func(t *testing.T) {
+			dir := testutil.WriteModule(t, map[string]string{
+				"go.mod":       "module example.com/testmain\n\ngo 1.27\n",
+				"main.go":      "package main\nfunc main() {}\n",
+				"main_test.go": "package main\nimport \"testing\"\nfunc TestMain(t *testing." + parameter + ") {}\n",
+			})
+			doc, err := Load(Options{Dir: dir, Level: graph.LevelSymbol, Tests: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(doc.Roots, "example.com/testmain.TestMain") {
+				t.Error("valid TestMain runner entry lost")
+			}
+		})
+	}
+}
+
 func TestFeedbackCgoCallbackAndGeneratedProvenance(t *testing.T) {
 	if _, err := exec.LookPath("clang"); err != nil {
 		t.Skip("C compiler unavailable")
