@@ -490,6 +490,16 @@ type cyclesReport struct {
 // 있다"인지 소비자가 가를 수 없었다. stale은 더 이상 나오지 않는 baseline 순환 수다(MCP는 0).
 func cyclesLimitations(doc *graph.Document, stale int) []string {
 	limitations := append([]string(nil), doc.Limitations...)
+	candidates := 0
+	for _, edge := range doc.Edges {
+		if edge.Candidate && edge.Kind != graph.EdgeContains {
+			candidates++
+		}
+	}
+	if candidates > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d CHA candidate dependency relations in the input are excluded from definite cycle analysis", candidates))
+	}
 	if stale > 0 {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d baseline cycles no longer occur; regenerate the baseline", stale))

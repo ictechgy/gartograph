@@ -2,8 +2,10 @@
 package analysis
 
 import (
+	"cmp"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -115,13 +117,33 @@ func CheckRules(d *graph.Document, cfg *config.File) *RuleReport {
 	rep.Unmapped = mapping.Unmapped
 	rep.UnmappedExternal = mapping.UnmappedExternal
 	rep.UnmatchedComponents = mapping.UnmatchedComponents
-	sort.Slice(rep.Violations, func(i, j int) bool {
-		if rep.Violations[i].From != rep.Violations[j].From {
-			return rep.Violations[i].From < rep.Violations[j].From
-		}
-		return rep.Violations[i].To < rep.Violations[j].To
-	})
+	slices.SortStableFunc(rep.Violations, compareViolations)
 	return rep
+}
+
+// compareViolations는 같은 간선의 여러 규칙·위치도 결정적으로 정렬한다.
+func compareViolations(a, b Violation) int {
+	for _, pair := range [][2]string{{a.From, b.From}, {a.To, b.To}, {a.Rule, b.Rule},
+		{string(a.Kind), string(b.Kind)}, {a.Name, b.Name}, {a.Reason, b.Reason},
+		{a.FromComponent, b.FromComponent}, {a.ToComponent, b.ToComponent}} {
+		if order := strings.Compare(pair[0], pair[1]); order != 0 {
+			return order
+		}
+	}
+	if order := slices.Compare(a.Path, b.Path); order != 0 {
+		return order
+	}
+	if a.Position == nil {
+		if b.Position == nil {
+			return 0
+		}
+		return -1
+	}
+	if b.Position == nil {
+		return 1
+	}
+	return cmp.Or(strings.Compare(a.Position.File, b.Position.File),
+		cmp.Compare(a.Position.Line, b.Position.Line), cmp.Compare(a.Position.Column, b.Position.Column))
 }
 
 // ruleBroken은 간선이 어긴 규칙 이름과 사유를 돌려준다. 위반이 없으면 ""다.
