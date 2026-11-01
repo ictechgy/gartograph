@@ -21,6 +21,13 @@
 - `dead`(CLI·MCP): 필드 finding에 정점의 `tagKeys`를 옮겨 싣고, 태그가 붙은 unreachable 필드가 있으면 그 수를
   limitation `N unreachable fields carry struct tags (tagKeys) …`로 센다. 보고 범위와 `--strict` 판정은 그대로다
   — 태그 필드를 보존할지는 정하지 않았다. 이 변경 전에 저장한 문서(`--graph`)에는 키가 없어 limitation도 없다.
+- `--tests` 없이 수확하는 명령(`graph`·`dead`·`metrics`·`rules`·`cycles` 등, module 레벨 제외): 적재한 어느 패키지의
+  제품 파일도 import하지 않고 다른 패키지의 `_test.go` 파일만 import하는 주 모듈 패키지(테스트 헬퍼)를 세어
+  limitation `N packages are imported only by _test.go files of other packages (first: …) … (use --tests to
+  include)`로 남긴다. 테스트 파일의 import는 go/build로 같은 빌드 제약(`--tags`·`--goos`/`--goarch`)을 따라 읽는다.
+  `metrics`의 orphan과 `dead`의 보고는 그대로다. 이 저장소에서는 `internal/testutil`이 해당한다. 테스트 파일만
+  읽으므로 1000개 패키지·테스트 파일 2000개 합성 모듈의 package 레벨 수확이 약 0.16초(10회 중앙값 1.08→1.25초)
+  늘었다.
 
 ## [0.10.0] - 2026-10-22
 

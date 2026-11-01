@@ -116,3 +116,48 @@ func TestFeedbackDeadReportsTaggedFieldsWithKeys(t *testing.T) {
 		t.Fatalf("no tagged finding, no limitation: %v", plain.Limitations)
 	}
 }
+
+// 테스트에서만 import되는 헬퍼 패키지는 기본 실행에서 orphan·unreachable로 남되(보고 범위는 그대로), metrics와
+// dead 보고가 그 몫이 테스트를 수확하지 않은 결과라는 limitation을 싣는다. --tests로 수확하면 헬퍼가 살아나고
+// limitation도 없다.
+func TestFeedbackTestOnlyHelperIsExplained(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go":                   "package main\n\nimport \"example.com/fixture/lib\"\n\nfunc main() { lib.Run() }\n",
+		"lib/lib.go":                "package lib\n\nfunc Run() {}\n",
+		"lib/lib_test.go":           "package lib\n\nimport (\n\t\"testing\"\n\n\t\"example.com/fixture/internal/helper\"\n)\n\nfunc TestRun(t *testing.T) { helper.Help() }\n",
+		"internal/helper/helper.go": "package helper\n\nfunc Help() {}\n",
+		".gartograph.yml":           "components:\n  app: [\".\", \"lib\"]\n  helper: [\"internal/helper\"]\ndeps:\n  app: []\n",
+	})
+	const note = "1 packages are imported only by _test.go files of other packages (first: example.com/fixture/internal/helper)"
+	var metrics struct {
+		Orphans     []string `json:"orphans"`
+		Limitations []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(cliReport(t, "metrics", "--format", "json", "--dir", dir)), &metrics); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(metrics.Orphans, []string{"example.com/fixture/internal/helper"}) ||
+		!hasLimitation(metrics.Limitations, note, "use --tests") {
+		t.Fatalf("metrics must keep the orphan and explain it: %+v", metrics)
+	}
+	var dead struct {
+		Unreachable []struct {
+			ID string `json:"id"`
+		} `json:"unreachable"`
+		Limitations []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(cliReport(t, "dead", "--format", "json", "--dir", dir)), &dead); err != nil {
+		t.Fatal(err)
+	}
+	if len(dead.Unreachable) != 1 || dead.Unreachable[0].ID != "example.com/fixture/internal/helper.Help" ||
+		!hasLimitation(dead.Limitations, note, "use --tests") {
+		t.Fatalf("dead must keep the helper finding and explain it: %+v", dead)
+	}
+	dead.Unreachable, dead.Limitations = nil, nil
+	if err := json.Unmarshal([]byte(cliReport(t, "dead", "--format", "json", "--dir", dir, "--tests")), &dead); err != nil {
+		t.Fatal(err)
+	}
+	if len(dead.Unreachable) != 0 || hasLimitation(dead.Limitations, "", "imported only by _test.go files") {
+		t.Fatalf("--tests must harvest the importer: %+v", dead)
+	}
+}

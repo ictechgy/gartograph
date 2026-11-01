@@ -135,7 +135,8 @@ gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 권한 비트를 보존합니다. 출력 링크는 따라가지 않고 링크 자체를 교체하며, 쓰기 실패 시 기존 산출물을 보존합니다.
 
 공통 플래그: `--dir`(모듈 루트), `--pattern`(반복 가능), `--tests`(테스트
-진입점이 보존 루트가 됨), `--deps`, `--tags`(빌드 태그; 제약으로 빠진 파일은
+진입점이 보존 루트가 됨; 끄면 다른 패키지의 `_test.go`에서만 import되는 테스트 헬퍼
+패키지 수를 limitations에 셈), `--deps`, `--tags`(빌드 태그; 제약으로 빠진 파일은
 limitations에 셈), `--goos`/`--goarch`(다른 타깃 플랫폼으로 수확 — 선택 사실이
 limitations에 남음), `--graph`(저장 문서 읽기).
 종료 코드: `0` 정상 · `1` strict 위반 · `2` 사용법/분석 오류.

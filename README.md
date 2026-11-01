@@ -253,7 +253,7 @@ Harvest flags (all analysis commands):
 |---|---|---|
 | `--dir` | `.` | module root to analyze |
 | `--pattern` | `./...` | package pattern (repeatable) |
-| `--tests` | off | include test variant packages (Test/Benchmark/Example/Fuzz become retention roots) |
+| `--tests` | off | include test variant packages (Test/Benchmark/Example/Fuzz become retention roots); without it, packages imported only by other packages' `_test.go` files (test helpers) are counted in `limitations` |
 | `--deps` | off | include dependency packages/modules outside the main module |
 | `--tags` | — | build tags for the loader; files excluded by constraints are counted in `limitations` |
 | `--goos`/`--goarch` | host | harvest for another target platform; a `limitations` note records the choice |
