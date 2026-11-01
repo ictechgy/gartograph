@@ -496,12 +496,15 @@ func (h *harvester) fieldVertices(tn *types.TypeName, p *packages.Package) {
 	}
 }
 
-// structTagKeys는 struct tag의 키를 reflect.StructTag 관례(공백으로 구분한 key:"value" 쌍)대로 읽어
-// 정렬해 돌려준다. 같은 키가 거듭되면 reflect.StructTag.Lookup처럼 첫 값이 정한다. 값이 정확히
-// "-"인 키는 뺀다 — encoding/json·yaml·xml·toml·bson·mapstructure·db 등이 함께 쓰는 "이 인코더는
-// 필드를 건너뛴다" 표기라 그 키로는 읽히지 않는다("-,"는 이름이 "-"인 필드라 남는다).
-// 관례를 벗어난 곳에서는 reflect처럼 읽기를 멈춘다 — 그 뒤 키는 reflect로도 찾을 수 없다.
+// structTagKeys는 struct tag에서 reflect.StructTag.Lookup이 찾는 키를 정렬해 돌려준다(공백으로 구분한
+// key:"value" 쌍). 같은 키가 거듭되면 Lookup처럼 첫 쌍이 정하고, 값을 인용 해제할 수 없는 쌍은 Lookup처럼
+// 그 키만 못 찾고 다음 쌍으로 넘어간다. 값이 정확히 "-"인 키는 뺀다 — encoding/json·yaml·xml·toml·bson·
+// mapstructure·db 등이 함께 쓰는 "이 인코더는 필드를 건너뛴다" 표기라 그 키로는 읽히지 않는다("-,"는 이름이
+// "-"인 필드라 남는다). 쌍 형식을 벗어난 곳에서는 reflect처럼 읽기를 멈춘다 — 그 뒤 키는 reflect로도 찾을 수 없다.
 func structTagKeys(tag string) []string {
+	if tag == "" {
+		return nil
+	}
 	var keys []string
 	seen := map[string]bool{}
 	for tag != "" {
@@ -526,11 +529,8 @@ func structTagKeys(tag string) []string {
 			break
 		}
 		value, err := strconv.Unquote(tag[:i+1])
-		if err != nil {
-			break
-		}
 		tag = tag[i+1:]
-		if !seen[name] && value != "-" {
+		if !seen[name] && err == nil && value != "-" {
 			keys = append(keys, name)
 		}
 		seen[name] = true

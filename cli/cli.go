@@ -779,7 +779,7 @@ func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknow
 	}
 	if n := taggedFieldFindings(findings); n > 0 {
 		limitations = append(limitations, fmt.Sprintf(
-			"%d unreachable fields carry struct tags (tagKeys); tags are read only through reflection "+
+			"%d unreachable exported fields carry struct tags (tagKeys); tags are read only through reflection "+
 				"(encoders such as encoding/json or yaml, ORMs, validators), so these fields may be accessed "+
 				"where this graph cannot see", n))
 	}
@@ -819,13 +819,14 @@ func hasFieldFinding(findings []analysis.Finding) bool {
 	return false
 }
 
-// taggedFieldFindings는 struct tag 키가 있는 필드 보고의 수다. 태그를 읽는 인코더·ORM은 reflection으로
-// 필드에 닿아 이름 접근이 없어도 와이어 형식의 일부일 수 있다. 보존할지(기본 범위 변경)는 메인테이너
-// 결정이라 보고는 그대로 두고, 그 몫을 세어 일반 필드 limitation보다 구체적으로 알린다.
+// taggedFieldFindings는 struct tag 키가 있는 공개 필드 보고의 수다. 태그를 읽는 인코더·ORM은 reflection으로
+// 필드에 닿아 이름 접근이 없어도 와이어 형식의 일부일 수 있다. encoding/json·yaml·xml·toml·gorm은 비공개 필드를
+// 건너뛰므로 비공개 필드는 키를 실어도 세지 않는다. 보존할지(기본 범위 변경)는 메인테이너 결정이라 보고는
+// 그대로 두고, 그 몫을 세어 일반 필드 limitation보다 구체적으로 알린다.
 func taggedFieldFindings(findings []analysis.Finding) int {
 	n := 0
 	for _, f := range findings {
-		if f.Kind == graph.KindField && len(f.TagKeys) > 0 {
+		if f.Kind == graph.KindField && f.Exported && len(f.TagKeys) > 0 {
 			n++
 		}
 	}

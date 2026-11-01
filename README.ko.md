@@ -406,8 +406,8 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
   (`x.F`, `T{F: v}`, 위치 리터럴, 승격 경로, `==`)이 없는 필드는
   unreachable입니다. reflection·직렬화·통째 복사는 그래프에 안 보이므로
   필드 보고가 나오면 해당 limitation이 함께 실립니다. 필드 finding은 정점의
-  `tagKeys`를 그대로 싣고, 보고는 struct tag가 붙은 unreachable 필드 수를
-  limitation으로 셉니다. 태그가 붙은 필드도 보고되고 `--strict`도 그대로
+  `tagKeys`를 그대로 싣고, 보고는 struct tag가 붙은 unreachable 공개 필드 수를
+  limitation으로 셉니다(`encoding/json` 같은 인코더는 비공개 필드를 건너뜁니다). 태그가 붙은 필드도 보고되고 `--strict`도 그대로
   실패합니다 — 키는 그 필드가 reflection으로 읽히는 와이어 형식(`json`·`yaml`·
   `db` 등)의 일부일 수 있다는 사실입니다.
 - 생성 파일(`// Code generated ... DO NOT EDIT.`, 빌드 캐시에 있는 cgo의
@@ -473,7 +473,7 @@ baseline은 `ID`와 `ID#symbol`을 같은 심볼로 짝짓습니다.
 type 정점은 `interface: true` 또는 `fields`(선언 순서의 `"name:Type"` 목록)를
 답니다 — `diff`가 인터페이스 메서드 추가와 struct 필드 계약 파괴를
 breaking으로 분류하는 재료입니다.
-struct tag가 붙은 field 정점은 `tagKeys`를 답니다 — 태그를 `reflect.StructTag` 방식으로 읽은
+struct tag가 붙은 field 정점은 `tagKeys`를 답니다 — `reflect.StructTag.Lookup`이 찾는
 키를 정렬한 목록입니다(`json:"a" yaml:"b"` → `["json", "yaml"]`, 값이 정확히 `-`인 키는 뺍니다).
 태그는 reflection으로만 읽히므로 이 키는 그래프가 보지 못하는 접근 경로(인코더·ORM·검증기)의
 기록입니다.

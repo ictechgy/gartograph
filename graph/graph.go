@@ -130,7 +130,7 @@ type Vertex struct {
 	// TagKeys는 field 정점의 struct tag 키를 정렬해 담는다(`json:"a" yaml:"b"`면 json·yaml).
 	// 태그는 reflection으로만 읽히므로 키가 있는 필드는 인코더·ORM·검증기처럼 그래프가 못 보는
 	// 접근 경로를 가진다는 수확 사실이다 — 판정(보존 여부)은 analysis·소비자가 한다. 값이 정확히
-	// "-"인 키(그 인코더가 건너뛰는 필드)와 reflect.StructTag 관례를 벗어난 나머지는 싣지 않는다.
+	// "-"인 키(그 인코더가 건너뛰는 필드)와 reflect.StructTag.Lookup이 찾지 못하는 키는 싣지 않는다.
 	TagKeys []string `json:"tagKeys,omitempty"`
 	// Methods는 인터페이스 타입 정점의 전체 메서드 집합(임베드 포함, 모듈 밖 인터페이스
 	// 임베드도)을 "Name(params) results" 형태로 정렬해 담는다(파라미터 이름 없음,

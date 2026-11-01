@@ -68,13 +68,15 @@ func TestFeedbackDeadMarksGeneratedFindings(t *testing.T) {
 	}
 }
 
-// 태그가 붙은 필드도 지금처럼 보고되고 --strict에 남는다. 보고는 키를 싣고, 그런 필드 보고가 있을 때만 그 수를
-// limitation으로 센다 — 인코더·ORM이 reflection으로 읽는다는 사실을 보고에서 바로 볼 수 있어야
-// 에이전트가 와이어 형식을 깨는 삭제를 하지 않는다.
+// 태그가 붙은 필드도 지금처럼 보고되고 --strict에 남는다. 보고는 키를 싣고, 그런 공개 필드 보고가 있을 때만 그
+// 수를 limitation으로 센다 — 인코더·ORM이 reflection으로 읽는다는 사실을 보고에서 바로 볼 수 있어야
+// 에이전트가 와이어 형식을 깨는 삭제를 하지 않는다. encoding/json·yaml·xml·toml·gorm은 비공개 필드를 건너뛰므로
+// 태그가 붙은 비공개 필드는 키만 싣고 세지 않는다.
 func TestFeedbackDeadReportsTaggedFieldsWithKeys(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
 		"main.go": "package main\n\nfunc main() { _ = R{} }\n\n" +
-			"type R struct {\n\tA int `json:\"a\"`\n\tB int `json:\"-\"`\n\tc int\n\tD int `yaml:\"d\" db:\"d\"`\n}\n",
+			"type R struct {\n\tA int `json:\"a\"`\n\tB int `json:\"-\"`\n\tc int\n\tD int `yaml:\"d\" db:\"d\"`\n" +
+			"\te int `json:\"e\"`\n}\n",
 	})
 	var rep struct {
 		Unreachable []struct {
@@ -93,11 +95,12 @@ func TestFeedbackDeadReportsTaggedFieldsWithKeys(t *testing.T) {
 	want := map[string][]string{
 		"example.com/fixture.(R).A": {"json"}, "example.com/fixture.(R).B": nil,
 		"example.com/fixture.(R).c": nil, "example.com/fixture.(R).D": {"db", "yaml"},
+		"example.com/fixture.(R).e": {"json"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tagged fields must stay reported with their keys: got %v, want %v", got, want)
 	}
-	if !hasLimitation(rep.Limitations, "2 unreachable fields carry struct tags", "reflection") {
+	if !hasLimitation(rep.Limitations, "2 unreachable exported fields carry struct tags", "reflection") {
 		t.Fatalf("tagged field findings must be counted in a limitation: %v", rep.Limitations)
 	}
 	if code, _, errb := run(t, "dead", "--dir", dir, "--strict"); code != 1 {

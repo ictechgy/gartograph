@@ -565,7 +565,8 @@ timeout, `ulimit`, or a container.
   `==`) is unreachable. Reflection, serialization, and whole-struct copies
   are invisible — the report carries that limitation when fields appear.
   A field finding keeps the vertex's `tagKeys`, and the report counts
-  unreachable fields that carry struct tags in a limitation. Tagged fields
+  unreachable exported fields that carry struct tags in a limitation
+  (encoders such as `encoding/json` skip unexported fields). Tagged fields
   stay reported and still fail `--strict`; the keys say the field may be
   part of a wire format (`json`, `yaml`, `db`, …) read through reflection.
 - A finding declared in a generated file (`// Code generated ... DO NOT
@@ -709,7 +710,7 @@ package initializer (not a graph vertex). Vertex `kind`:
 also carry `interface: true` or `fields` (declared `"name:Type"` list) so
 `diff` can classify interface method additions and struct-field contract
 breaks as breaking. Field vertices with a struct tag carry `tagKeys`, the
-sorted keys of the tag read the `reflect.StructTag` way (`json:"a" yaml:"b"`
+sorted keys `reflect.StructTag.Lookup` finds (`json:"a" yaml:"b"`
 → `["json", "yaml"]`; a key whose value is exactly `-` is left out). Tags
 are only readable through reflection, so the keys record an access path
 (encoders, ORMs, validators) the graph cannot see. Method vertices implementing interfaces declared

@@ -385,3 +385,25 @@ func TestFeedbackTestImportContextMatchesLoaderFlags(t *testing.T) {
 		}
 	}
 }
+
+// structTagKeys는 reflect.StructTag.Lookup이 찾는 키와 같다 — 값이 "-"가 아니고 Lookup이 찾는 키만 싣는다.
+// Lookup은 다른 키의 잘못 인용된 값(`a:"\z"`)에서 멈추지 않고, 같은 키가 거듭되면 첫 쌍이 정한다(그 값이
+// 잘못 인용됐으면 찾지 못한다).
+func TestFeedbackStructTagKeysMatchReflectLookup(t *testing.T) {
+	universe := []string{"a", "b", "db", "json", "xml", "yaml", "garbage"}
+	for _, tag := range []string{
+		``, `json:"a"`, `json:"-"`, `json:"-,"`, `a:"\z" json:"x"`, `json:"\z" json:"x"`, `json:"-" json:"f"`,
+		`json:a yaml:"g"`, `yaml:"e" json:"e,omitempty" xml:"-"`, `  json:"a"   yaml:"b"  `, `json:"a\"b" db:"c"`,
+		`json:"unterminated`, `json:"x"garbage yaml:"y"`, `a:"\z" b:"\q" db:"ok"`, `json:"é" yaml:"\x"`,
+	} {
+		var want []string
+		for _, key := range universe {
+			if value, ok := reflect.StructTag(tag).Lookup(key); ok && value != "-" {
+				want = append(want, key)
+			}
+		}
+		if got := structTagKeys(tag); !reflect.DeepEqual(got, want) {
+			t.Errorf("structTagKeys(%q) = %v, reflect.StructTag.Lookup finds %v", tag, got, want)
+		}
+	}
+}
