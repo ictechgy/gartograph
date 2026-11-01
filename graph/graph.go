@@ -127,6 +127,11 @@ type Vertex struct {
 	// 목록·순서·타입이기 때문에 diff의 breaking 판정 재료다.
 	// struct가 아닌 타입이나 필드를 수확하지 않은 옛 문서는 nil이다.
 	Fields []string `json:"fields,omitempty"`
+	// TagKeys는 field 정점의 struct tag 키를 정렬해 담는다(`json:"a" yaml:"b"`면 json·yaml).
+	// 태그는 reflection으로만 읽히므로 키가 있는 필드는 인코더·ORM·검증기처럼 그래프가 못 보는
+	// 접근 경로를 가진다는 수확 사실이다 — 판정(보존 여부)은 analysis·소비자가 한다. 값이 정확히
+	// "-"인 키(그 인코더가 건너뛰는 필드)와 reflect.StructTag 관례를 벗어난 나머지는 싣지 않는다.
+	TagKeys []string `json:"tagKeys,omitempty"`
 	// Methods는 인터페이스 타입 정점의 전체 메서드 집합(임베드 포함, 모듈 밖 인터페이스
 	// 임베드도)을 "Name(params) results" 형태로 정렬해 담는다(파라미터 이름 없음,
 	// 비공개 메서드는 패키지 경로 한정). 모듈 밖 인터페이스 임베드(io.Reader)는 간선이

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -64,5 +65,54 @@ func TestFeedbackDeadMarksGeneratedFindings(t *testing.T) {
 	}
 	if hasLimitation(rooted.Limitations, "", "generated files") {
 		t.Fatalf("no generated finding, no limitation: %v", rooted.Limitations)
+	}
+}
+
+// 태그가 붙은 필드도 지금처럼 보고되고 --strict에 남는다. 보고는 키를 싣고, 그런 필드 보고가 있을 때만 그 수를
+// limitation으로 센다 — 인코더·ORM이 reflection으로 읽는다는 사실을 보고에서 바로 볼 수 있어야
+// 에이전트가 와이어 형식을 깨는 삭제를 하지 않는다.
+func TestFeedbackDeadReportsTaggedFieldsWithKeys(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc main() { _ = R{} }\n\n" +
+			"type R struct {\n\tA int `json:\"a\"`\n\tB int `json:\"-\"`\n\tc int\n\tD int `yaml:\"d\" db:\"d\"`\n}\n",
+	})
+	var rep struct {
+		Unreachable []struct {
+			ID      string   `json:"id"`
+			TagKeys []string `json:"tagKeys"`
+		} `json:"unreachable"`
+		Limitations []string `json:"limitations"`
+	}
+	if err := json.Unmarshal([]byte(cliReport(t, "dead", "--format", "json", "--dir", dir)), &rep); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, f := range rep.Unreachable {
+		got[f.ID] = f.TagKeys
+	}
+	want := map[string][]string{
+		"example.com/fixture.(R).A": {"json"}, "example.com/fixture.(R).B": nil,
+		"example.com/fixture.(R).c": nil, "example.com/fixture.(R).D": {"db", "yaml"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("tagged fields must stay reported with their keys: got %v, want %v", got, want)
+	}
+	if !hasLimitation(rep.Limitations, "2 unreachable fields carry struct tags", "reflection") {
+		t.Fatalf("tagged field findings must be counted in a limitation: %v", rep.Limitations)
+	}
+	if code, _, errb := run(t, "dead", "--dir", dir, "--strict"); code != 1 {
+		t.Fatalf("tagged fields must still fail --strict: %d %s", code, errb)
+	}
+	var plain struct {
+		Limitations []string `json:"limitations"`
+	}
+	untagged := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc main() { _ = R{} }\n\ntype R struct{ c int }\n",
+	})
+	if err := json.Unmarshal([]byte(cliReport(t, "dead", "--format", "json", "--dir", untagged)), &plain); err != nil {
+		t.Fatal(err)
+	}
+	if hasLimitation(plain.Limitations, "", "struct tags") {
+		t.Fatalf("no tagged finding, no limitation: %v", plain.Limitations)
 	}
 }

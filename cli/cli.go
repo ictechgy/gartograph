@@ -777,6 +777,12 @@ func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknow
 			"field reachability counts named accesses (x.F, T{F: v}, positional literals); "+
 				"reflection, serialization (encoding/json, gob), and whole-struct copies are invisible to this graph")
 	}
+	if n := taggedFieldFindings(findings); n > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d unreachable fields carry struct tags (tagKeys); tags are read only through reflection "+
+				"(encoders such as encoding/json or yaml, ORMs, validators), so these fields may be accessed "+
+				"where this graph cannot see", n))
+	}
 	if n := generatedFindings(findings); n > 0 {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d unreachable findings are declared in generated files (generated: true), such as cgo output "+
@@ -811,6 +817,19 @@ func hasFieldFinding(findings []analysis.Finding) bool {
 		}
 	}
 	return false
+}
+
+// taggedFieldFindings는 struct tag 키가 있는 필드 보고의 수다. 태그를 읽는 인코더·ORM은 reflection으로
+// 필드에 닿아 이름 접근이 없어도 와이어 형식의 일부일 수 있다. 보존할지(기본 범위 변경)는 메인테이너
+// 결정이라 보고는 그대로 두고, 그 몫을 세어 일반 필드 limitation보다 구체적으로 알린다.
+func taggedFieldFindings(findings []analysis.Finding) int {
+	n := 0
+	for _, f := range findings {
+		if f.Kind == graph.KindField && len(f.TagKeys) > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // generatedFindings는 생성 파일 출신 보고의 수다. cgo 패키지는 사용자 코드에 없는 _Cgo_*·_cgo_* 인프라를

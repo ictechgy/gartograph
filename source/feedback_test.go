@@ -3,6 +3,7 @@ package source
 import (
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -105,5 +106,39 @@ func Unused() {}
 		return edge.From == "example.com/callback.GoCallback" && edge.To == "example.com/callback.helper" && edge.Kind == graph.EdgeCall
 	}) {
 		t.Error("callback outgoing dependency disappeared")
+	}
+}
+
+// struct tag는 reflection으로만 읽히므로 태그가 붙은 필드는 그래프가 못 보는 접근 경로가 있다는 수확 사실이다.
+// 키는 reflect.StructTag 관례로 읽는다 — 값이 정확히 "-"인 키(인코더가 건너뛰는 필드)는 빼고, 같은 키가
+// 거듭되면 첫 값이 정한다(reflect.StructTag.Lookup). 관례를 벗어난 태그는 reflect처럼 거기서 읽기를 멈춘다.
+func TestFeedbackFieldVerticesCarryStructTagKeys(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc main() { _ = R{} }\n\n" +
+			"type R struct {\n" +
+			"\tA int `json:\"a\"`\n" +
+			"\tB int `json:\"-\"`\n" +
+			"\tc int\n" +
+			"\tD int `json:\"-\" yaml:\"d\"`\n" +
+			"\tE int `yaml:\"e\" json:\"e,omitempty\" xml:\"-\"`\n" +
+			"\tF int `json:\"-\" json:\"f\"`\n" +
+			"\tG int `json:a yaml:\"g\"`\n" +
+			"\tH int `json:\"-,\"`\n" +
+			"\tEmbedded `db:\"embedded\"`\n" +
+			"}\n\ntype Embedded struct{}\n",
+	})
+	doc := loadSymbol(t, dir)
+	got := map[string][]string{}
+	for _, v := range doc.Vertices {
+		if v.Kind == graph.KindField {
+			got[v.Name] = v.TagKeys
+		}
+	}
+	want := map[string][]string{
+		"A": {"json"}, "B": nil, "c": nil, "D": {"yaml"}, "E": {"json", "yaml"},
+		"F": nil, "G": nil, "H": {"json"}, "Embedded": {"db"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("field tag keys = %v, want %v", got, want)
 	}
 }

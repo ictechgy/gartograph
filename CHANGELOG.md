@@ -14,6 +14,13 @@
   있으면 그 수를 limitation `N unreachable findings are declared in generated files …`로 센다. 보고 범위와
   `--strict` 판정은 그대로다 — 생성 심볼도 계속 보고된다. baseline 파일의 해당 항목에도 같은 키가 실린다(짝짓기
   키는 그대로라 기존 baseline도 맞는다).
+- `graph --level symbol`: struct tag가 붙은 field 정점에 `tagKeys`(태그를 `reflect.StructTag` 방식으로 읽은 키를
+  정렬한 목록, 값이 정확히 `-`인 키 제외)를 싣는다. 태그는 reflection으로만 읽혀 인코더·ORM·검증기의 접근이
+  그래프에 없다는 수확 사실이다. 태그가 붙은 필드가 있는 저장소의 심볼 문서는 이 키만큼 바이트가 늘고, 다른
+  정점과 `diff` 판정은 그대로다.
+- `dead`(CLI·MCP): 필드 finding에 정점의 `tagKeys`를 옮겨 싣고, 태그가 붙은 unreachable 필드가 있으면 그 수를
+  limitation `N unreachable fields carry struct tags (tagKeys) …`로 센다. 보고 범위와 `--strict` 판정은 그대로다
+  — 태그 필드를 보존할지는 정하지 않았다. 이 변경 전에 저장한 문서(`--graph`)에는 키가 없어 limitation도 없다.
 
 ## [0.10.0] - 2026-10-22
 

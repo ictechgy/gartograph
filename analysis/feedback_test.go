@@ -83,3 +83,30 @@ func TestFeedbackDeadFindingsCarryGeneratedProvenance(t *testing.T) {
 		}
 	}
 }
+
+// 필드 보고는 정점의 struct tag 키를 그대로 싣는다 — 직렬화·ORM이 reflection으로 읽는 필드를
+// 소비자가 보고만 보고 알아본다. 보고 범위는 그대로다.
+func TestFeedbackDeadFieldFindingsCarryTagKeys(t *testing.T) {
+	d := &graph.Document{
+		Roots: []string{"p.main"},
+		Vertices: []graph.Vertex{
+			{ID: "p.main", Kind: graph.KindFunc, Package: "p"},
+			{ID: "p.(R).A", Kind: graph.KindField, Package: "p", Exported: true, TagKeys: []string{"json"}},
+			{ID: "p.(R).c", Kind: graph.KindField, Package: "p"},
+		},
+	}
+	reach := Reachable(d, d.Roots)
+	for name, findings := range map[string][]Finding{
+		"cha": Dead(d, reach),
+		"rta": DeadRTA(d, reach, map[string]bool{"p.main": true}),
+	} {
+		got := map[string][]string{}
+		for _, f := range findings {
+			got[f.ID] = f.TagKeys
+		}
+		want := map[string][]string{"p.(R).A": {"json"}, "p.(R).c": nil}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: tag keys = %v, want %v", name, got, want)
+		}
+	}
+}
