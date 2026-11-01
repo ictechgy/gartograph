@@ -96,10 +96,10 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 	if err != nil {
 		return nil, fmt.Errorf("resolving --dir %s: %w", opts.Dir, err)
 	}
-	reachable := walkImports(pkgs)
+	loaded := walkImports(pkgs)
 	// exclude는 정점을 만드는 단계 전에 걸러야 두 레벨 모두에서
 	// 같은 범위가 된다 — 패키지와 모듈 문서가 다른 저장소를 보는 걸 막는다.
-	reachable, excluded := dropExcluded(reachable, opts.Exclude)
+	reachable, excluded := dropExcluded(loaded, opts.Exclude)
 	if opts.Level == graph.LevelModule {
 		mod := buildModuleDocument(root, reachable, opts.IncludeDeps)
 		if len(excluded) > 0 {
@@ -122,6 +122,12 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 	if len(excluded) > 0 {
 		doc.Limitation(fmt.Sprintf(
 			"%d packages matched exclude patterns; they have no vertices", len(excluded)))
+	}
+	// 정점 전용 문서(schema·routes의 usr 확인)는 limitation을 읽지 않는다 — 테스트 파일을 다시 읽지 않는다.
+	if !opts.Tests && !vertexOnly {
+		if note := testOnlyImportLimitation(loaded, kept, opts, root, doc.ModuleDir); note != "" {
+			doc.Limitation(note)
+		}
 	}
 	if opts.GOOS != "" || opts.GOARCH != "" {
 		doc.Limitation(platformNote(opts))

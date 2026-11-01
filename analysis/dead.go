@@ -7,6 +7,7 @@ package analysis
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -25,12 +26,20 @@ type Finding struct {
 	Package  string           `json:"package,omitempty"`
 	Position *graph.Position  `json:"position,omitempty"`
 	Exported bool             `json:"exported"`
+	// Generated는 정점의 생성 파일 출처 사실(`// Code generated ... DO NOT EDIT.`, cgo 산출물 포함)을
+	// 그대로 옮긴다. 생성 심볼도 보고에서 빼지 않는다 — 숨기면 사실이 사라진다. 다만 소비자가
+	// 손으로 고칠 코드와 생성기가 다시 만드는 코드를 보고만 보고 가를 수 있어야 한다.
+	Generated bool `json:"generated,omitempty"`
 	// Satisfies는 메서드가 구현하는 모듈 밖 인터페이스다(정점 사실 그대로).
 	// 리시버 타입까지 도달하지 못해 보고된 메서드라도 외부 코드가 이
 	// 인터페이스로 부를 수 있다는 triage 재료다 — 확신도로 번역하지 않는다.
 	Satisfies []string `json:"satisfies,omitempty"`
-	State     string   `json:"state"`
-	Reason    string   `json:"reason"`
+	// TagKeys는 필드 보고에 정점의 struct tag 키를 그대로 옮긴다. 태그는 reflection으로만 읽혀
+	// 직렬화·ORM 접근은 그래프에 없다 — 보고는 그대로 내되, 소비자가 와이어 형식의 일부일 수 있는
+	// 필드를 보고만 보고 알아보게 한다. 확신도로 번역하지 않는다.
+	TagKeys []string `json:"tagKeys,omitempty"`
+	State   string   `json:"state"`
+	Reason  string   `json:"reason"`
 }
 
 // StateUnreachable은 보존 루트에서 도달할 수 없다는 그래프 사실이다.
@@ -194,7 +203,9 @@ func Dead(d *graph.Document, reachable map[string]bool) []Finding {
 			Package:   v.Package,
 			Position:  v.Position,
 			Exported:  v.Exported,
+			Generated: v.Generated,
 			Satisfies: v.Satisfies,
+			TagKeys:   v.TagKeys,
 			State:     StateUnreachable,
 			Reason:    ReasonUnreachable,
 		})
@@ -231,7 +242,9 @@ func DeadRTA(d *graph.Document, graphReach, rtaReach map[string]bool) []Finding 
 				Package:   v.Package,
 				Position:  v.Position,
 				Exported:  v.Exported,
+				Generated: v.Generated,
 				Satisfies: v.Satisfies,
+				TagKeys:   v.TagKeys,
 				State:     StateUnreachable,
 				Reason:    reason,
 			})
@@ -347,10 +360,11 @@ func ExplainAdjacency(adj map[string][]string, id string, roots []string) ([]str
 	}
 	var path []string
 	for cur := id; ; cur = parent[cur] {
-		path = append([]string{cur}, path...)
+		path = append(path, cur)
 		if _, hasParent := parent[cur]; !hasParent {
 			break
 		}
 	}
+	slices.Reverse(path)
 	return path, true
 }

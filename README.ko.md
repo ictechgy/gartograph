@@ -135,7 +135,8 @@ gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 권한 비트를 보존합니다. 출력 링크는 따라가지 않고 링크 자체를 교체하며, 쓰기 실패 시 기존 산출물을 보존합니다.
 
 공통 플래그: `--dir`(모듈 루트), `--pattern`(반복 가능), `--tests`(테스트
-진입점이 보존 루트가 됨), `--deps`, `--tags`(빌드 태그; 제약으로 빠진 파일은
+진입점이 보존 루트가 됨; 끄면 다른 패키지의 `_test.go`에서만 import되는 테스트 헬퍼
+패키지 수를 limitations에 셈), `--deps`, `--tags`(빌드 태그; 제약으로 빠진 파일은
 limitations에 셈), `--goos`/`--goarch`(다른 타깃 플랫폼으로 수확 — 선택 사실이
 limitations에 남음), `--graph`(저장 문서 읽기).
 종료 코드: `0` 정상 · `1` strict 위반 · `2` 사용법/분석 오류.
@@ -404,7 +405,16 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
 - `dead`는 struct 필드(`kind: "field"`)도 보고합니다 — 이름 있는 접근
   (`x.F`, `T{F: v}`, 위치 리터럴, 승격 경로, `==`)이 없는 필드는
   unreachable입니다. reflection·직렬화·통째 복사는 그래프에 안 보이므로
-  필드 보고가 나오면 해당 limitation이 함께 실립니다.
+  필드 보고가 나오면 해당 limitation이 함께 실립니다. 필드 finding은 정점의
+  `tagKeys`를 그대로 싣고, 보고는 struct tag가 붙은 unreachable 공개 필드 수를
+  limitation으로 셉니다(`encoding/json` 같은 인코더는 비공개 필드를 건너뜁니다). 태그가 붙은 필드도 보고되고 `--strict`도 그대로
+  실패합니다 — 키는 그 필드가 reflection으로 읽히는 와이어 형식(`json`·`yaml`·
+  `db` 등)의 일부일 수 있다는 사실입니다.
+- 생성 파일(`// Code generated ... DO NOT EDIT.`, 빌드 캐시에 있는 cgo의
+  `_Cgo_*`·`_cgo_*` 인프라 포함)에 선언된 finding은 `generated: true`(텍스트는
+  `(generated)`)를 싣고, 보고는 그런 finding 수(`--baseline`으로 거른 뒤 남은 것)를
+  limitation으로 셉니다. 보고에서 빠지지 않고 `--strict`도 그대로 실패합니다 —
+  숨기지 않고 표시만 합니다. 사실로 거르거나 baseline에 넣으세요.
 - `//deadcode:keep`·`//gartograph:keep`을 선언(함수·메서드·var·const·
   타입·struct 필드)에 붙이면 문서의 `roots`에 보존 루트로 남습니다 —
   보존 의도가 CLI 플래그가 아니라 선언 옆에 삽니다. 표지는 주석 줄의
@@ -463,6 +473,10 @@ baseline은 `ID`와 `ID#symbol`을 같은 심볼로 짝짓습니다.
 type 정점은 `interface: true` 또는 `fields`(선언 순서의 `"name:Type"` 목록)를
 답니다 — `diff`가 인터페이스 메서드 추가와 struct 필드 계약 파괴를
 breaking으로 분류하는 재료입니다.
+struct tag가 붙은 field 정점은 `tagKeys`를 답니다 — `reflect.StructTag.Lookup`이 찾는
+키를 정렬한 목록입니다(`json:"a" yaml:"b"` → `["json", "yaml"]`, 값이 정확히 `-`인 키는 뺍니다).
+태그는 reflection으로만 읽히므로 이 키는 그래프가 보지 못하는 접근 경로(인코더·ORM·검증기)의
+기록입니다.
 모듈 밖 인터페이스를 구현하는 method 정점은 `satisfies`(정렬된 인터페이스 이름)와
 `receiver`(리시버 타입 정점 ID)를 답니다. 모듈 코드가 이름으로 쓸 수 없는 명명
 인터페이스(비공개 `context.stringer`, `internal/` 경로 등)는 다른 인터페이스(공개 명명·

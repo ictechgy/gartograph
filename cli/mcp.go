@@ -355,7 +355,7 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		findings := analysis.Dead(s.doc, s.queries().Reachable(roots))
 		return marshal(deadReport{
 			Algorithm: "cha", Roots: roots, UnknownRoots: unknown, Unreachable: findings,
-			Limitations: deadLimitations(s.doc, "cha", a.RetainPublic, unknown, findings, 0),
+			Limitations: deadLimitations(s.doc, "cha", a.RetainPublic, unknown, findings, findings, 0),
 		})
 	case "gartograph_rules":
 		if s.cfgPath == "" {

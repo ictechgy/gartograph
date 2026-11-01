@@ -55,3 +55,82 @@ func TestFeedbackRuleTieOrderIsDeterministic(t *testing.T) {
 		t.Fatalf("rule order depends on input: first=%+v, second=%+v", first.Violations, second.Violations)
 	}
 }
+
+// 생성 파일 출신 정점의 보고는 그 출처 사실을 그대로 싣는다 — 소비자가 손으로 쓴 코드와
+// 생성기(cgo 등) 산출물을 보고만 보고 가른다. CHA·RTA 두 판정 모두 같은 사실을 옮긴다.
+func TestFeedbackDeadFindingsCarryGeneratedProvenance(t *testing.T) {
+	d := &graph.Document{
+		Roots: []string{"p.main"},
+		Vertices: []graph.Vertex{
+			{ID: "p.main", Kind: graph.KindFunc, Package: "p"},
+			{ID: "p._Cgo_use", Kind: graph.KindFunc, Package: "p", Generated: true},
+			{ID: "p._Cgo_always_false", Kind: graph.KindVar, Package: "p", Generated: true},
+			{ID: "p.handwritten", Kind: graph.KindFunc, Package: "p"},
+		},
+	}
+	reach := Reachable(d, d.Roots)
+	for name, findings := range map[string][]Finding{
+		"cha": Dead(d, reach),
+		"rta": DeadRTA(d, reach, map[string]bool{"p.main": true}),
+	} {
+		got := map[string]bool{}
+		for _, f := range findings {
+			got[f.ID] = f.Generated
+		}
+		want := map[string]bool{"p._Cgo_use": true, "p._Cgo_always_false": true, "p.handwritten": false}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: generated provenance = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// 필드 보고는 정점의 struct tag 키를 그대로 싣는다 — 직렬화·ORM이 reflection으로 읽는 필드를
+// 소비자가 보고만 보고 알아본다. 보고 범위는 그대로다.
+func TestFeedbackDeadFieldFindingsCarryTagKeys(t *testing.T) {
+	d := &graph.Document{
+		Roots: []string{"p.main"},
+		Vertices: []graph.Vertex{
+			{ID: "p.main", Kind: graph.KindFunc, Package: "p"},
+			{ID: "p.(R).A", Kind: graph.KindField, Package: "p", Exported: true, TagKeys: []string{"json"}},
+			{ID: "p.(R).c", Kind: graph.KindField, Package: "p"},
+		},
+	}
+	reach := Reachable(d, d.Roots)
+	for name, findings := range map[string][]Finding{
+		"cha": Dead(d, reach),
+		"rta": DeadRTA(d, reach, map[string]bool{"p.main": true}),
+	} {
+		got := map[string][]string{}
+		for _, f := range findings {
+			got[f.ID] = f.TagKeys
+		}
+		want := map[string][]string{"p.(R).A": {"json"}, "p.(R).c": nil}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: tag keys = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// independent는 순서 없는 쌍 계약이다 — 목록에 같은 컴포넌트가 거듭 나와 (b, a) 쌍이 다시 만들어져도
+// 같은 위반을 두 번 보고하지 않는다.
+func TestFeedbackIndependentPairReportedOnce(t *testing.T) {
+	d := &graph.Document{
+		Module: "example.com/m",
+		Vertices: []graph.Vertex{
+			{ID: "example.com/m/a", Kind: graph.KindPackage},
+			{ID: "example.com/m/b", Kind: graph.KindPackage},
+		},
+		Edges: []graph.Edge{{From: "example.com/m/a", To: "example.com/m/b", Kind: graph.EdgeImport}},
+	}
+	for _, list := range [][]string{{"a", "b", "a"}, {"b", "a", "b", "a"}} {
+		cfg := &config.File{
+			Components:  map[string][]string{"a": {"a"}, "b": {"b"}},
+			Deps:        map[string][]string{"a": {"b"}},
+			Independent: list,
+		}
+		violations := CheckRules(d, cfg).Violations
+		if len(violations) != 1 || violations[0].Rule != "independence" || violations[0].FromComponent != "a" {
+			t.Fatalf("independent %v: one reach must be one violation, got %+v", list, violations)
+		}
+	}
+}

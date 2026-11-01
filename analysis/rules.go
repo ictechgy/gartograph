@@ -251,15 +251,16 @@ func reachViolations(d *graph.Document, cfg *config.File,
 		}
 	}
 	// independent는 순서 없는 쌍 계약이다 — 어느 쪽이 먼저 선언됐는지가
-	// 아니라 도달 방향이 위반을 만든다. 같은 쌍이 중복 선언돼도
-	// 위반은 한 번만 보고한다.
-	pairs := map[string]bool{}
+	// 아니라 도달 방향이 위반을 만든다. 같은 쌍이 중복 선언돼도(목록에
+	// 거듭 나온 컴포넌트가 (b, a)를 다시 만들어도) 위반은 한 번만 보고한다.
+	pairs := map[[2]string]bool{}
 	for i, a := range cfg.Independent {
 		for _, b := range cfg.Independent[i+1:] {
-			if a == b || pairs[a+"\x00"+b] {
+			pair := [2]string{min(a, b), max(a, b)}
+			if a == b || pairs[pair] {
 				continue
 			}
-			pairs[a+"\x00"+b] = true
+			pairs[pair] = true
 			for _, dir := range [2][2]string{{a, b}, {b, a}} {
 				if path := reachPath(adj, vcomp, dir[0], dir[1]); path != nil {
 					out = append(out, Violation{
@@ -312,8 +313,9 @@ func reachPath(adj map[string][]string, vcomp map[string]string,
 	}
 	var path []string
 	for cur := hit; cur != ""; cur = parent[cur] {
-		path = append([]string{cur}, path...)
+		path = append(path, cur)
 	}
+	slices.Reverse(path)
 	return path
 }
 

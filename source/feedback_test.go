@@ -1,14 +1,20 @@
 package source
 
 import (
+	"go/build"
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
+	"golang.org/x/tools/go/packages"
 )
 
 func TestFeedbackTestHelpersAreNotRunnerRoots(t *testing.T) {
@@ -105,5 +111,299 @@ func Unused() {}
 		return edge.From == "example.com/callback.GoCallback" && edge.To == "example.com/callback.helper" && edge.Kind == graph.EdgeCall
 	}) {
 		t.Error("callback outgoing dependency disappeared")
+	}
+}
+
+// struct tag는 reflection으로만 읽히므로 태그가 붙은 필드는 그래프가 못 보는 접근 경로가 있다는 수확 사실이다.
+// 키는 reflect.StructTag 관례로 읽는다 — 값이 정확히 "-"인 키(인코더가 건너뛰는 필드)는 빼고, 같은 키가
+// 거듭되면 첫 값이 정한다(reflect.StructTag.Lookup). 관례를 벗어난 태그는 reflect처럼 거기서 읽기를 멈춘다.
+func TestFeedbackFieldVerticesCarryStructTagKeys(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nfunc main() { _ = R{} }\n\n" +
+			"type R struct {\n" +
+			"\tA int `json:\"a\"`\n" +
+			"\tB int `json:\"-\"`\n" +
+			"\tc int\n" +
+			"\tD int `json:\"-\" yaml:\"d\"`\n" +
+			"\tE int `yaml:\"e\" json:\"e,omitempty\" xml:\"-\"`\n" +
+			"\tF int `json:\"-\" json:\"f\"`\n" +
+			"\tG int `json:a yaml:\"g\"`\n" +
+			"\tH int `json:\"-,\"`\n" +
+			"\tEmbedded `db:\"embedded\"`\n" +
+			"}\n\ntype Embedded struct{}\n",
+	})
+	doc := loadSymbol(t, dir)
+	got := map[string][]string{}
+	for _, v := range doc.Vertices {
+		if v.Kind == graph.KindField {
+			got[v.Name] = v.TagKeys
+		}
+	}
+	want := map[string][]string{
+		"A": {"json"}, "B": nil, "c": nil, "D": {"yaml"}, "E": {"json", "yaml"},
+		"F": nil, "G": nil, "H": {"json"}, "Embedded": {"db"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("field tag keys = %v, want %v", got, want)
+	}
+}
+
+// --tests 없이 수확하면 _test.go 파일은 그래프 밖이라, 다른 패키지의 테스트에서만 import되는 패키지(테스트
+// 헬퍼)는 모듈 안 importer가 없는 것처럼 보인다. 그 수를 실제로 세어 limitation으로 남긴다. 자기 패키지의
+// 외부 테스트(pkg_test)만 import하는 라이브러리, 빌드 제약으로 빠진 테스트 파일의 import, 이미 제품 코드가
+// import하는 패키지(exclude로 정점에서 뺀 패키지가 import하는 것 포함)는 세지 않는다. --tests로 테스트를
+// 수확하면 조용하다.
+func TestFeedbackTestOnlyImportedPackagesAreCounted(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go":    "package main\n\nimport \"example.com/fixture/lib\"\n\nfunc main() { lib.Run() }\n",
+		"lib/lib.go": "package lib\n\nfunc Run() {}\n",
+		"lib/lib_test.go": "package lib\n\nimport (\n\t\"testing\"\n\n\t\"example.com/fixture/internal/helper\"\n" +
+			"\t\"example.com/fixture/internal/genhelper\"\n\t\"example.com/fixture/lib/shared\"\n)\n\n" +
+			"func TestRun(t *testing.T) { helper.Help(); shared.S(); genhelper.Help() }\n",
+		"gen/gen.go":                      "package gen\n\nimport _ \"example.com/fixture/internal/genhelper\"\n",
+		"internal/genhelper/genhelper.go": "package genhelper\n\nfunc Help() {}\n",
+		"lib/x_test.go": "package lib_test\n\nimport (\n\t\"testing\"\n\n\t\"example.com/fixture/internal/xhelper\"\n)\n\n" +
+			"func TestX(t *testing.T) { xhelper.Help() }\n",
+		"lib/never_test.go": "//go:build never\n\npackage lib\n\nimport \"example.com/fixture/internal/tagged\"\n\n" +
+			"var _ = tagged.Help\n",
+		"lib/shared/shared.go":           "package shared\n\nfunc S() {}\n",
+		"internal/helper/helper.go":      "package helper\n\nfunc Help() {}\n",
+		"internal/xhelper/xhelper.go":    "package xhelper\n\nfunc Help() {}\n",
+		"internal/tagged/tagged.go":      "package tagged\n\nfunc Help() {}\n",
+		"solo/solo.go":                   "package solo\n\nfunc S() {}\n",
+		"solo/solo_test.go":              "package solo_test\n\nimport (\n\t\"testing\"\n\n\t\"example.com/fixture/solo\"\n)\n\nfunc TestS(t *testing.T) { solo.S() }\n",
+		"cmd/tool/main.go":               "package main\n\nimport _ \"example.com/fixture/lib/shared\"\n\nfunc main() {}\n",
+		"internal/helper/helper_test.go": "package helper\n",
+	})
+	for _, level := range []graph.Level{graph.LevelPackage, graph.LevelSymbol} {
+		doc, err := Load(Options{Dir: dir, Level: level, Exclude: []string{"gen"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var notes []string
+		for _, note := range doc.Limitations {
+			if strings.Contains(note, "imported only by _test.go files") {
+				notes = append(notes, note)
+			}
+		}
+		want := "2 packages are imported only by _test.go files of other packages (first: " +
+			"example.com/fixture/internal/helper); test files were not harvested, so these packages may " +
+			"appear orphaned and their symbols unreachable (use --tests to include)"
+		if !reflect.DeepEqual(notes, []string{want}) {
+			t.Fatalf("%s: test-only importer limitation = %q, want %q", level, notes, want)
+		}
+	}
+	doc, err := Load(Options{Dir: dir, Level: graph.LevelSymbol, Tests: true, Exclude: []string{"gen"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, note := range doc.Limitations {
+		if strings.Contains(note, "imported only by _test.go files") {
+			t.Fatalf("harvested tests must not carry the test-only importer limitation: %q", note)
+		}
+	}
+}
+
+// 테스트 파일 import를 읽는 go/build 문맥은 분석 대상이 고른 경로를 막히지 않게 연다 — 쓰는 쪽이 없는 FIFO와
+// 디렉터리는 열지 않고 오류로 돌려준다. (지금은 go list가 같은 이름의 FIFO에서 먼저 막히지만, 문맥은 그 앞
+// 단계와 무관하게 막히지 않아야 한다.)
+func TestFeedbackTestImportContextRefusesNonRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe_test.go")
+	testutil.MakeFIFO(t, fifo)
+	ctxt := buildContext(Options{})
+	for _, path := range []string{fifo, dir} {
+		var err error
+		testutil.FinishWithin(t, testutil.BlockDeadline, func() {
+			var f io.ReadCloser
+			if f, err = ctxt.OpenFile(path); err == nil {
+				f.Close()
+			}
+		})
+		if err == nil {
+			t.Errorf("%s: non-regular file must be refused", path)
+		}
+	}
+	regular := filepath.Join(dir, "ok_test.go")
+	if err := os.WriteFile(regular, []byte("package p\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := ctxt.OpenFile(regular)
+	if err != nil {
+		t.Fatalf("regular test file must open: %v", err)
+	}
+	f.Close()
+}
+
+// testOnlyScanPackages는 go list 없이 testOnlyImported를 부를 주 모듈 패키지 두 개(lib, helper)를 만든다.
+// lib의 테스트 파일만 helper를 import한다.
+func testOnlyScanPackages(t *testing.T, libFiles map[string]string) ([]*packages.Package, map[string]*packages.Package) {
+	t.Helper()
+	root := t.TempDir()
+	module := &packages.Module{Path: "example.com/m", Main: true, Dir: root}
+	kept := map[string]*packages.Package{}
+	var loaded []*packages.Package
+	for name, files := range map[string]map[string]string{
+		"lib":    libFiles,
+		"helper": {"helper.go": "package helper\n\nfunc H() {}\n"},
+	} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for file, content := range files {
+			if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p := &packages.Package{PkgPath: "example.com/m/" + name, Name: name, Dir: dir, Module: module}
+		kept[p.PkgPath] = p
+		loaded = append(loaded, p)
+	}
+	return loaded, kept
+}
+
+// 디렉터리의 테스트 파일 하나가 go/build에서 오류(헤더 문법 오류, 테스트의 cgo, 정규 파일 아님)여도 나머지 테스트
+// 파일의 import는 센다 — 한 파일 때문에 그 디렉터리의 테스트 importer가 통째로 사라지면 limitation이 조용해진다.
+func TestFeedbackTestOnlyScanKeepsImportsBesideBadTestFiles(t *testing.T) {
+	const helperTest = "package lib\n\nimport (\n\t\"testing\"\n\n\t\"example.com/m/helper\"\n)\n\n" +
+		"func TestA(t *testing.T) { helper.H() }\n"
+	for name, bad := range map[string]string{
+		"syntax": "package lib\n\nimport (\n\t\"fmt\"\n",
+		"cgo":    "package lib\n\nimport \"C\"\n",
+		"fifo":   "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{"lib.go": "package lib\n", "a_test.go": helperTest}
+			if bad != "" {
+				files["z_test.go"] = bad
+			}
+			loaded, kept := testOnlyScanPackages(t, files)
+			if bad == "" {
+				testutil.MakeFIFO(t, filepath.Join(kept["example.com/m/lib"].Dir, "z_test.go"))
+			}
+			var got []string
+			testutil.FinishWithin(t, testutil.BlockDeadline, func() {
+				got = testOnlyImported(loaded, kept, buildContext(Options{}))
+			})
+			if !reflect.DeepEqual(got, []string{"example.com/m/helper"}) {
+				t.Fatalf("a bad test file must not hide the other test imports: %v", got)
+			}
+		})
+	}
+}
+
+// --pattern·하위 --dir로 수확 범위를 좁히면 범위 밖 제품 importer는 적재되지 않는다. 그때 문구는 "적재한
+// 패키지 중"으로 범위를 밝히고 --tests만으로 풀리지 않는다는 것도 말한다. 전체 모듈 수확에서는 그 importer가
+// 보여 세지 않는다.
+func TestFeedbackTestOnlyLimitationScopesToLoadedPackages(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go":           "package main\n\nimport \"example.com/fixture/internal/h4\"\n\nfunc main() { h4.H() }\n",
+		"lib/lib.go":        "package lib\n",
+		"lib/a_test.go":     "package lib\n\nimport (\n\t\"testing\"\n\n\t\"example.com/fixture/internal/h4\"\n)\n\nfunc TestA(t *testing.T) { h4.H() }\n",
+		"internal/h4/h4.go": "package h4\n\nfunc H() {}\n",
+	})
+	notes := func(opts Options) []string {
+		doc, err := Load(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, note := range doc.Limitations {
+			if strings.Contains(note, "_test.go files") {
+				out = append(out, note)
+			}
+		}
+		return out
+	}
+	if got := notes(Options{Dir: dir, Level: graph.LevelPackage}); len(got) != 0 {
+		t.Fatalf("a production importer in the harvest rules the helper out: %q", got)
+	}
+	want := "1 packages are imported only by _test.go files among the loaded packages (first: " +
+		"example.com/fixture/internal/h4); test files were not harvested and packages outside --dir/--pattern " +
+		"were not loaded, so these packages may appear orphaned and their symbols unreachable " +
+		"(use --tests to include test importers)"
+	got := notes(Options{Dir: dir, Level: graph.LevelPackage, Patterns: []string{"./lib/...", "./internal/..."}})
+	if !reflect.DeepEqual(got, []string{want}) {
+		t.Fatalf("restricted harvest wording = %q, want %q", got, want)
+	}
+}
+
+// 테스트 파일을 읽는 go/build 문맥은 go list와 같은 태그·플랫폼을 쓴다 — --tags가 없으면 GOFLAGS의 -tags를,
+// 크로스 --goos/--goarch에서 CGO_ENABLED가 없으면 cgo를 끈다(go/build 기본 문맥의 규칙). 캡처 수확은
+// loaderEnv가 GOFLAGS를 비우므로 그 태그도 읽지 않는다.
+func TestFeedbackTestImportContextMatchesLoaderFlags(t *testing.T) {
+	other := "linux"
+	if runtime.GOOS == "linux" {
+		other = "darwin"
+	}
+	t.Setenv("CGO_ENABLED", "")
+	t.Setenv("GOFLAGS", "-mod=mod -tags=x,y")
+	cases := []struct {
+		name   string
+		opts   Options
+		goos   string
+		goarch string
+		tags   []string
+		cgo    bool
+	}{
+		{"goflags tags", Options{}, runtime.GOOS, runtime.GOARCH, []string{"x", "y"}, build.Default.CgoEnabled},
+		{"flag overrides goflags", Options{Tags: "z"}, runtime.GOOS, runtime.GOARCH, []string{"z"}, build.Default.CgoEnabled},
+		{"cross platform", Options{GOOS: other, GOARCH: "arm64", Tags: "a b"}, other, "arm64", []string{"a", "b"}, false},
+		{"captured clears goflags", Options{Captured: true}, runtime.GOOS, runtime.GOARCH, nil, build.Default.CgoEnabled},
+	}
+	for _, c := range cases {
+		ctxt := buildContext(c.opts)
+		if ctxt.GOOS != c.goos || ctxt.GOARCH != c.goarch || !reflect.DeepEqual(ctxt.BuildTags, c.tags) ||
+			ctxt.CgoEnabled != c.cgo {
+			t.Errorf("%s: context = %s/%s tags %v cgo %v, want %s/%s tags %v cgo %v", c.name,
+				ctxt.GOOS, ctxt.GOARCH, ctxt.BuildTags, ctxt.CgoEnabled, c.goos, c.goarch, c.tags, c.cgo)
+		}
+	}
+	t.Setenv("CGO_ENABLED", "1")
+	if !buildContext(Options{GOOS: other}).CgoEnabled {
+		t.Error("explicit CGO_ENABLED=1 must enable cgo for a cross harvest")
+	}
+	// GOFLAGS의 태그로만 켜지는 테스트 파일의 import도 go list와 같이 센다.
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go":    "package main\n\nimport \"example.com/fixture/lib\"\n\nfunc main() { lib.Run() }\n",
+		"lib/lib.go": "package lib\n\nfunc Run() {}\n",
+		"lib/special_test.go": "//go:build special\n\npackage lib\n\nimport (\n\t\"testing\"\n\n\t\"example.com/fixture/internal/h\"\n)\n\n" +
+			"func TestS(t *testing.T) { h.H() }\n",
+		"internal/h/h.go": "package h\n\nfunc H() {}\n",
+	})
+	for flags, want := range map[string]bool{"-tags=special": true, "": false} {
+		t.Setenv("GOFLAGS", flags)
+		doc, err := Load(Options{Dir: dir, Level: graph.LevelPackage})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := slices.ContainsFunc(doc.Limitations, func(note string) bool {
+			return strings.Contains(note, "imported only by _test.go files")
+		}); got != want {
+			t.Errorf("GOFLAGS=%q: test-only limitation present = %v, want %v (%q)", flags, got, want, doc.Limitations)
+		}
+	}
+}
+
+// structTagKeys는 reflect.StructTag.Lookup이 찾는 키와 같다 — 값이 "-"가 아니고 Lookup이 찾는 키만 싣는다.
+// Lookup은 다른 키의 잘못 인용된 값(`a:"\z"`)에서 멈추지 않고, 같은 키가 거듭되면 첫 쌍이 정한다(그 값이
+// 잘못 인용됐으면 찾지 못한다).
+func TestFeedbackStructTagKeysMatchReflectLookup(t *testing.T) {
+	universe := []string{"a", "b", "db", "json", "xml", "yaml", "garbage"}
+	for _, tag := range []string{
+		``, `json:"a"`, `json:"-"`, `json:"-,"`, `a:"\z" json:"x"`, `json:"\z" json:"x"`, `json:"-" json:"f"`,
+		`json:a yaml:"g"`, `yaml:"e" json:"e,omitempty" xml:"-"`, `  json:"a"   yaml:"b"  `, `json:"a\"b" db:"c"`,
+		`json:"unterminated`, `json:"x"garbage yaml:"y"`, `a:"\z" b:"\q" db:"ok"`, `json:"é" yaml:"\x"`,
+	} {
+		var want []string
+		for _, key := range universe {
+			if value, ok := reflect.StructTag(tag).Lookup(key); ok && value != "-" {
+				want = append(want, key)
+			}
+		}
+		if got := structTagKeys(tag); !reflect.DeepEqual(got, want) {
+			t.Errorf("structTagKeys(%q) = %v, reflect.StructTag.Lookup finds %v", tag, got, want)
+		}
 	}
 }

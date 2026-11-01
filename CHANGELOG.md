@@ -9,6 +9,33 @@
 - CHA 후보 호출은 도달성 그래프에 유지하되 확정 순환의 근거로 세지 않는다. CLI와 MCP는
   제외한 입력 후보 관계 수를 limitation으로 보고한다.
 - 같은 간선의 여러 규칙·위치 위반을 전체 키로 정렬해 입력 순서에 따른 baseline diff를 막는다.
+- `dead`(CLI·MCP): 생성 파일(`// Code generated ... DO NOT EDIT.`, 빌드 캐시의 cgo `_Cgo_*`·`_cgo_*` 인프라
+  포함)에 선언된 finding에 정점 사실 `generated: true`를 옮겨 싣고(텍스트 보고는 `(generated)`), 그런 finding이
+  있으면 그 수를 limitation `N unreachable findings are declared in generated files …`로 센다. 보고 범위와
+  `--strict` 판정은 그대로다 — 생성 심볼도 계속 보고된다. baseline 파일의 해당 항목에도 같은 키가 실린다(짝짓기
+  키는 그대로라 기존 baseline도 맞는다).
+- `graph --level symbol`: struct tag가 붙은 field 정점에 `tagKeys`(`reflect.StructTag.Lookup`이 찾는 키를
+  정렬한 목록, 값이 정확히 `-`인 키 제외)를 싣는다. 태그는 reflection으로만 읽혀 인코더·ORM·검증기의 접근이
+  그래프에 없다는 수확 사실이다. 태그가 붙은 필드가 있는 저장소의 심볼 문서는 이 키만큼 바이트가 늘고, 다른
+  정점과 `diff` 판정은 그대로다.
+- `dead`(CLI·MCP): 필드 finding에 정점의 `tagKeys`를 옮겨 싣고, 태그가 붙은 unreachable 공개 필드가 있으면 그 수를
+  limitation `N unreachable exported fields carry struct tags (tagKeys) …`로 센다(인코더가 건너뛰는 비공개 필드는
+  키만 싣고 세지 않는다). 보고 범위와 `--strict` 판정은 그대로다
+  — 태그 필드를 보존할지는 정하지 않았다. 이 변경 전에 저장한 문서(`--graph`)에는 키가 없어 limitation도 없다.
+  생성 파일·태그 필드 수는 `--baseline`으로 거른 뒤 실제로 보고하는 finding만 센다.
+- `rules`: `independent` 목록에 같은 컴포넌트가 거듭 나오면(`[a, b, a]`) 거꾸로 된 쌍 (b, a)를 새 쌍으로 보고 같은
+  independence 위반을 두 번 내던 문제를 고친다. 쌍은 순서 없이 한 번만 검사한다.
+- `--tests` 없이 수확하는 명령(`graph`·`dead`·`metrics`·`rules`·`cycles` 등, module 레벨 제외): 적재한 어느 패키지의
+  제품 파일도 import하지 않고 다른 패키지의 `_test.go` 파일만 import하는 주 모듈 패키지(테스트 헬퍼)를 세어
+  limitation `N packages are imported only by _test.go files of other packages (first: …) … (use --tests to
+  include)`로 남긴다. `--pattern`이나 모듈 하위 `--dir`로 범위를 좁히면 범위 밖 importer는 적재되지 않으므로 문구가
+  `… among the loaded packages …`로 범위를 밝힌다. 테스트 파일의 import는 go/build로 읽고, 한 파일의 오류(헤더
+  문법, 테스트의 cgo, 정규 파일 아님)는 그 파일만 뺀다. 빌드 제약은 go list를 띄우는 환경을 따른다: `--goos`/`--goarch`,
+  `--tags`(없으면 환경 변수 GOFLAGS의 `-tags`), CGO_ENABLED(없으면 크로스 플랫폼에서 cgo 끔). `go env -w`로
+  저장한 GOFLAGS·CGO_ENABLED와 C 컴파일러가 없어 cgo가 꺼지는 호스트는 반영하지 않는다 — 그런 설정으로만 켜지는
+  테스트 파일의 import를 세는지만 달라진다. `metrics`의 orphan과 `dead`의 보고는 그대로다. 이 저장소에서는 `internal/testutil`이 해당한다. 테스트 파일만
+  읽으므로 1000개 패키지·테스트 파일 2000개 합성 모듈의 package 레벨 수확이 약 0.16초(10회 중앙값 1.08→1.25초)
+  늘었다.
 
 ## [0.10.0] - 2026-10-22
 

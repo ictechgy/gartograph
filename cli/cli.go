@@ -696,7 +696,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	}
-	limitations := deadLimitations(doc, *algo, *retainPublic, unknown, all, len(stale))
+	limitations := deadLimitations(doc, *algo, *retainPublic, unknown, all, findings, len(stale))
 
 	switch *format {
 	case "json":
@@ -718,11 +718,14 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		}
 	case "text":
 		for _, f := range findings {
-			exported := ""
+			marks := ""
 			if f.Exported {
-				exported = " (exported)"
+				marks = " (exported)"
 			}
-			textLine(stdout, "unreachable %s: %s%s", f.Kind, f.ID, exported)
+			if f.Generated {
+				marks += " (generated)"
+			}
+			textLine(stdout, "unreachable %s: %s%s", f.Kind, f.ID, marks)
 		}
 		fmt.Fprintf(stdout, "%d unreachable symbols (%d baselined, %d retention roots)\n",
 			len(findings), len(baselined), len(roots))
@@ -746,10 +749,12 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 // 두 통로가 따로 조립하던 때 MCP는 알 수 없는 루트·main 없음·외부 디스패치·필드 limitation을 빠뜨려, main 없는
 // 라이브러리의 공개 API 전부가 unreachable인 보고가 "--retain-public을 쓰라"는 말도, reflection 디스패치를 못
 // 본다는 말도 없이 나갔다. findings는 baseline으로 거르기 전의 보고 전부다 — 메서드·필드 보고가 있는지가
-// limitation을 정하고, baselined 보고도 같은 사각지대에 있다. stale은 더 이상 나오지 않는 baseline 보고 수다
-// (MCP는 baseline이 없어 0).
+// limitation을 정하고, baselined 보고도 같은 사각지대에 있다. reported는 baseline으로 거른 뒤 실제로 내는
+// 보고다 — 수를 말하는 limitation(생성 파일·태그 필드 보고 수)은 그 목록과 맞아야, baseline이 전부 흡수한
+// 빈 unreachable 옆에 "N unreachable findings"가 남지 않는다(MCP는 baseline이 없어 findings와 같다).
+// stale은 더 이상 나오지 않는 baseline 보고 수다(MCP는 baseline이 없어 0).
 func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknown []string,
-	findings []analysis.Finding, stale int) []string {
+	findings, reported []analysis.Finding, stale int) []string {
 	limitations := append([]string(nil), doc.Limitations...)
 	for _, u := range unknown {
 		limitations = append(limitations,
@@ -773,6 +778,17 @@ func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknow
 		limitations = append(limitations,
 			"field reachability counts named accesses (x.F, T{F: v}, positional literals); "+
 				"reflection, serialization (encoding/json, gob), and whole-struct copies are invisible to this graph")
+	}
+	if n := taggedFieldFindings(reported); n > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d unreachable exported fields carry struct tags (tagKeys); tags are read only through reflection "+
+				"(encoders such as encoding/json or yaml, ORMs, validators), so these fields may be accessed "+
+				"where this graph cannot see", n))
+	}
+	if n := generatedFindings(reported); n > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d unreachable findings are declared in generated files (generated: true), such as cgo output "+
+				"in the build cache; their generator, not hand-written source, decides whether they exist", n))
 	}
 	if stale > 0 {
 		limitations = append(limitations, fmt.Sprintf(
@@ -803,6 +819,33 @@ func hasFieldFinding(findings []analysis.Finding) bool {
 		}
 	}
 	return false
+}
+
+// taggedFieldFindings는 struct tag 키가 있는 공개 필드 보고의 수다. 태그를 읽는 인코더·ORM은 reflection으로
+// 필드에 닿아 이름 접근이 없어도 와이어 형식의 일부일 수 있다. encoding/json·yaml·xml·toml·gorm은 비공개 필드를
+// 건너뛰므로 비공개 필드는 키를 실어도 세지 않는다. 보존할지(기본 범위 변경)는 메인테이너 결정이라 보고는
+// 그대로 두고, 그 몫을 세어 일반 필드 limitation보다 구체적으로 알린다.
+func taggedFieldFindings(findings []analysis.Finding) int {
+	n := 0
+	for _, f := range findings {
+		if f.Kind == graph.KindField && f.Exported && len(f.TagKeys) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// generatedFindings는 생성 파일 출신 보고의 수다. cgo 패키지는 사용자 코드에 없는 _Cgo_*·_cgo_* 인프라를
+// 빌드 캐시의 생성 파일로 들여오고, 그 대부분은 저장소 안 호출자가 없다. 보고에서 빼면 사실이 사라지고
+// 기본 보고 범위가 바뀌므로 그대로 두되, 그 몫을 세어 소비자가 손으로 쓴 보고와 가르게 한다.
+func generatedFindings(findings []analysis.Finding) int {
+	n := 0
+	for _, f := range findings {
+		if f.Generated {
+			n++
+		}
+	}
+	return n
 }
 
 // initializerRootsLimitation은 초기화 루트 표시(initializerRoots)가 없는 문서의 CHA dead

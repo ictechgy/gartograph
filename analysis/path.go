@@ -5,6 +5,7 @@ package analysis
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/ictechgy/gartograph/graph"
 )
@@ -78,11 +79,12 @@ func shortestPath(d *graph.Document, adj map[string][]string, from, to string) *
 	}
 	var ids []string
 	for cur := to; ; cur = parent[cur] {
-		ids = append([]string{cur}, ids...)
+		ids = append(ids, cur)
 		if cur == from {
 			break
 		}
 	}
+	slices.Reverse(ids)
 	res.Found = true
 	res.Hops = make([]PathHop, len(ids))
 	res.Hops[0] = PathHop{ID: ids[0]}

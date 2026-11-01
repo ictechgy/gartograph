@@ -253,7 +253,7 @@ Harvest flags (all analysis commands):
 |---|---|---|
 | `--dir` | `.` | module root to analyze |
 | `--pattern` | `./...` | package pattern (repeatable) |
-| `--tests` | off | include test variant packages (Test/Benchmark/Example/Fuzz become retention roots) |
+| `--tests` | off | include test variant packages (Test/Benchmark/Example/Fuzz become retention roots); without it, packages imported only by other packages' `_test.go` files (test helpers) are counted in `limitations` |
 | `--deps` | off | include dependency packages/modules outside the main module |
 | `--tags` | — | build tags for the loader; files excluded by constraints are counted in `limitations` |
 | `--goos`/`--goarch` | host | harvest for another target platform; a `limitations` note records the choice |
@@ -564,6 +564,17 @@ timeout, `ulimit`, or a container.
   named access (`x.F`, `T{F: v}`, positional literal, promotion path,
   `==`) is unreachable. Reflection, serialization, and whole-struct copies
   are invisible — the report carries that limitation when fields appear.
+  A field finding keeps the vertex's `tagKeys`, and the report counts
+  unreachable exported fields that carry struct tags in a limitation
+  (encoders such as `encoding/json` skip unexported fields). Tagged fields
+  stay reported and still fail `--strict`; the keys say the field may be
+  part of a wire format (`json`, `yaml`, `db`, …) read through reflection.
+- A finding declared in a generated file (`// Code generated ... DO NOT
+  EDIT.`, including cgo's `_Cgo_*`/`_cgo_*` infrastructure in the build
+  cache) carries `generated: true` (text: `(generated)`), and the report
+  counts such findings (those left after `--baseline`) in a limitation.
+  They stay reported and still fail `--strict` — marked, never hidden;
+  filter on the fact or baseline them.
 - `//deadcode:keep` and `//gartograph:keep` on a declaration (function,
   method, var, const, type, or struct field) mark it as a retention root
   in `roots` — the keep intent lives next to the declaration, not in a
@@ -699,7 +710,11 @@ package initializer (not a graph vertex). Vertex `kind`:
 `// Code generated ... DO NOT EDIT.` — marked, never hidden. Type vertices
 also carry `interface: true` or `fields` (declared `"name:Type"` list) so
 `diff` can classify interface method additions and struct-field contract
-breaks as breaking. Method vertices implementing interfaces declared
+breaks as breaking. Field vertices with a struct tag carry `tagKeys`, the
+sorted keys `reflect.StructTag.Lookup` finds (`json:"a" yaml:"b"`
+→ `["json", "yaml"]`; a key whose value is exactly `-` is left out). Tags
+are only readable through reflection, so the keys record an access path
+(encoders, ORMs, validators) the graph cannot see. Method vertices implementing interfaces declared
 outside the module carry `satisfies` (sorted interface names) and
 `receiver` (the receiver type vertex ID). Named interfaces module code
 cannot name (unexported like `context.stringer`, or under an `internal/`
