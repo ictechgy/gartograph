@@ -1,17 +1,20 @@
 package source
 
 import (
+	"go/build"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
+	"golang.org/x/tools/go/packages"
 )
 
 func TestFeedbackTestHelpersAreNotRunnerRoots(t *testing.T) {
@@ -230,4 +233,155 @@ func TestFeedbackTestImportContextRefusesNonRegularFiles(t *testing.T) {
 		t.Fatalf("regular test file must open: %v", err)
 	}
 	f.Close()
+}
+
+// testOnlyScanPackages는 go list 없이 testOnlyImported를 부를 주 모듈 패키지 두 개(lib, helper)를 만든다.
+// lib의 테스트 파일만 helper를 import한다.
+func testOnlyScanPackages(t *testing.T, libFiles map[string]string) ([]*packages.Package, map[string]*packages.Package) {
+	t.Helper()
+	root := t.TempDir()
+	module := &packages.Module{Path: "example.com/m", Main: true, Dir: root}
+	kept := map[string]*packages.Package{}
+	var loaded []*packages.Package
+	for name, files := range map[string]map[string]string{
+		"lib":    libFiles,
+		"helper": {"helper.go": "package helper\n\nfunc H() {}\n"},
+	} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for file, content := range files {
+			if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p := &packages.Package{PkgPath: "example.com/m/" + name, Name: name, Dir: dir, Module: module}
+		kept[p.PkgPath] = p
+		loaded = append(loaded, p)
+	}
+	return loaded, kept
+}
+
+// 디렉터리의 테스트 파일 하나가 go/build에서 오류(헤더 문법 오류, 테스트의 cgo, 정규 파일 아님)여도 나머지 테스트
+// 파일의 import는 센다 — 한 파일 때문에 그 디렉터리의 테스트 importer가 통째로 사라지면 limitation이 조용해진다.
+func TestFeedbackTestOnlyScanKeepsImportsBesideBadTestFiles(t *testing.T) {
+	const helperTest = "package lib\n\nimport (\n\t\"testing\"\n\n\t\"example.com/m/helper\"\n)\n\n" +
+		"func TestA(t *testing.T) { helper.H() }\n"
+	for name, bad := range map[string]string{
+		"syntax": "package lib\n\nimport (\n\t\"fmt\"\n",
+		"cgo":    "package lib\n\nimport \"C\"\n",
+		"fifo":   "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{"lib.go": "package lib\n", "a_test.go": helperTest}
+			if bad != "" {
+				files["z_test.go"] = bad
+			}
+			loaded, kept := testOnlyScanPackages(t, files)
+			if bad == "" {
+				testutil.MakeFIFO(t, filepath.Join(kept["example.com/m/lib"].Dir, "z_test.go"))
+			}
+			var got []string
+			testutil.FinishWithin(t, testutil.BlockDeadline, func() {
+				got = testOnlyImported(loaded, kept, buildContext(Options{}))
+			})
+			if !reflect.DeepEqual(got, []string{"example.com/m/helper"}) {
+				t.Fatalf("a bad test file must not hide the other test imports: %v", got)
+			}
+		})
+	}
+}
+
+// --pattern·하위 --dir로 수확 범위를 좁히면 범위 밖 제품 importer는 적재되지 않는다. 그때 문구는 "적재한
+// 패키지 중"으로 범위를 밝히고 --tests만으로 풀리지 않는다는 것도 말한다. 전체 모듈 수확에서는 그 importer가
+// 보여 세지 않는다.
+func TestFeedbackTestOnlyLimitationScopesToLoadedPackages(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go":           "package main\n\nimport \"example.com/fixture/internal/h4\"\n\nfunc main() { h4.H() }\n",
+		"lib/lib.go":        "package lib\n",
+		"lib/a_test.go":     "package lib\n\nimport (\n\t\"testing\"\n\n\t\"example.com/fixture/internal/h4\"\n)\n\nfunc TestA(t *testing.T) { h4.H() }\n",
+		"internal/h4/h4.go": "package h4\n\nfunc H() {}\n",
+	})
+	notes := func(opts Options) []string {
+		doc, err := Load(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, note := range doc.Limitations {
+			if strings.Contains(note, "_test.go files") {
+				out = append(out, note)
+			}
+		}
+		return out
+	}
+	if got := notes(Options{Dir: dir, Level: graph.LevelPackage}); len(got) != 0 {
+		t.Fatalf("a production importer in the harvest rules the helper out: %q", got)
+	}
+	want := "1 packages are imported only by _test.go files among the loaded packages (first: " +
+		"example.com/fixture/internal/h4); test files were not harvested and packages outside --dir/--pattern " +
+		"were not loaded, so these packages may appear orphaned and their symbols unreachable " +
+		"(use --tests to include test importers)"
+	got := notes(Options{Dir: dir, Level: graph.LevelPackage, Patterns: []string{"./lib/...", "./internal/..."}})
+	if !reflect.DeepEqual(got, []string{want}) {
+		t.Fatalf("restricted harvest wording = %q, want %q", got, want)
+	}
+}
+
+// 테스트 파일을 읽는 go/build 문맥은 go list와 같은 태그·플랫폼을 쓴다 — --tags가 없으면 GOFLAGS의 -tags를,
+// 크로스 --goos/--goarch에서 CGO_ENABLED가 없으면 cgo를 끈다(go/build 기본 문맥의 규칙). 캡처 수확은
+// loaderEnv가 GOFLAGS를 비우므로 그 태그도 읽지 않는다.
+func TestFeedbackTestImportContextMatchesLoaderFlags(t *testing.T) {
+	other := "linux"
+	if runtime.GOOS == "linux" {
+		other = "darwin"
+	}
+	t.Setenv("CGO_ENABLED", "")
+	t.Setenv("GOFLAGS", "-mod=mod -tags=x,y")
+	cases := []struct {
+		name   string
+		opts   Options
+		goos   string
+		goarch string
+		tags   []string
+		cgo    bool
+	}{
+		{"goflags tags", Options{}, runtime.GOOS, runtime.GOARCH, []string{"x", "y"}, build.Default.CgoEnabled},
+		{"flag overrides goflags", Options{Tags: "z"}, runtime.GOOS, runtime.GOARCH, []string{"z"}, build.Default.CgoEnabled},
+		{"cross platform", Options{GOOS: other, GOARCH: "arm64", Tags: "a b"}, other, "arm64", []string{"a", "b"}, false},
+		{"captured clears goflags", Options{Captured: true}, runtime.GOOS, runtime.GOARCH, nil, build.Default.CgoEnabled},
+	}
+	for _, c := range cases {
+		ctxt := buildContext(c.opts)
+		if ctxt.GOOS != c.goos || ctxt.GOARCH != c.goarch || !reflect.DeepEqual(ctxt.BuildTags, c.tags) ||
+			ctxt.CgoEnabled != c.cgo {
+			t.Errorf("%s: context = %s/%s tags %v cgo %v, want %s/%s tags %v cgo %v", c.name,
+				ctxt.GOOS, ctxt.GOARCH, ctxt.BuildTags, ctxt.CgoEnabled, c.goos, c.goarch, c.tags, c.cgo)
+		}
+	}
+	t.Setenv("CGO_ENABLED", "1")
+	if !buildContext(Options{GOOS: other}).CgoEnabled {
+		t.Error("explicit CGO_ENABLED=1 must enable cgo for a cross harvest")
+	}
+	// GOFLAGS의 태그로만 켜지는 테스트 파일의 import도 go list와 같이 센다.
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go":    "package main\n\nimport \"example.com/fixture/lib\"\n\nfunc main() { lib.Run() }\n",
+		"lib/lib.go": "package lib\n\nfunc Run() {}\n",
+		"lib/special_test.go": "//go:build special\n\npackage lib\n\nimport (\n\t\"testing\"\n\n\t\"example.com/fixture/internal/h\"\n)\n\n" +
+			"func TestS(t *testing.T) { h.H() }\n",
+		"internal/h/h.go": "package h\n\nfunc H() {}\n",
+	})
+	for flags, want := range map[string]bool{"-tags=special": true, "": false} {
+		t.Setenv("GOFLAGS", flags)
+		doc, err := Load(Options{Dir: dir, Level: graph.LevelPackage})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := slices.ContainsFunc(doc.Limitations, func(note string) bool {
+			return strings.Contains(note, "imported only by _test.go files")
+		}); got != want {
+			t.Errorf("GOFLAGS=%q: test-only limitation present = %v, want %v (%q)", flags, got, want, doc.Limitations)
+		}
+	}
 }

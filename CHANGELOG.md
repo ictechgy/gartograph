@@ -26,8 +26,12 @@
 - `--tests` 없이 수확하는 명령(`graph`·`dead`·`metrics`·`rules`·`cycles` 등, module 레벨 제외): 적재한 어느 패키지의
   제품 파일도 import하지 않고 다른 패키지의 `_test.go` 파일만 import하는 주 모듈 패키지(테스트 헬퍼)를 세어
   limitation `N packages are imported only by _test.go files of other packages (first: …) … (use --tests to
-  include)`로 남긴다. 테스트 파일의 import는 go/build로 같은 빌드 제약(`--tags`·`--goos`/`--goarch`)을 따라 읽는다.
-  `metrics`의 orphan과 `dead`의 보고는 그대로다. 이 저장소에서는 `internal/testutil`이 해당한다. 테스트 파일만
+  include)`로 남긴다. `--pattern`이나 모듈 하위 `--dir`로 범위를 좁히면 범위 밖 importer는 적재되지 않으므로 문구가
+  `… among the loaded packages …`로 범위를 밝힌다. 테스트 파일의 import는 go/build로 읽고, 한 파일의 오류(헤더
+  문법, 테스트의 cgo, 정규 파일 아님)는 그 파일만 뺀다. 빌드 제약은 go list를 띄우는 환경을 따른다: `--goos`/`--goarch`,
+  `--tags`(없으면 환경 변수 GOFLAGS의 `-tags`), CGO_ENABLED(없으면 크로스 플랫폼에서 cgo 끔). `go env -w`로
+  저장한 GOFLAGS·CGO_ENABLED와 C 컴파일러가 없어 cgo가 꺼지는 호스트는 반영하지 않는다 — 그런 설정으로만 켜지는
+  테스트 파일의 import를 세는지만 달라진다. `metrics`의 orphan과 `dead`의 보고는 그대로다. 이 저장소에서는 `internal/testutil`이 해당한다. 테스트 파일만
   읽으므로 1000개 패키지·테스트 파일 2000개 합성 모듈의 package 레벨 수확이 약 0.16초(10회 중앙값 1.08→1.25초)
   늘었다.
 

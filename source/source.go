@@ -125,7 +125,7 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 	}
 	// 정점 전용 문서(schema·routes의 usr 확인)는 limitation을 읽지 않는다 — 테스트 파일을 다시 읽지 않는다.
 	if !opts.Tests && !vertexOnly {
-		if note := testOnlyImportLimitation(loaded, kept, opts); note != "" {
+		if note := testOnlyImportLimitation(loaded, kept, opts, root, doc.ModuleDir); note != "" {
 			doc.Limitation(note)
 		}
 	}
