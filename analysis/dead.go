@@ -7,6 +7,7 @@ package analysis
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/ictechgy/gartograph/graph"
@@ -359,10 +360,11 @@ func ExplainAdjacency(adj map[string][]string, id string, roots []string) ([]str
 	}
 	var path []string
 	for cur := id; ; cur = parent[cur] {
-		path = append([]string{cur}, path...)
+		path = append(path, cur)
 		if _, hasParent := parent[cur]; !hasParent {
 			break
 		}
 	}
+	slices.Reverse(path)
 	return path, true
 }

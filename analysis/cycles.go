@@ -167,10 +167,3 @@ func compareRelations(a, b graph.Edge) int {
 	}
 	return strings.Compare(string(a.Kind), string(b.Kind))
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

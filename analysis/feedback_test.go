@@ -110,3 +110,27 @@ func TestFeedbackDeadFieldFindingsCarryTagKeys(t *testing.T) {
 		}
 	}
 }
+
+// independent는 순서 없는 쌍 계약이다 — 목록에 같은 컴포넌트가 거듭 나와 (b, a) 쌍이 다시 만들어져도
+// 같은 위반을 두 번 보고하지 않는다.
+func TestFeedbackIndependentPairReportedOnce(t *testing.T) {
+	d := &graph.Document{
+		Module: "example.com/m",
+		Vertices: []graph.Vertex{
+			{ID: "example.com/m/a", Kind: graph.KindPackage},
+			{ID: "example.com/m/b", Kind: graph.KindPackage},
+		},
+		Edges: []graph.Edge{{From: "example.com/m/a", To: "example.com/m/b", Kind: graph.EdgeImport}},
+	}
+	for _, list := range [][]string{{"a", "b", "a"}, {"b", "a", "b", "a"}} {
+		cfg := &config.File{
+			Components:  map[string][]string{"a": {"a"}, "b": {"b"}},
+			Deps:        map[string][]string{"a": {"b"}},
+			Independent: list,
+		}
+		violations := CheckRules(d, cfg).Violations
+		if len(violations) != 1 || violations[0].Rule != "independence" || violations[0].FromComponent != "a" {
+			t.Fatalf("independent %v: one reach must be one violation, got %+v", list, violations)
+		}
+	}
+}

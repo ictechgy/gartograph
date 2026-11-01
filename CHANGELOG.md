@@ -21,6 +21,8 @@
 - `dead`(CLI·MCP): 필드 finding에 정점의 `tagKeys`를 옮겨 싣고, 태그가 붙은 unreachable 필드가 있으면 그 수를
   limitation `N unreachable fields carry struct tags (tagKeys) …`로 센다. 보고 범위와 `--strict` 판정은 그대로다
   — 태그 필드를 보존할지는 정하지 않았다. 이 변경 전에 저장한 문서(`--graph`)에는 키가 없어 limitation도 없다.
+- `rules`: `independent` 목록에 같은 컴포넌트가 거듭 나오면(`[a, b, a]`) 거꾸로 된 쌍 (b, a)를 새 쌍으로 보고 같은
+  independence 위반을 두 번 내던 문제를 고친다. 쌍은 순서 없이 한 번만 검사한다.
 - `--tests` 없이 수확하는 명령(`graph`·`dead`·`metrics`·`rules`·`cycles` 등, module 레벨 제외): 적재한 어느 패키지의
   제품 파일도 import하지 않고 다른 패키지의 `_test.go` 파일만 import하는 주 모듈 패키지(테스트 헬퍼)를 세어
   limitation `N packages are imported only by _test.go files of other packages (first: …) … (use --tests to
