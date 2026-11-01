@@ -572,8 +572,9 @@ timeout, `ulimit`, or a container.
 - A finding declared in a generated file (`// Code generated ... DO NOT
   EDIT.`, including cgo's `_Cgo_*`/`_cgo_*` infrastructure in the build
   cache) carries `generated: true` (text: `(generated)`), and the report
-  counts such findings in a limitation. They stay reported and still fail
-  `--strict` — marked, never hidden; filter on the fact or baseline them.
+  counts such findings (those left after `--baseline`) in a limitation.
+  They stay reported and still fail `--strict` — marked, never hidden;
+  filter on the fact or baseline them.
 - `//deadcode:keep` and `//gartograph:keep` on a declaration (function,
   method, var, const, type, or struct field) mark it as a retention root
   in `roots` — the keep intent lives next to the declaration, not in a

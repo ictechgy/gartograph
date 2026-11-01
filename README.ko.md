@@ -412,9 +412,9 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
   `db` 등)의 일부일 수 있다는 사실입니다.
 - 생성 파일(`// Code generated ... DO NOT EDIT.`, 빌드 캐시에 있는 cgo의
   `_Cgo_*`·`_cgo_*` 인프라 포함)에 선언된 finding은 `generated: true`(텍스트는
-  `(generated)`)를 싣고, 보고는 그런 finding 수를 limitation으로 셉니다.
-  보고에서 빠지지 않고 `--strict`도 그대로 실패합니다 — 숨기지 않고 표시만
-  합니다. 사실로 거르거나 baseline에 넣으세요.
+  `(generated)`)를 싣고, 보고는 그런 finding 수(`--baseline`으로 거른 뒤 남은 것)를
+  limitation으로 셉니다. 보고에서 빠지지 않고 `--strict`도 그대로 실패합니다 —
+  숨기지 않고 표시만 합니다. 사실로 거르거나 baseline에 넣으세요.
 - `//deadcode:keep`·`//gartograph:keep`을 선언(함수·메서드·var·const·
   타입·struct 필드)에 붙이면 문서의 `roots`에 보존 루트로 남습니다 —
   보존 의도가 CLI 플래그가 아니라 선언 옆에 삽니다. 표지는 주석 줄의

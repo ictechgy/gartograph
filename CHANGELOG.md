@@ -22,6 +22,7 @@
   limitation `N unreachable exported fields carry struct tags (tagKeys) …`로 센다(인코더가 건너뛰는 비공개 필드는
   키만 싣고 세지 않는다). 보고 범위와 `--strict` 판정은 그대로다
   — 태그 필드를 보존할지는 정하지 않았다. 이 변경 전에 저장한 문서(`--graph`)에는 키가 없어 limitation도 없다.
+  생성 파일·태그 필드 수는 `--baseline`으로 거른 뒤 실제로 보고하는 finding만 센다.
 - `rules`: `independent` 목록에 같은 컴포넌트가 거듭 나오면(`[a, b, a]`) 거꾸로 된 쌍 (b, a)를 새 쌍으로 보고 같은
   independence 위반을 두 번 내던 문제를 고친다. 쌍은 순서 없이 한 번만 검사한다.
 - `--tests` 없이 수확하는 명령(`graph`·`dead`·`metrics`·`rules`·`cycles` 등, module 레벨 제외): 적재한 어느 패키지의

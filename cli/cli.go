@@ -696,7 +696,7 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	}
-	limitations := deadLimitations(doc, *algo, *retainPublic, unknown, all, len(stale))
+	limitations := deadLimitations(doc, *algo, *retainPublic, unknown, all, findings, len(stale))
 
 	switch *format {
 	case "json":
@@ -749,10 +749,12 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 // 두 통로가 따로 조립하던 때 MCP는 알 수 없는 루트·main 없음·외부 디스패치·필드 limitation을 빠뜨려, main 없는
 // 라이브러리의 공개 API 전부가 unreachable인 보고가 "--retain-public을 쓰라"는 말도, reflection 디스패치를 못
 // 본다는 말도 없이 나갔다. findings는 baseline으로 거르기 전의 보고 전부다 — 메서드·필드 보고가 있는지가
-// limitation을 정하고, baselined 보고도 같은 사각지대에 있다. stale은 더 이상 나오지 않는 baseline 보고 수다
-// (MCP는 baseline이 없어 0).
+// limitation을 정하고, baselined 보고도 같은 사각지대에 있다. reported는 baseline으로 거른 뒤 실제로 내는
+// 보고다 — 수를 말하는 limitation(생성 파일·태그 필드 보고 수)은 그 목록과 맞아야, baseline이 전부 흡수한
+// 빈 unreachable 옆에 "N unreachable findings"가 남지 않는다(MCP는 baseline이 없어 findings와 같다).
+// stale은 더 이상 나오지 않는 baseline 보고 수다(MCP는 baseline이 없어 0).
 func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknown []string,
-	findings []analysis.Finding, stale int) []string {
+	findings, reported []analysis.Finding, stale int) []string {
 	limitations := append([]string(nil), doc.Limitations...)
 	for _, u := range unknown {
 		limitations = append(limitations,
@@ -777,13 +779,13 @@ func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknow
 			"field reachability counts named accesses (x.F, T{F: v}, positional literals); "+
 				"reflection, serialization (encoding/json, gob), and whole-struct copies are invisible to this graph")
 	}
-	if n := taggedFieldFindings(findings); n > 0 {
+	if n := taggedFieldFindings(reported); n > 0 {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d unreachable exported fields carry struct tags (tagKeys); tags are read only through reflection "+
 				"(encoders such as encoding/json or yaml, ORMs, validators), so these fields may be accessed "+
 				"where this graph cannot see", n))
 	}
-	if n := generatedFindings(findings); n > 0 {
+	if n := generatedFindings(reported); n > 0 {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d unreachable findings are declared in generated files (generated: true), such as cgo output "+
 				"in the build cache; their generator, not hand-written source, decides whether they exist", n))
