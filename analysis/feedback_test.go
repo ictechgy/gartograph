@@ -55,3 +55,31 @@ func TestFeedbackRuleTieOrderIsDeterministic(t *testing.T) {
 		t.Fatalf("rule order depends on input: first=%+v, second=%+v", first.Violations, second.Violations)
 	}
 }
+
+// 생성 파일 출신 정점의 보고는 그 출처 사실을 그대로 싣는다 — 소비자가 손으로 쓴 코드와
+// 생성기(cgo 등) 산출물을 보고만 보고 가른다. CHA·RTA 두 판정 모두 같은 사실을 옮긴다.
+func TestFeedbackDeadFindingsCarryGeneratedProvenance(t *testing.T) {
+	d := &graph.Document{
+		Roots: []string{"p.main"},
+		Vertices: []graph.Vertex{
+			{ID: "p.main", Kind: graph.KindFunc, Package: "p"},
+			{ID: "p._Cgo_use", Kind: graph.KindFunc, Package: "p", Generated: true},
+			{ID: "p._Cgo_always_false", Kind: graph.KindVar, Package: "p", Generated: true},
+			{ID: "p.handwritten", Kind: graph.KindFunc, Package: "p"},
+		},
+	}
+	reach := Reachable(d, d.Roots)
+	for name, findings := range map[string][]Finding{
+		"cha": Dead(d, reach),
+		"rta": DeadRTA(d, reach, map[string]bool{"p.main": true}),
+	} {
+		got := map[string]bool{}
+		for _, f := range findings {
+			got[f.ID] = f.Generated
+		}
+		want := map[string]bool{"p._Cgo_use": true, "p._Cgo_always_false": true, "p.handwritten": false}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: generated provenance = %v, want %v", name, got, want)
+		}
+	}
+}

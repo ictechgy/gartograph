@@ -564,6 +564,11 @@ timeout, `ulimit`, or a container.
   named access (`x.F`, `T{F: v}`, positional literal, promotion path,
   `==`) is unreachable. Reflection, serialization, and whole-struct copies
   are invisible — the report carries that limitation when fields appear.
+- A finding declared in a generated file (`// Code generated ... DO NOT
+  EDIT.`, including cgo's `_Cgo_*`/`_cgo_*` infrastructure in the build
+  cache) carries `generated: true` (text: `(generated)`), and the report
+  counts such findings in a limitation. They stay reported and still fail
+  `--strict` — marked, never hidden; filter on the fact or baseline them.
 - `//deadcode:keep` and `//gartograph:keep` on a declaration (function,
   method, var, const, type, or struct field) mark it as a retention root
   in `roots` — the keep intent lives next to the declaration, not in a

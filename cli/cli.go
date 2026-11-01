@@ -718,11 +718,14 @@ func cmdDead(args []string, stdout, stderr io.Writer) int {
 		}
 	case "text":
 		for _, f := range findings {
-			exported := ""
+			marks := ""
 			if f.Exported {
-				exported = " (exported)"
+				marks = " (exported)"
 			}
-			textLine(stdout, "unreachable %s: %s%s", f.Kind, f.ID, exported)
+			if f.Generated {
+				marks += " (generated)"
+			}
+			textLine(stdout, "unreachable %s: %s%s", f.Kind, f.ID, marks)
 		}
 		fmt.Fprintf(stdout, "%d unreachable symbols (%d baselined, %d retention roots)\n",
 			len(findings), len(baselined), len(roots))
@@ -774,6 +777,11 @@ func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknow
 			"field reachability counts named accesses (x.F, T{F: v}, positional literals); "+
 				"reflection, serialization (encoding/json, gob), and whole-struct copies are invisible to this graph")
 	}
+	if n := generatedFindings(findings); n > 0 {
+		limitations = append(limitations, fmt.Sprintf(
+			"%d unreachable findings are declared in generated files (generated: true), such as cgo output "+
+				"in the build cache; their generator, not hand-written source, decides whether they exist", n))
+	}
 	if stale > 0 {
 		limitations = append(limitations, fmt.Sprintf(
 			"%d baseline findings no longer occur; regenerate the baseline", stale))
@@ -803,6 +811,19 @@ func hasFieldFinding(findings []analysis.Finding) bool {
 		}
 	}
 	return false
+}
+
+// generatedFindings는 생성 파일 출신 보고의 수다. cgo 패키지는 사용자 코드에 없는 _Cgo_*·_cgo_* 인프라를
+// 빌드 캐시의 생성 파일로 들여오고, 그 대부분은 저장소 안 호출자가 없다. 보고에서 빼면 사실이 사라지고
+// 기본 보고 범위가 바뀌므로 그대로 두되, 그 몫을 세어 소비자가 손으로 쓴 보고와 가르게 한다.
+func generatedFindings(findings []analysis.Finding) int {
+	n := 0
+	for _, f := range findings {
+		if f.Generated {
+			n++
+		}
+	}
+	return n
 }
 
 // initializerRootsLimitation은 초기화 루트 표시(initializerRoots)가 없는 문서의 CHA dead

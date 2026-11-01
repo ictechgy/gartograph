@@ -9,6 +9,11 @@
 - CHA 후보 호출은 도달성 그래프에 유지하되 확정 순환의 근거로 세지 않는다. CLI와 MCP는
   제외한 입력 후보 관계 수를 limitation으로 보고한다.
 - 같은 간선의 여러 규칙·위치 위반을 전체 키로 정렬해 입력 순서에 따른 baseline diff를 막는다.
+- `dead`(CLI·MCP): 생성 파일(`// Code generated ... DO NOT EDIT.`, 빌드 캐시의 cgo `_Cgo_*`·`_cgo_*` 인프라
+  포함)에 선언된 finding에 정점 사실 `generated: true`를 옮겨 싣고(텍스트 보고는 `(generated)`), 그런 finding이
+  있으면 그 수를 limitation `N unreachable findings are declared in generated files …`로 센다. 보고 범위와
+  `--strict` 판정은 그대로다 — 생성 심볼도 계속 보고된다. baseline 파일의 해당 항목에도 같은 키가 실린다(짝짓기
+  키는 그대로라 기존 baseline도 맞는다).
 
 ## [0.10.0] - 2026-10-22
 
