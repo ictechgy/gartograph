@@ -21,6 +21,8 @@
   잇지 못한 지시문(메서드 대상, 없는 이름)만 `N //go:linkname directives could not be tied to package-level
   module symbols …`로 센다 — 모듈 밖 심볼을 당겨 오는 본문 없는 선언(`runtime.nanotime`)은 모듈 안에 살릴 대상이
   없어 세지 않는다.
+- 빌드 제약으로 빠진 파일 수 limitation이 `--tags`뿐 아니라 `--goos/--goarch`도 안내한다 — `_windows.go` 같은
+  플랫폼 파일은 태그가 아니라 대상 플랫폼으로만 들어온다.
 
 ## [0.11.0] - 2026-11-03
 

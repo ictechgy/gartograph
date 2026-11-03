@@ -1,6 +1,7 @@
 package source
 
 import (
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -126,4 +127,30 @@ func Local() { _ = local() }
 	if len(notes) != 1 || !strings.HasPrefix(notes[0], "1 //go:linkname directives") {
 		t.Errorf("only the unresolved method-form directive must be counted: %v", notes)
 	}
+}
+
+// TestBuildConstraintHintNamesPlatformFlags는 빌드 제약으로 빠진 파일의 limitation이 --tags만이 아니라
+// --goos/--goarch도 안내하는지 본다 — _windows.go 같은 플랫폼 파일은 태그가 아니라 대상 플랫폼으로만
+// 들어온다. 검토에서 GOOS 파일 때문에 unreachable이 된 함수에 --tags만 안내됐다.
+func TestBuildConstraintHintNamesPlatformFlags(t *testing.T) {
+	other := "windows"
+	if runtime.GOOS == "windows" {
+		other = "linux"
+	}
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go":               "package main\n\nfunc main() {}\n",
+		"main_" + other + ".go": "package main\n\nfunc init() { onlyThere() }\n",
+		"helper.go":             "package main\n\nfunc onlyThere() {}\n",
+		"tagged.go":             "//go:build custom\n\npackage main\n",
+	})
+	doc := loadSymbol(t, dir)
+	for _, l := range doc.Limitations {
+		if strings.Contains(l, "excluded by build constraints") {
+			if !strings.Contains(l, "--tags") || !strings.Contains(l, "--goos") {
+				t.Fatalf("the hint must name both --tags and --goos/--goarch: %q", l)
+			}
+			return
+		}
+	}
+	t.Fatalf("excluded files must be counted: %v", doc.Limitations)
 }
