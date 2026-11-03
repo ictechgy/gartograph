@@ -35,6 +35,54 @@ Go에는 이미 `deadcode`, `goda`, `go-arch-lint`, `go-callvis`가 있지만 �
 그 위의 질의로 표현합니다 — 코딩 에이전트를 위한 결정적 JSON 계약으로,
 삭제 판정 없이 사실과 근거만 담습니다.
 
+## 패치 영향과 이전
+
+`impact --base COMMIT [--head COMMIT]`은 `mode: "patch"`와 서로 분리된 `before`·`after` 후보 집합을
+돌려줍니다. `--head`가 없으면 뒤쪽은 무시되지 않은 untracked 파일을 포함한 작업 트리를 캡처합니다.
+커밋은 한 번만 해석하고, 각 소스 스냅숏을 임시 디렉터리에 복사해 따로 수확합니다. Git worktree·index·
+hook·filter·소스 파일은 바꾸지 않습니다. rename은 옛 경로 삭제와 새 경로 추가로 다루므로 지운 선언은
+before 쪽에 그대로 보입니다. 스냅숏 내용 해시는 토폴로지만이 아니라 함수 본문·설정·Git 파일 모드를
+담습니다. 후보 seed는 캡처한 두 끝점을 비교합니다 — 그 사이 index에서 지웠다가 같은 내용으로 되살린
+경우는 순변경이 아닙니다. 작업 트리 모드는 Git `core.filemode` 정책을 따릅니다(실행 비트를 믿지 않으면
+추적 파일은 index 모드). 캡처 도중 동시 편집을 감지하면 요청이 실패하고, 결과는 캡처한 내용을 설명할 뿐
+앞으로의 신선도를 약속하지 않습니다.
+
+후보마다 이유·선언 위치와 같은 스냅숏의 `via` 선행 ID가 있습니다. 전파를 보려면 `via`를 깊이 0의 seed
+쪽으로 따라가세요. `--tests`는 테스트 패키지를 포함하고 연결된 Go 테스트 진입점 후보를 표시합니다. 이것은
+검토 후보입니다 — 테스트 실패를 예측하지도, 테스트 생략을 정당화하지도 않습니다. 파일 seed는 **그 파일의
+모든 선언과 패키지**를 담고, 설정이나 매핑되지 않은 파일의 변경은 명시적으로 남습니다. 후보가 없다는
+것은 안전하다는 결과가 아니며 `complete`는 false로 남습니다.
+
+`depthLimited`와 `outputLimited`는 제한을 구분하고, patch의 `truncated`는 둘의 합집합입니다. `--max`는
+보고하는 후보(seed 포함)의 상한이지 그래프 수확이나 순회 작업의 상한이 아닙니다. `preparationMillis`는 소스
+획득을, `analysisMillis`는 실체화와 양쪽 수확·순회를 잽니다. 소스 캡처는 한쪽당 20,000개 파일·128 MiB로
+제한되고 넘으면 오류입니다. 수확 시간·메모리 예산은 없습니다. 심볼릭 링크, submodule, 외부 로컬 모듈
+replace는 명시적인 소스 준비가 필요하고 오류가 됩니다. patch 로딩은 `GOENV=off`, 빈 `GOFLAGS`,
+`GO111MODULE=on`, `GOPACKAGESDRIVER=off`로 고정하며, 상속되거나 저장된 overlay·modfile·기타 빌드 플래그는
+무시합니다. 빌드 범위는 `--tags`·`--goos`·`--goarch`로 명시하세요. 각 쪽은 캡처 안에서 가장 가까운
+`go.work`만 쓰거나 workspace 모드를 끕니다. `workspace`는 그 저장소 상대 경로나 `off`를, `scope.loaderEnvironment`는
+고정한 설정을 기록합니다. 그 밖의 환경·툴체인 설정은 소스 해시 밖입니다. 무시되거나 생성되는 파일은
+재구성하지 않고, Go 툴체인·환경·모듈 캐시 내용은 내용 해시 밖입니다. patch의 `--pattern`은 `--dir` 안의
+`.`와 로컬 `./...` 패턴만 받습니다 — 절대 경로, `file=` 질의, 외부 패키지 패턴은 소스 선택을 각 캡처 안에
+두려고 거부합니다. 저장소의 다른 곳에서 일어난 변경은 `--dir` 기준 상대 경로로 `files`/`unmappedFiles`에
+남으므로(예: `../go.mod`) 하위 디렉터리를 분석할 때도 상위 모듈·workspace 변경이 보입니다. 선택한 `--dir`와
+Git worktree 루트의 디렉터리 심볼릭 링크 별칭은 포함 관계를 확인하기 전에 풉니다 — macOS가 임시 경로를
+`/private/var` 별칭으로 알려도 루트·하위 디렉터리 범위가 유지됩니다. 캡처한 소스 안의 심볼릭 링크를 허용하는
+것은 아닙니다. Git 원시 경로의 구성 요소는 정규 UTF-8이어야 하고, 중복 항목이나 캡처 파일 시스템의
+대소문자·유니코드 규칙에서 충돌하는 이름은 입력을 덮어쓰는 대신 실패합니다. 캡처 동안 디렉터리 계층이
+안정적이어야 합니다 — 원자적 파일 시스템 스냅숏이 아닙니다. 런타임 콜백 연결, reflection, HTTP/DB
+페이로드 호환성, 동적 설정은 평가하지 않거나 수확한 그래프만큼만 봅니다.
+
+기존 `impact ID`, `--files`, `--since`, 저장 그래프, language-traversal 명령은 그대로입니다. `--since`는 여전히
+파일을 **현재 그래프 하나**에 대응시킬 뿐 과거 분석이 되지 않습니다. 스냅숏 JSON은 `mode`, `freshness:
+"unverified"`, `max`, `depthLimited`, `outputLimited`를 더하고, 기존 `truncated`는 계속 출력 상한을 뜻합니다.
+과거 호출자를 보려면 `--base`로 옮기세요.
+
+MCP `gartograph_impact`는 `{"base":"HEAD~1","head":"HEAD"}`나 `{"base":"HEAD"}`를 받아 같은 결과를 내고, 서버
+시작 시의 범위 플래그를 씁니다. `id`와 `files`는 고정된 세션 그래프를 계속 질의합니다. patch 모드에는 `--graph`나
+명시적 `--config` 없는 소스 기반 MCP 세션이 필요하고, 캡처한 각 쪽은 자기 `.gartograph.yml`을 읽습니다.
+`base/head`는 `id/files`와 함께 쓸 수 없습니다.
+
 ## 설치
 
 ```bash
@@ -42,6 +90,9 @@ brew install ictechgy/tap/gartograph
 # 또는
 go install github.com/ictechgy/gartograph/cmd/gartograph@latest
 ```
+
+`go install`과 소스 빌드에는 Go 1.27.1 이상(`go.mod`의 `go` 줄)이 필요합니다. Homebrew formula는 미리 빌드한
+바이너리를 설치합니다.
 
 ## 사용
 
@@ -53,7 +104,10 @@ gartograph graph --level type --format mermaid    # Graphviz는 --format dot
 gartograph graph --level symbol --out .gartograph/graph.json
 
 gartograph cycles --level symbol --strict     # 순환 검사 — 패키지 순환은 Go가 금지하므로
-                                              # 실전 검사는 type/symbol 레벨
+                                              # 실전 검사는 type/symbol 레벨. 확정 의존만 셉니다:
+                                              # CHA 후보 간선(인터페이스 디스패치 팬아웃)은 도달성에는
+                                              # 남지만 순환 근거가 아니어서, 인터페이스 호출로만 도는
+                                              # 재귀는 --strict를 깨지 않고 제외한 관계 수가 limitation에 남습니다.
 gartograph dead                               # main·init에서 도달 불가 심볼 보고
                                               # 심볼 레벨은 struct 필드까지 —
                                               # 참조 안 된 멤버는 kind "field"로 보고
@@ -790,6 +844,20 @@ limitation을 답니다. 서버에는 baseline이 없어 `baselined`·`staleBase
   "args": ["mcp", "--dir", "/path/to/repo", "--level", "symbol"]}}}
 ```
 
+## 구조
+
+```
+go/packages ──> source ──> graph.Document ──> analysis ──> export ──> cli
+                (수확)      (순수 도메인)        (질의)        (json/mermaid)
+```
+
+- `graph` — 외부 의존이 없는 순수 도메인. 산출물입니다.
+- `source` — `golang.org/x/tools`를 import하는 유일한 패키지. 수확만 하고 판정하지 않습니다.
+- `analysis` — 문서 위의 질의(SCC 순환, 이웃, 도달성, 규칙).
+- `config` — `.gartograph.yml` 파싱(yaml.v3를 import하는 유일한 패키지).
+- `export` — 결정적 JSON, Mermaid, 그래프 파일 입출력.
+- `cli` — 명령과 종료 코드 계약.
+
 ## 개발
 
 ```bash
@@ -797,6 +865,25 @@ go test ./...                    # 테스트
 Scripts/coverage.sh              # 테스트 + 커버리지 게이트 90%
 Scripts/verify-cli-contract.sh   # fixture 모듈에서 종료 코드 계약 검증
 ```
+
+## 로드맵
+
+- ~~심볼·타입 레벨 수확~~ — `go/packages` + `go/types` + AST로 완료
+- ~~`dead`, `rules`, 저장 `graph.json`~~ — 완료
+- ~~모듈 레벨 그래프~~ — 완료(go.work 워크스페이스, `--deps`가 의존 모듈을 더함)
+- ~~검증 스크립트 + CI~~ — `Scripts/coverage.sh`, `Scripts/verify-cli-contract.sh`
+- ~~Homebrew tap~~ — `brew install ictechgy/tap/gartograph`
+- ~~`impact`, `deny`/`signature` 규칙, SARIF, MCP, `--tags`, 생성 파일 표시~~ — 완료
+- ~~`path`, `diff`, `impact --since/--files`, 규칙 baseline, 외부(vendor) 규칙, `--format dot`~~ — 완료
+- ~~`visibleTo`, `common`, 전이 `forbidden`, deny 사유, `metrics`, `mapping`, `init`~~ — 완료
+- ~~isthmus bridge-facts 생산자~~ — `bridges`가 platform `go` 문서를 냅니다. cgo 관찰은 v1 계약대로
+  `unscanned-ffi-interop` limitation입니다
+- ~~RTA~~ — `dead --algo rta`(opt-in, Andersen 포인터 분석은 보류)
+- ~~간선 위치(스키마 v2)~~, ~~테스트 변형 중복 제거~~ — 완료
+- ~~`fileRules`, cycles/dead SARIF + baseline, 더 깊은 `diff` breaking 분류~~ — 완료
+- ~~`schema` usr, `reach` / `impact --format language-traversal`~~ — 완료
+- ~~`routes --role server`(ServeMux·chi·gin·echo), `--type-edges members`~~ — 완료
+- ~~`routes --role client`(net/http·resty v2·선언한 래퍼)~~ — 완료
 
 ## 라이선스
 

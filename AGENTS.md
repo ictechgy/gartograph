@@ -11,7 +11,9 @@
 
 자매 프로젝트가 바탕화면에 있습니다: [cartograph](../cartograph)(Swift) ·
 [kartograph](../kartograph)(Kotlin/Android) · [dartograph](../dartograph)(Dart/Flutter) ·
-[schemagraph](../schemagraph)(DB) · [isthmus](../isthmus)(언어 경계 조인).
+[rustograph](../rustograph)(Rust) · [pythograph](../pythograph)(Python) ·
+[tsograph](../tsograph)(TypeScript/JavaScript) · [schemagraph](../schemagraph)(DB) ·
+[isthmus](../isthmus)(언어 경계 조인).
 `query` 출력 스키마와 출력 철학(`state`/`edges`/`limitations`)은 계열과 같게 유지합니다.
 브리지 교환이 생기면 `../isthmus/docs/GRAPH-EXCHANGE.md`가 정본입니다.
 
@@ -61,7 +63,8 @@ unreachable로 나옵니다 — `--retain-public`이 그때의 스위치입니�
 "리시버 타입이 도달하면 그 메서드도 도달"로 계산합니다(`ReachAdjacency`).
 문서 간선으로 긋지 마세요 — 메서드→리시버 references와 맞물려 cycles에
 가짜 2-순환이 생깁니다. 이 규칙은 `dead`·`explain` 전용입니다 —
-`shared`·`path`·`impact`는 의존 간선만 따릅니다(`DependencyReachable`).
+`shared`·`path`·`impact`는 의존 간선만 따릅니다(`graph.Adjacency`; `analysis.DependencyReachable`은
+같은 규칙의 공개 도우미입니다).
 이름 없는 인터페이스(`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`)는
 패키지 스코프 명명 목록에 없어서 의존 패키지 AST의 인터페이스 표기를 그 패키지의
 `TypesInfo`로 읽습니다(`source/anoniface.go`) — 심볼 레벨 로드가 의존도 소스에서

@@ -110,6 +110,9 @@ brew install ictechgy/tap/gartograph
 go install github.com/ictechgy/gartograph/cmd/gartograph@latest
 ```
 
+`go install` and source builds need Go 1.27.1 or newer (the `go` line in
+`go.mod`); the Homebrew formula installs a prebuilt binary.
+
 Or from source:
 
 ```bash
@@ -129,7 +132,11 @@ gartograph graph --level type --format mermaid    # or --format dot for Graphviz
 gartograph graph --level symbol --out .gartograph/graph.json
 
 # Detect dependency cycles — package cycles are impossible in Go,
-# so real checks run at type/symbol level
+# so real checks run at type/symbol level. Only definite dependencies count:
+# CHA candidate edges (interface dispatch fan-out) stay in the graph for
+# reachability but are not cycle evidence, so recursion that goes only through
+# an interface call does not fail --strict; the report counts those excluded
+# relations in limitations.
 gartograph cycles --level symbol --strict
 
 # Report symbols unreachable from retention roots (main, init)
