@@ -771,6 +771,7 @@ func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknow
 		// RTA는 SSA 전체 프로그램으로 외부 호출까지 보고, 모든 합성 init을 루트로 삼아 아래 둘과 무관하다.
 		if hasMethodFinding(findings) {
 			limitations = append(limitations, externalDispatchLimitation(doc))
+			limitations = append(limitations, moduleLocalDispatchLimitation(doc)...)
 		}
 		limitations = append(limitations, initializerRootsLimitation(doc, findings)...)
 	}
@@ -846,6 +847,19 @@ func generatedFindings(findings []analysis.Finding) int {
 		}
 	}
 	return n
+}
+
+// moduleLocalDispatchLimitation은 모듈 안 이름 없는 인터페이스 팬아웃 표시(moduleLocalDispatch)가
+// 없는 문서의 CHA dead 메서드 보고에 붙는 재수확 권고다. 표시가 없다는 사실만 말한다 — 메서드
+// 보고가 없으면 호출부(deadLimitations)가 부르지 않아 조용하다.
+func moduleLocalDispatchLimitation(doc *graph.Document) []string {
+	if doc.ModuleLocalDispatch {
+		return nil
+	}
+	return []string{"this document lacks the moduleLocalDispatch marker (harvested before calls through " +
+		"module interfaces without a package-scope name were fanned out): methods called only through " +
+		"x.(interface{ M() }), a type switch case, a function-local interface, or an unnamed type " +
+		"constraint may appear unreachable — re-harvest"}
 }
 
 // initializerRootsLimitation은 초기화 루트 표시(initializerRoots)가 없는 문서의 CHA dead

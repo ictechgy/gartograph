@@ -231,6 +231,11 @@ type Document struct {
 	// 있으면 Candidate가 없는 간선은 확정 관계이고, 없는 옛 문서에서는 팬아웃 간선과
 	// 확정 간선을 구분할 수 없다 — 순회가 근거 등급을 싣지 않는 근거다.
 	DispatchEvidence bool `json:"dispatchEvidence,omitempty"`
+	// ModuleLocalDispatch는 패키지 스코프에 이름이 없는 모듈 인터페이스(단언·type switch의
+	// 리터럴, 함수 안 선언, 이름 없는 제약)의 메서드 호출까지 CHA로 퍼뜨렸다는 수확 표시다.
+	// 없는 옛 문서에서는 그런 선택적 인터페이스 관용구로만 불리는 메서드가 거짓으로 dead일 수
+	// 있다 — dead가 재수확을 권하는 근거다.
+	ModuleLocalDispatch bool `json:"moduleLocalDispatch,omitempty"`
 }
 
 // WorkspaceModule은 워크스페이스 주 모듈 하나의 경로와 go.mod 디렉터리(Dir, 절대 경로)다.

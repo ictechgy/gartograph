@@ -64,6 +64,10 @@ type harvester struct {
 	// vertexOnly는 정점 집합만 쓰는 수확(usrDocument)이다. 구조 간선·외부 디스패치·CHA 팬아웃을 건너뛰고 간선을
 	// 기록하지 않는다. 정점을 만드는 판정(init·pkg._·필드)은 vertices·fieldIDs만 보고 간선과 무관해 정점 집합은 같다.
 	vertexOnly bool
+	// modulePkgs는 수확하는 모듈 패키지의 PkgPath다. 패키지 스코프에 이름이 없는 모듈 인터페이스
+	// (단언·type switch의 리터럴, 함수 안 선언, 이름 없는 제약)의 메서드는 정점이 없지만 호출 지점이
+	// 모듈 안에 보이므로, 모듈 밖 인터페이스(satisfies 규칙)와 갈라 CHA로 퍼뜨리는 기준이다.
+	modulePkgs map[string]bool
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -89,6 +93,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		baseFiles:      baseSyntaxFiles(internal),
 		spell:          newTypeSpeller(),
 		vertexOnly:     vertexOnly,
+		modulePkgs:     packagePathSet(internal),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -101,6 +106,8 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	doc.InitializerRoots = wantSymbols // specEdges가 심볼 레벨에서 pkg._를 수확한다
 	doc.InterfaceTypeSets = true       // fillTypeShape가 인터페이스 TypeSet도 채운다
 	doc.DispatchEvidence = wantSymbols // CHA 팬아웃(candidateEdge)은 심볼 레벨에서만 생긴다
+	// 정점 없는 모듈 인터페이스 메서드의 팬아웃(unnamedModuleMethod)도 심볼 레벨 몸체 순회에서 생긴다.
+	doc.ModuleLocalDispatch = wantSymbols
 
 	h.addSymbolVertices(internal, wantSymbols)
 	// 구조 간선(embeds·implements, 구체 타입 × 인터페이스 판정)과 외부 디스패치 사실(satisfies)은 정점을 만들지 않는다.
@@ -878,6 +885,16 @@ func (h *harvester) isGenerated(file string) bool {
 	return gen
 }
 
+// packagePathSet은 패키지들의 PkgPath 집합이다. 테스트 변형("p [p.test]")은 원 패키지와 같은
+// PkgPath라 한 원소로 합쳐진다.
+func packagePathSet(pkgs []*packages.Package) map[string]bool {
+	out := make(map[string]bool, len(pkgs))
+	for _, p := range pkgs {
+		out[p.PkgPath] = true
+	}
+	return out
+}
+
 // loadedFileSet은 패키지들이 로드한 Go 파일 경로 집합이다. 고르는 기준(CompiledGoFiles, 비면
 // GoFiles)이 markGenerated와 같다 — 생성 판정의 키가 두 곳에서 갈라지지 않게 한다.
 func loadedFileSet(pkgs []*packages.Package) map[string]bool {
@@ -1216,7 +1233,9 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 			}
 			id := h.id(fn)
 			pos := position(p, ce.Pos())
-			h.edge(from, id, graph.EdgeCall, pos)
+			if !h.unnamedModuleMethod(fn, id) { // 정점 없는 모듈 인터페이스 메서드는 모듈 밖 참조가 아니다
+				h.edge(from, id, graph.EdgeCall, pos)
+			}
 			h.promotedFields(sel, from, pos)
 			for _, impl := range h.dispatchTargets(sel, fn, id) {
 				h.candidateEdge(from, impl, graph.EdgeCall, pos)
@@ -1244,10 +1263,23 @@ func (h *harvester) dispatchTargets(sel *types.Selection, fn *types.Func, id str
 	if !isInterface(sel.Recv()) && (recv == nil || !types.IsInterface(recv.Type())) {
 		return nil
 	}
-	if impls := h.impls[id]; len(impls) > 0 || recv == nil || !h.vertices[id] {
+	if impls := h.impls[id]; len(impls) > 0 || recv == nil || (!h.vertices[id] && !h.unnamedModuleMethod(fn, id)) {
 		return impls
 	}
 	return h.instanceImplementers(recv.Type(), fn)
+}
+
+// unnamedModuleMethod는 fn이 패키지 스코프에 이름이 없는 모듈 인터페이스의 메서드인지 본다 —
+// 선택적 인터페이스 단언(x.(interface{ M() })), type switch의 이름 없는 case, 함수 안에 선언한
+// 인터페이스, 이름 없는 제네릭 제약. 정점이 없어 미리 계산한 구현 목록도 없지만 호출 지점이
+// 모듈 안에 보이므로 호출 지점의 인터페이스로 구현자를 찾는다(AGENTS: 디스패치 과소 근사 금지).
+// 모듈 밖 패키지의 이름 없는 인터페이스는 해당하지 않는다 — satisfies·receiver 규칙이 다룬다.
+func (h *harvester) unnamedModuleMethod(fn *types.Func, id string) bool {
+	if h.vertices[id] || fn.Pkg() == nil || !h.modulePkgs[fn.Pkg().Path()] {
+		return false
+	}
+	recv := fn.Signature().Recv()
+	return recv != nil && types.IsInterface(recv.Type())
 }
 
 // instanceImplementers는 (인스턴스화된) 인터페이스 타입의 메서드 fn을 구현하는 모듈 구체
@@ -1415,6 +1447,9 @@ func (h *harvester) refObject(obj types.Object, from string, pos *graph.Position
 		return
 	}
 	id := h.id(obj)
+	if fn, ok := obj.(*types.Func); ok && h.unnamedModuleMethod(fn, id) {
+		return // 모듈 안 인터페이스 메서드다 — 모듈 밖 참조로 세지 않고, 구현자는 dispatchTargets가 잇는다
+	}
 	if !h.vertices[id] {
 		h.omitRef()
 		return

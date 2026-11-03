@@ -66,7 +66,10 @@ import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상
 타입체크하므로 다시 파싱·해석하지 마세요. 합성 해석은 가려진 이름을 다른 타입으로,
 봉인(승격된 비공개) 메서드를 다른 패키지 소속으로 풀어 거짓·누락 사실을 만듭니다.
 이 수확을 한 문서는 `anonymousDispatch: true`를 싣고, 표시 없는 옛 문서에는
-dead가 재수확을 권합니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히
+dead가 재수확을 권합니다. **모듈 안**의 이름 없는 인터페이스(단언·type switch의
+리터럴, 함수 안 선언, 이름 없는 제약)는 호출 지점이 보이므로 satisfies가 아니라
+CHA 팬아웃으로 다룹니다(`unnamedModuleMethod` → `instanceImplementers`, 문서 표시
+`moduleLocalDispatch: true`). reflection·제네릭 인터페이스 경유 디스패치는 여전히
 안 보이고, 메서드 보고에 그 limitation이 실립니다.
 
 ## 절대 하지 말 것

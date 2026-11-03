@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `dead`(CLI·MCP)·`graph --level symbol`: 패키지 스코프에 이름이 없는 모듈 인터페이스의 메서드 호출을 CHA로
+  구현 메서드에 퍼뜨린다 — 선택적 인터페이스 단언(`v, ok := x.(interface{ Validate() error })`), type switch의
+  이름 없는 case, 함수 안에 선언한 인터페이스, 이름 없는 제네릭 제약(`func f[T interface{ Ping() }](x T)`), 그
+  메서드 값. 전에는 정점이 없다는 이유로 팬아웃이 막혀 살아 있는 메서드가 unreachable로 보고되고 `--strict`가
+  실패했다. RTA의 필드 판정도 같은 그래프를 따르므로 그 메서드가 읽는 필드도 살아난다. 이 호출은 모듈 안
+  참조라 "references to symbols outside the module were omitted" 수치에서 뺀다. 심볼 문서에 표시
+  `moduleLocalDispatch: true`를 싣고, 표시가 없는 옛 문서(`--graph`)의 CHA 메서드 보고에는 재수확을 권하는
+  limitation을 붙인다. 모듈 밖 인터페이스는 계속 satisfies·receiver 규칙을 따른다.
+
 ## [0.11.0] - 2026-11-03
 
 - 실제 `//export` cgo 콜백을 실행 루트로 보존하고 생성 인프라의 물리 소스 provenance를 표시한다. Go 테스트 이름·시그니처를 확인해 일반 helper를 테스트 루트로 오인하지 않는다.
