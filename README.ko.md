@@ -16,10 +16,10 @@ isthmus(언어 경계 조인).
 
 ## 빠른 시작
 
-검사하려는 Go module에서 실행한다. 설치는 발행된 v0.10.0을 고정하며 findings와 limitations는 검토 근거이다.
+검사하려는 Go module에서 실행한다. 설치 예제는 v0.11.0을 대상으로 하며 GitHub Releases에서 태그를 확인한다. findings와 limitations는 검토 근거이다.
 
 ```sh
-go install github.com/ictechgy/gartograph/cmd/gartograph@v0.10.0
+go install github.com/ictechgy/gartograph/cmd/gartograph@v0.11.0
 gartograph --version
 gartograph graph --level symbol
 gartograph dead

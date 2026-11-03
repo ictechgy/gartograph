@@ -17,10 +17,10 @@ isthmus (cross-language joins).
 
 ## Quick start
 
-Run these commands in a Go module you want to inspect. Install pins the published v0.10.0; findings and limitations are evidence for review.
+Run these commands in a Go module you want to inspect. The install example targets v0.11.0; confirm the tag on GitHub Releases; findings and limitations are evidence for review.
 
 ```sh
-go install github.com/ictechgy/gartograph/cmd/gartograph@v0.10.0
+go install github.com/ictechgy/gartograph/cmd/gartograph@v0.11.0
 gartograph --version
 gartograph graph --level symbol
 gartograph dead
