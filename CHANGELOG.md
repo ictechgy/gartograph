@@ -23,6 +23,10 @@
   없어 세지 않는다.
 - 빌드 제약으로 빠진 파일 수 limitation이 `--tags`뿐 아니라 `--goos/--goarch`도 안내한다 — `_windows.go` 같은
   플랫폼 파일은 태그가 아니라 대상 플랫폼으로만 들어온다.
+- `dead`(CLI·MCP): 루트 부재 안내(`no main or init roots found … (use --retain-public)`)를 루트 목록 길이가 아니라
+  심볼 루트로 판정한다. main 패키지 정점도 루트 목록에 올라 `func main` 없는 `package main`(plugin·c-shared
+  빌드)에서 안내가 사라졌다. 다른 패키지에 진입점이 있으면 `N main packages declare no func main …`을 따로 센다.
+  `--retain-public`이면 둘 다 조용하다.
 
 ## [0.11.0] - 2026-11-03
 

@@ -111,3 +111,28 @@ func TestDeadOldDocumentWithoutModuleLocalDispatch(t *testing.T) {
 		t.Fatalf("an old document with method findings must get the re-harvest note: %s", out)
 	}
 }
+
+// TestDeadMainPackageWithoutFuncMain은 func main 없는 package main(plugin·c-shared 빌드)의 dead 보고가
+// 루트 부재를 알리는지 본다. 패키지 정점도 루트 목록에 오르므로 목록 길이로 판정하면 "루트 없음" 안내가
+// 사라지고, 공개 API 전부가 unreachable인 보고가 --retain-public 안내 없이 나갔다. 다른 패키지에 main이
+// 있어도 func main 없는 main 패키지 수를 따로 센다.
+func TestDeadMainPackageWithoutFuncMain(t *testing.T) {
+	plugin := testutil.WriteModule(t, map[string]string{
+		"plugin.go": "package main\n\nvar V int\n\nfunc Hello() string { return helper() }\n\nfunc helper() string { return \"hi\" }\n",
+	})
+	_, out, _ := run(t, "dead", "--dir", plugin)
+	if !strings.Contains(out, "no main or init roots found") {
+		t.Errorf("a main package without func main has no symbol roots and must say so:\n%s", out)
+	}
+	mixed := testutil.WriteModule(t, map[string]string{
+		"cmd/app/main.go":  "package main\n\nfunc main() {}\n",
+		"plugin/plugin.go": "package main\n\nfunc Hello() string { return \"hi\" }\n",
+	})
+	_, out, _ = run(t, "dead", "--dir", mixed, "--pattern", "./...")
+	if !strings.Contains(out, "1 main packages declare no func main") {
+		t.Errorf("a main package without func main beside a real program must be counted:\n%s", out)
+	}
+	if _, out, _ = run(t, "dead", "--dir", mixed, "--pattern", "./...", "--retain-public"); strings.Contains(out, "declare no func main") {
+		t.Errorf("--retain-public already keeps the exported API; the note must be silent:\n%s", out)
+	}
+}

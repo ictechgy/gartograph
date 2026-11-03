@@ -760,9 +760,8 @@ func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknow
 		limitations = append(limitations,
 			fmt.Sprintf("retention root %q is not in the graph", u))
 	}
-	if len(doc.Roots) == 0 && !retainPublic {
-		limitations = append(limitations,
-			"no main or init roots found; exported API may appear unreachable (use --retain-public)")
+	if !retainPublic {
+		limitations = append(limitations, missingRootLimitations(doc)...)
 	}
 	if algo == "rta" {
 		limitations = append(limitations,
@@ -843,6 +842,48 @@ func generatedFindings(findings []analysis.Finding) int {
 	n := 0
 	for _, f := range findings {
 		if f.Generated {
+			n++
+		}
+	}
+	return n
+}
+
+// missingRootLimitations는 프로그램 진입점이 없는 dead 보고의 --retain-public 안내다. main 패키지는
+// 패키지 레벨에서도 루트 목록에 오르므로 목록 길이가 아니라 심볼 루트로 판정한다 — 그렇지 않으면 func
+// main 없는 package main(plugin·c-shared 빌드)에서 안내가 사라진다. 다른 패키지에 진입점이 있으면
+// func main 없는 main 패키지 수를 따로 센다(그 패키지의 공개 API는 호스트가 부른다).
+func missingRootLimitations(doc *graph.Document) []string {
+	if !hasSymbolRoot(doc) {
+		return []string{"no main or init roots found; exported API may appear unreachable (use --retain-public)"}
+	}
+	if n := mainPackagesWithoutMain(doc); n > 0 {
+		return []string{fmt.Sprintf("%d main packages declare no func main (a plugin or c-shared build); "+
+			"their exported API is called by the host and may appear unreachable (use --retain-public)", n)}
+	}
+	return nil
+}
+
+// hasSymbolRoot는 루트 목록에 패키지 정점이 아닌 루트(main·init·pkg._·keep·지시문)가 있는지 본다.
+// 문서에 없는 루트 ID도 심볼 루트로 센다 — 패키지 정점이 아니라는 것만 알면 된다.
+func hasSymbolRoot(doc *graph.Document) bool {
+	byID := graph.VertexIndex(doc)
+	for _, r := range doc.Roots {
+		if v := byID[r]; v == nil || v.Kind != graph.KindPackage {
+			return true
+		}
+	}
+	return false
+}
+
+// mainPackagesWithoutMain은 모듈 안 main 패키지 중 func main 정점이 없는 수다.
+func mainPackagesWithoutMain(doc *graph.Document) int {
+	byID := graph.VertexIndex(doc)
+	n := 0
+	for _, v := range doc.Vertices {
+		if v.Kind != graph.KindPackage || v.Name != "main" || v.External {
+			continue
+		}
+		if m := byID[v.ID+".main"]; m == nil || m.Kind != graph.KindFunc {
 			n++
 		}
 	}
