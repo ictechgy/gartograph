@@ -143,6 +143,7 @@ gartograph dead --algo rta                # RTA precision: needs source, not --g
 gartograph dead --algo rta --explain my/pkg.F   # path on the RTA call graph itself
 # Source-level keep: //deadcode:keep or //gartograph:keep on a declaration
 # (also on a struct field) marks it as a retention root in the document.
+# cgo //export, //go:wasmexport and //go:linkname functions are roots too.
 
 # Emit an isthmus bridge-facts document (platform "go")
 # Go reports cgo via unscanned-ffi-interop limitations — no channel facts.
@@ -582,8 +583,18 @@ timeout, `ulimit`, or a container.
   (`//deadcode:keep` or `// deadcode:keep <reason>`); put it on the doc
   comment above the declaration or on a field line inside a struct —
   a trailing comment after a `func` body does not attach to it.
+- Compiler directives that call code from outside the graph are roots too:
+  a cgo `//export Name` function and a `//go:wasmexport name` function (the
+  export name may differ from the function name). A `//go:linkname local
+  importpath.name` pair whose two sides are both package-level module
+  symbols is tied by candidate `references` edges in both directions, and
+  the side with a function body becomes a root (RTA stops at the bodyless
+  declaration). A one-argument `//go:linkname name` or a function body
+  pushed to a name outside the module is a root as well. Only directives
+  that cannot be tied to a package-level module symbol (method targets,
+  unknown names) are counted in `limitations`.
 - `limitations` is counted per run (omitted external imports/references,
-  `reflect` use, `//go:linkname`, packages without type info) — absent
+  `reflect` use, unresolved `//go:linkname`, packages without type info) — absent
   means nothing to report, not a boilerplate warning.
 - No delete verdicts. `unreachable` is a graph fact ("not reachable from
   retention roots"), never "safe to delete".

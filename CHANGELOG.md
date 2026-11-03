@@ -14,6 +14,13 @@
   참조라 "references to symbols outside the module were omitted" 수치에서 뺀다. 심볼 문서에 표시
   `moduleLocalDispatch: true`를 싣고, 표시가 없는 옛 문서(`--graph`)의 CHA 메서드 보고에는 재수확을 권하는
   limitation을 붙인다. 모듈 밖 인터페이스는 계속 satisfies·receiver 규칙을 따른다.
+- `dead`: `//go:wasmexport name` 함수를 보존 루트로 둔다(cgo `//export`와 같은 종류 — wasm 호스트가 부른다).
+- `dead`: `//go:linkname local importpath.name`의 양쪽이 모두 모듈의 패키지 수준 심볼이면 양방향 후보 references
+  간선으로 잇고 본문 있는 함수 쪽을 루트로 둔다 — 다른 패키지에서 당겨 쓰는 구현이 unreachable로 보고되던
+  문제다. 인자 하나짜리 지시문과 모듈 밖 이름으로 밀어 넣는 함수 본문도 루트다. limitation은 이제 모듈 심볼로
+  잇지 못한 지시문(메서드 대상, 없는 이름)만 `N //go:linkname directives could not be tied to package-level
+  module symbols …`로 센다 — 모듈 밖 심볼을 당겨 오는 본문 없는 선언(`runtime.nanotime`)은 모듈 안에 살릴 대상이
+  없어 세지 않는다.
 
 ## [0.11.0] - 2026-11-03
 

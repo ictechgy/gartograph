@@ -63,6 +63,7 @@ gartograph dead --explain my/pkg.F            # 왜 살아 있나 — 도달 경
 gartograph dead --algo rta                    # RTA 정밀도 — 소스 필요, --graph와 불가
 # 소스 레벨 보존: 선언(struct 필드 포함) 위의
 # //deadcode:keep 또는 //gartograph:keep이 보존 루트가 됩니다.
+# cgo //export, //go:wasmexport, //go:linkname 함수도 루트입니다.
 
 # isthmus bridge-facts 문서 생성(platform "go")
 # Go는 cgo를 unscanned-ffi-interop limitation으로만 신고 — 채널 사실 없음.
@@ -421,8 +422,15 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
   첫 토큰이어야 합니다(`//deadcode:keep` 또는 `// deadcode:keep <사유>`).
   선언 위 doc 주석이나 struct 필드 줄에 두세요 — `func` 몸체 뒤의
   trailing 주석은 그 선언에 붙지 않습니다.
+- 그래프 밖에서 코드를 부르는 컴파일러 지시문도 루트입니다: cgo `//export Name`
+  함수와 `//go:wasmexport name` 함수(내보내는 이름은 함수 이름과 달라도 됩니다).
+  `//go:linkname local importpath.name`의 양쪽이 모두 모듈의 패키지 수준 심볼이면
+  양방향 후보 `references` 간선으로 잇고, 본문 있는 함수 쪽을 루트로 둡니다(RTA는
+  본문 없는 선언에서 멈춥니다). 인자 하나짜리 `//go:linkname name`과 모듈 밖 이름으로
+  밀어 넣는 함수 본문도 루트입니다. 모듈의 패키지 수준 심볼로 잇지 못한 지시문(메서드
+  대상, 없는 이름)만 `limitations`에 셉니다.
 - `limitations`는 매 실행에서 실제로 세어 만듭니다(생략한 외부 참조 수,
-  `reflect` 사용, `//go:linkname`) — 없으면 키가 빠집니다.
+  `reflect` 사용, 해석하지 못한 `//go:linkname`) — 없으면 키가 빠집니다.
 - 삭제 판정은 없습니다. `unreachable`은 그래프 사실이지 "지워도 됨"이 아닙니다.
 - 모듈 밖에서 선언된 인터페이스(`error`, `fmt.Stringer`, `flag.Value`,
   `encoding.TextUnmarshaler` 등)를 구현하는 메서드는 심볼 그래프에

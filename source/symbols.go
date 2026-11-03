@@ -32,7 +32,7 @@ type harvester struct {
 	fieldIDs map[types.Object]string // struct 필드 객체 → 정점 ID — 참조 간선 해석용
 	extRefs  int                     // 모듈 밖 심볼 참조 수
 	noTypes  int                     // 타입 정보 없는 패키지 수
-	linkname int                     // //go:linkname 지시문 수
+	linkname int                     // 모듈 심볼로 해석하지 못한 //go:linkname 지시문 수
 	// reflectPkgs는 reflect를 import하는 패키지의 PkgPath다 — 테스트 변형이 원 패키지와 같은
 	// 패키지를 다시 싣으므로 수가 아니라 집합으로 센다.
 	reflectPkgs map[string]bool
@@ -68,6 +68,8 @@ type harvester struct {
 	// (단언·type switch의 리터럴, 함수 안 선언, 이름 없는 제약)의 메서드는 정점이 없지만 호출 지점이
 	// 모듈 안에 보이므로, 모듈 밖 인터페이스(satisfies 규칙)와 갈라 CHA로 퍼뜨리는 기준이다.
 	modulePkgs map[string]bool
+	// moduleTypes는 모듈 패키지의 PkgPath → 타입 패키지다 — //go:linkname 대상 이름을 정점으로 푼다.
+	moduleTypes map[string]*types.Package
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -94,6 +96,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		spell:          newTypeSpeller(),
 		vertexOnly:     vertexOnly,
 		modulePkgs:     packagePathSet(internal),
+		moduleTypes:    moduleTypesByPath(internal),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -134,7 +137,8 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	}
 	if h.linkname > 0 {
 		doc.Limitation(fmt.Sprintf(
-			"%d //go:linkname directives found; their targets may appear unreachable", h.linkname))
+			"%d //go:linkname directives could not be tied to package-level module symbols "+
+				"(method targets, unknown names); their targets may appear unreachable", h.linkname))
 	}
 	if h.abbreviated > 0 {
 		doc.Limitation(fmt.Sprintf("%d fields/methods/typeSet/satisfies entries abbreviate a type spelling "+
@@ -731,7 +735,7 @@ func (h *harvester) addBodyEdges(internal []*packages.Package, wantSymbols bool)
 			physical := p.Fset.PositionFor(file.Pos(), false).Filename
 			logical := p.Fset.Position(file.Pos()).Filename
 			if !h.revisit && (!h.isGenerated(physical) || (h.loadedFiles[logical] && !h.isGenerated(logical))) {
-				h.linkname += countLinknames(file)
+				h.linkname += h.linknames(p, file)
 			}
 			for _, decl := range file.Decls {
 				h.declEdges(p, decl, wantSymbols)
@@ -829,7 +833,8 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 		}
 		// //deadcode:keep·//gartograph:keep은 선언 옆에 "의도적으로
 		// 남긴다"를 적는 표지다 — 루트 목록은 그래프 사실이라 문서에 남는다.
-		if keepMarked(d.Doc) || cgoExported(d) {
+		// cgo //export와 //go:wasmexport는 그래프 밖(C·wasm 호스트)이 부르는 진입점이다.
+		if keepMarked(d.Doc) || cgoExported(d) || wasmExported(d) {
 			h.root(from)
 		}
 		h.sigTypeEdges(p, d.Type, from)
@@ -1677,20 +1682,6 @@ func namedOf(t types.Type) *types.TypeName {
 func isInterface(t types.Type) bool {
 	_, ok := t.Underlying().(*types.Interface)
 	return ok
-}
-
-// countLinknames는 파일의 //go:linkname 주석 수를 센다.
-// linkname은 심볼 그래프 밖에서 함수를 살리므로 limitation 대상이다.
-func countLinknames(file *ast.File) int {
-	n := 0
-	for _, cg := range file.Comments {
-		for _, c := range cg.List {
-			if strings.HasPrefix(c.Text, "//go:linkname") {
-				n++
-			}
-		}
-	}
-	return n
 }
 
 // position은 패키지 fset 기준 위치를 만든다.
