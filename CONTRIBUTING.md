@@ -4,17 +4,21 @@ Read [AGENTS.md](AGENTS.md) for product contracts and module boundaries. Reprodu
 
 ## Local verification
 
-Use the committed lockfiles and toolchains configured in CI. These are the basic local checks; `.github/workflows/` also defines compiler/database fixtures, installation and platform checks.
+Use the committed `go.sum` and the Go version in `go.mod` (CI reads it). These are the basic local checks; `.github/workflows/ci.yml` also runs `gofmt -l`, the built-binary exit-code contract (`Scripts/verify-cli-contract.sh`), Windows and macOS tests for the platform-specific paths, the release-asset helper regression and the workflow hardening check.
 
 ```sh
 go build ./...
 go vet ./...
+test -z "$(gofmt -l .)"
 Scripts/coverage.sh
+Scripts/verify-cli-contract.sh
+go run ./cmd/gartograph dead
 go run ./cmd/gartograph rules --strict
+go run ./cmd/gartograph cycles --level type --strict
 go run ./cmd/gartograph cycles --level symbol --strict
 ```
 
-Report checks that could not run and the relevant environment constraints. Preserve coverage and performance gates. Optional features require a feature build; default tests alone do not validate them.
+Report checks that could not run and the relevant environment constraints. Preserve the 90% coverage gate. The `experiments/` oracles are separate modules that fetch third-party routers; run them when route harvesting changes.
 
 ## Pull requests and reports
 
