@@ -673,9 +673,11 @@ gin은 `optional`(`RedirectTrailingSlash` 기본 true가 다른 형태에 301/30
 핸들러(정적 파일 서버, `promhttp.Handler()`)와 exclude 패키지는 symbol 없이 `missing-route-usrs:`로
 셉니다. 수확하지 않는 라우터 import(gorilla/mux, httprouter, fiber, chi v1–v4 경로, echo v3/v5,
 grpc-gateway 등)는 스코프 없는 `route-coverage:`를 더해, 사실 0건 문서가 "스캔했으나 없음"으로 읽히지
-않게 합니다. 문서는 쓰기 전에 계약 자기 검증(템플릿·동사·catch-all 접두사 원본)을 거칩니다.
-`conformance/`에 isthmus `http-template`·`http-dispatch`·`url-compose` 벡터를 벤더링했고(`conformance.lock`)
-생산자 사례 114건(route 선언 51, route 호출 63)을 모두 통과합니다.
+않게 합니다. 문서는 쓰기 전에 계약 자기 검증(템플릿·동사·catch-all 접두사 원본)을 거치고, 소비자가
+거부할 `limitationScopes` 항목은 버립니다(그 한계는 문서 전체 효과로 남아 넓은 쪽입니다).
+`conformance/`에 isthmus `http-template`·`http-dispatch`·`http-limitation-scope`·`url-compose`·`sql-relations`
+벡터를 벤더링했고(`conformance.lock`) 생산자 사례 155건(route 선언 51, limitation 스코프 27, route 호출 63,
+SQL 관계 이름 14)을 모두 통과합니다. gartograph는 `dynamicScope`를 내지 않아 그 사례는 건너뜁니다.
 
 `experiments/routes-oracle`(별도 모듈, `run.sh`가 proxy.golang.org에서 chi·gin·echo를 받음)은 합성
 ServeMux·chi·gin·echo 서버를 만들어 문서를 각 라우터 자신의 표(`chi.Walk`, `Engine.Routes()`, echo

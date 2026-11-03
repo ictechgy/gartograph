@@ -199,31 +199,6 @@ func TestReadQualifiedName(t *testing.T) {
 	})
 }
 
-// sqlRelationsSharedCases는 계열 공통 SQL 관계 사례(DECISIONS D2, design/sql-relations-cases.json)다.
-// 7개 생산자의 추출 테스트와 isthmus conformance/sql-relations.json 벡터가 같은 SQL 문자열과 같은 기대 집합을
-// 쓴다 — 벡터를 벤더링하기 전까지는 각 생산자가 같은 사례를 테스트로 고정하므로 id·SQL·기대값을 고치지 않는다.
-// 규칙은 R1 함수 인자 안의 FROM, R2 문장 단위 CTE 이름, R3 IS [NOT] DISTINCT FROM이다.
-var sqlRelationsSharedCases = []struct {
-	id        string
-	sql       string
-	relations []string
-}{
-	{"cte/simple", "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent", []string{"orders"}},
-	{"cte/recursive-with-columns", "WITH RECURSIVE tree(id, parent_id) AS (SELECT id, parent_id FROM nodes UNION ALL SELECT n.id, n.parent_id FROM nodes n JOIN tree t ON n.parent_id = t.id) SELECT * FROM tree", []string{"nodes"}},
-	{"cte/multiple-materialized", "WITH a AS (SELECT 1), b AS MATERIALIZED (SELECT * FROM orders) SELECT * FROM a JOIN b ON true", []string{"orders"}},
-	{"cte/not-materialized", "WITH c AS NOT MATERIALIZED (SELECT * FROM orders) SELECT * FROM c", []string{"orders"}},
-	{"cte/insert-select", "WITH staged AS (SELECT * FROM imports) INSERT INTO orders SELECT * FROM staged", []string{"imports", "orders"}},
-	{"cte/scope-is-one-statement", "WITH recent AS (SELECT 1) SELECT * FROM recent; SELECT * FROM recent", []string{"recent"}},
-	{"function-from/extract", "SELECT EXTRACT(YEAR FROM created_at) FROM orders", []string{"orders"}},
-	{"function-from/trim", "SELECT TRIM(BOTH ' ' FROM name) FROM users", []string{"users"}},
-	{"function-from/substring", "SELECT SUBSTRING(name FROM 2 FOR 3) FROM users", []string{"users"}},
-	{"subquery/derived-table-still-fires", "SELECT * FROM (SELECT * FROM orders) AS sub", []string{"orders"}},
-	{"subquery/scalar-still-fires", "SELECT (SELECT max(id) FROM users) FROM orders", []string{"users", "orders"}},
-	{"subquery/in-select-still-fires", "SELECT * FROM orders WHERE id IN (SELECT order_id FROM payments)", []string{"orders", "payments"}},
-	{"distinct-from/is", "SELECT * FROM events WHERE a IS DISTINCT FROM b", []string{"events"}},
-	{"distinct-from/is-not", "SELECT * FROM events WHERE a IS NOT DISTINCT FROM b", []string{"events"}},
-}
-
 // sortedNames는 관계 목록을 순서와 무관하게 비교하려고 정렬한 사본을 `|`로 잇는다. 중복은 남겨 둔다 —
 // 이 추출기는 한 텍스트에서 같은 이름을 한 번만 내므로 중복이 있으면 그 자체로 실패여야 한다.
 func sortedNames(names []string) string {
@@ -232,21 +207,7 @@ func sortedNames(names []string) string {
 	return strings.Join(sorted, "|")
 }
 
-// TestSQLRelationsSharedCases는 계열 공통 사례를 순서와 무관한 집합으로 비교한다 — CTE 이름, 함수 인자 안의
-// FROM(EXTRACT·TRIM·SUBSTRING), IS [NOT] DISTINCT FROM의 피연산자는 관계가 아니고, 하위 질의 안의 FROM은
-// 그대로 관계다. isthmus는 관계로 나온 이름을 선언과 잇지 못하면 relation-use-without-decl error를 낸다.
-func TestSQLRelationsSharedCases(t *testing.T) {
-	for _, tc := range sqlRelationsSharedCases {
-		t.Run(tc.id, func(t *testing.T) {
-			got, _, _ := sqlRelations(tc.sql)
-			if sortedNames(got) != sortedNames(tc.relations) {
-				t.Fatalf("sqlRelations(%q) = %v, want the set %v", tc.sql, got, tc.relations)
-			}
-		})
-	}
-}
-
-// TestSQLRelationsPortedRules는 공통 사례 밖에서 이 추출기가 지키는 규칙을 검증한다 — tsograph에서 옮긴 절
+// TestSQLRelationsPortedRules는 공유 벡터(TestConformanceSQLRelations) 밖에서 이 추출기가 지키는 규칙을 검증한다 — tsograph에서 옮긴 절
 // 키워드 게이트·자리표시자 계수·GRANT/REVOKE 문장 판정, 세 규칙의 경계(대소문자 접기, 한정 이름, 문장 범위,
 // 함수 인자 안의 하위 질의), 그리고 바뀌면 안 되는 기존 판독(UPDATE table, DELETE … RETURNING CTE 본문,
 // 테이블 값 함수 미해석). functions는 테이블 값 함수 피연산자 수, placeholders는 관계 자리의 자리표시자 수다.

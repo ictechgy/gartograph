@@ -963,9 +963,14 @@ gartograph does not harvest (gorilla/mux, httprouter, fiber, chi v1–v4 paths,
 echo v3/v5, grpc-gateway, …) add an unscoped `route-coverage:` limitation, so
 a zero-fact document never reads as "scanned, none". The document is
 self-checked against the contract (templates, methods, catch-all prefix
-originals) before it is written; `conformance/` vendors the isthmus
-`http-template`, `http-dispatch` and `url-compose` vectors (`conformance.lock`),
-and all 114 producer cases pass (51 for route declarations, 63 for route calls).
+originals) before it is written, and a `limitationScopes` entry the consumer
+would reject is dropped (the limitation then stays document-wide, the broader
+reading); `conformance/` vendors the isthmus `http-template`, `http-dispatch`,
+`http-limitation-scope`, `url-compose` and `sql-relations` vectors
+(`conformance.lock`), and all 155 producer cases pass (51 for route
+declarations, 27 for limitation scopes, 63 for route calls, 14 for SQL
+relation names). `dynamicScope` cases are skipped because gartograph does not
+emit that field.
 
 `experiments/routes-oracle` (a separate module; `run.sh` fetches chi, gin and
 echo from proxy.golang.org) builds synthetic ServeMux/chi/gin/echo servers and

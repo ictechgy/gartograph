@@ -27,6 +27,17 @@
   심볼 루트로 판정한다. main 패키지 정점도 루트 목록에 올라 `func main` 없는 `package main`(plugin·c-shared
   빌드)에서 안내가 사라졌다. 다른 패키지에 진입점이 있으면 `N main packages declare no func main …`을 따로 센다.
   `--retain-public`이면 둘 다 조용하다.
+- `routes`: 소비자가 거부할 `limitationScopes` 항목(비정규 템플릿, 끝 슬래시 접두사, `{**}` 접두사·접미사,
+  계약 밖 동사)은 문서에 싣지 않는다 — 스코프 하나가 isthmus에서 문서 전체를 입력 오류로 만들기 때문이다. 그
+  한계는 스코프 없이(문서 전체 효과로) 남는다.
+
+### Changed
+
+- isthmus 적합성 벡터를 `c76e105`로 다시 벤더링하고 `http-limitation-scope`·`sql-relations`를 더했다. 생산자
+  사례는 114건에서 155건이다(`scope.validate` 9, `scope.applies` 18, `relations.*` 14). 분류 테스트는 이 생산자
+  대상이 아닌 사례(consumer 전용, 다른 생산자 전용)를 실행하지 않고, 생산자 대상인데 모르는 ruleId만 실패로
+  본다 — 소비자 전용 사례가 늘 때마다 재벤더링이 깨지던 문제다. SQL 관계 이름 공통 사례는 손으로 옮긴 사본
+  대신 벡터를 직접 읽는다.
 
 ## [0.11.0] - 2026-11-03
 

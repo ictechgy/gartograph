@@ -38,7 +38,9 @@ func (s *routeScan) limitations() ([]string, []LimitationScope) {
 		}
 		index := len(out)
 		out = append(out, fmt.Sprintf("%s %d %s", g.prefix, g.count, g.message))
-		if scope, ok := g.scope(index); ok && len(scopes) < maxLimitationScopes &&
+		// 소비자가 거부할 스코프(validScope)는 버린다 — 스코프 하나가 문서 전체를 입력 오류로 만들기
+		// 때문이다. 스코프 없는 한계는 문서 전체 효과라 넓은 쪽이다.
+		if scope, ok := g.scope(index); ok && validScope(scope) && len(scopes) < maxLimitationScopes &&
 			elements+scope.size() <= maxLimitationElements {
 			scopes = append(scopes, scope)
 			elements += scope.size()
