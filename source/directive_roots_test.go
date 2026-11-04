@@ -102,11 +102,13 @@ func Local() { _ = local() }
 	})
 	doc := loadSymbol(t, dir)
 	const a, b = "example.com/fixture/a", "example.com/fixture/b"
-	for _, pair := range [][2]string{{b + ".local", a + ".hidden"}, {a + ".hidden", b + ".local"}} {
-		e, ok := findEdge(doc, pair[0], pair[1], graph.EdgeReferences)
-		if !ok || !e.Candidate {
-			t.Errorf("linkname must tie %s -> %s with a candidate references edge (found=%v)", pair[0], pair[1], ok)
-		}
+	// 실제 의존은 본문 없는 선언(b.local) → 본문(a.hidden) 한 방향이다. 역방향 간선은 rules·query·explain에
+	// 없는 의존을 만든다(검토에서 forbidden low→high가 거짓 위반을 냈다).
+	if e, ok := findEdge(doc, b+".local", a+".hidden", graph.EdgeReferences); !ok || !e.Candidate {
+		t.Errorf("linkname must tie %s -> %s with a candidate references edge (found=%v)", b+".local", a+".hidden", ok)
+	}
+	if _, ok := findEdge(doc, a+".hidden", b+".local", graph.EdgeReferences); ok {
+		t.Errorf("the body %s does not depend on the bodyless declaration %s; no reverse edge may exist", a+".hidden", b+".local")
 	}
 	for _, id := range []string{a + ".pushed", a + ".provided", a + ".hidden"} {
 		if !slices.Contains(doc.Roots, id) {
@@ -153,4 +155,70 @@ func TestBuildConstraintHintNamesPlatformFlags(t *testing.T) {
 		}
 	}
 	t.Fatalf("excluded files must be counted: %v", doc.Limitations)
+}
+
+// TestLinknameBodyInSiblingFile은 //go:linkname의 local 이름을 지시문이 없는 같은 패키지의 다른 파일에서
+// 찾는지 본다. gc는 local 이름을 패키지 스코프에서 찾으므로 선언이 다른 파일에 있어도 유효하다. 검토에서
+// 지시문 파일만 보느라 (a) 모듈 밖으로 밀어 넣은 구현이 루트가 되지 못하고 limitation도 사라졌고,
+// (b) 모듈 안 본문 없는 선언으로 밀어 넣은 구현 대신 본문 없는 선언이 루트가 됐다.
+func TestLinknameBodyInSiblingFile(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/b"
+
+func main() { b.Local() }
+`,
+		"a/link.go": `package a
+
+import _ "unsafe"
+
+//go:linkname impl example.com/elsewhere.hook
+`,
+		"a/impl.go": `package a
+
+func impl() int { return 1 }
+`,
+		"a/push.go": `package a
+
+import _ "unsafe"
+
+//go:linkname pushedImpl example.com/fixture/b.hook
+`,
+		"a/pushimpl.go": `package a
+
+func pushedImpl() int { return 2 }
+`,
+		"b/b.go": `package b
+
+import (
+	_ "unsafe"
+
+	_ "example.com/fixture/a"
+)
+
+func hook() int
+
+func Local() { _ = hook() }
+`,
+		"b/empty.s": "",
+	})
+	doc := loadSymbol(t, dir)
+	const a, b = "example.com/fixture/a", "example.com/fixture/b"
+	for _, id := range []string{a + ".impl", a + ".pushedImpl"} {
+		if !slices.Contains(doc.Roots, id) {
+			t.Errorf("%s is the body of a //go:linkname push and must be a root: %v", id, doc.Roots)
+		}
+	}
+	if slices.Contains(doc.Roots, b+".hook") {
+		t.Errorf("the bodyless declaration %s must not become a root", b+".hook")
+	}
+	if e, ok := findEdge(doc, b+".hook", a+".pushedImpl", graph.EdgeReferences); !ok || !e.Candidate {
+		t.Errorf("linkname must tie %s -> %s (found=%v)", b+".hook", a+".pushedImpl", ok)
+	}
+	for _, l := range doc.Limitations {
+		if strings.Contains(l, "//go:linkname") {
+			t.Errorf("both directives resolve to module bodies; no linkname limitation may remain: %q", l)
+		}
+	}
 }
