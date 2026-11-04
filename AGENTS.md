@@ -11,8 +11,16 @@
 
 자매 프로젝트가 바탕화면에 있습니다: [cartograph](../cartograph)(Swift) ·
 [kartograph](../kartograph)(Kotlin/Android) · [dartograph](../dartograph)(Dart/Flutter) ·
-[schemagraph](../schemagraph)(DB) · [isthmus](../isthmus)(언어 경계 조인).
-`query` 출력 스키마와 출력 철학(`state`/`edges`/`limitations`)은 계열과 같게 유지합니다.
+[rustograph](../rustograph)(Rust) · [pythograph](../pythograph)(Python) ·
+[tsograph](../tsograph)(TypeScript/JavaScript) · [schemagraph](../schemagraph)(DB) ·
+[isthmus](../isthmus)(언어 경계 조인).
+`query` 출력 스키마는 이 저장소 고유의 공개 계약이며 cartograph·kartograph·dartograph와 맞추지 않습니다.
+최상위는 `id`·`kind`·`depth`·`dependsOn`·`dependedBy`(`truncated`·`limitations`는 값이 없으면 생략)이고
+이웃은 `{id, edges}`입니다. 계열의 `usedBy`/`members`/`declaredIn`/`reachability` 구성으로 바꾸면 소비자가
+깨지므로, 키 이름·구조를 바꿀 때는 CHANGELOG Breaking 항목과 마이그레이션 안내가 필요합니다.
+계열과 같게 유지하는 것은 출력 철학입니다: `state`는 삭제 판정이 아니라 그래프 사실이고, 이웃에 닿는
+간선 종류는 전부 싣고(`edges`), `limitations`는 그 실행에서 실제로 센 값이며, 잘렸으면 `truncated`로
+밝힙니다. 새 필드를 더할 때 계열에 같은 의미의 이름이 있으면 그 이름을 씁니다.
 브리지 교환이 생기면 `../isthmus/docs/GRAPH-EXCHANGE.md`가 정본입니다.
 
 ---
@@ -52,21 +60,27 @@ go run ./cmd/gartograph query <정점ID> --depth 2                # 이웃 되�
 import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상입니다. 실전 검사는
 `cycles --level type`과 `--level symbol`입니다.
 
-**`dead`의 기본 루트는 `main`·`init`뿐입니다.** 라이브러리에서는 저장소 안에
-호출자가 없는 공개 API 전체가 unreachable로 나옵니다 — `--retain-public`이
-그때의 스위치입니다. 모듈 밖 인터페이스(error, flag.Value 같은)를 만족하는
+**`dead`의 기본 루트는 프로그램 진입점입니다** — `main`·`init`, 패키지 초기화
+정점(`pkg._`), keep 표지(`//deadcode:keep`·`//gartograph:keep`), 그래프 밖이 부르는
+지시문(cgo `//export`·`//go:wasmexport`·`//go:linkname`의 본문 쪽), `--tests`의
+테스트 진입점. 라이브러리에서는 저장소 안에 호출자가 없는 공개 API 전체가
+unreachable로 나옵니다 — `--retain-public`이 그때의 스위치입니다. 모듈 밖 인터페이스(error, flag.Value 같은)를 만족하는
 메서드는 수확이 정점에 `satisfies`·`receiver` 사실로 남기고, `analysis`가
 "리시버 타입이 도달하면 그 메서드도 도달"로 계산합니다(`ReachAdjacency`).
 문서 간선으로 긋지 마세요 — 메서드→리시버 references와 맞물려 cycles에
 가짜 2-순환이 생깁니다. 이 규칙은 `dead`·`explain` 전용입니다 —
-`shared`·`path`·`impact`는 의존 간선만 따릅니다(`DependencyReachable`).
+`shared`·`path`·`impact`는 의존 간선만 따릅니다(`graph.Adjacency`; `analysis.DependencyReachable`은
+같은 규칙의 공개 도우미입니다).
 이름 없는 인터페이스(`errors.Is/As/Unwrap`의 `interface{ Unwrap() error }`)는
 패키지 스코프 명명 목록에 없어서 의존 패키지 AST의 인터페이스 표기를 그 패키지의
 `TypesInfo`로 읽습니다(`source/anoniface.go`) — 심볼 레벨 로드가 의존도 소스에서
 타입체크하므로 다시 파싱·해석하지 마세요. 합성 해석은 가려진 이름을 다른 타입으로,
 봉인(승격된 비공개) 메서드를 다른 패키지 소속으로 풀어 거짓·누락 사실을 만듭니다.
 이 수확을 한 문서는 `anonymousDispatch: true`를 싣고, 표시 없는 옛 문서에는
-dead가 재수확을 권합니다. reflection·제네릭 인터페이스 경유 디스패치는 여전히
+dead가 재수확을 권합니다. **모듈 안**의 이름 없는 인터페이스(단언·type switch의
+리터럴, 함수 안 선언, 이름 없는 제약)는 호출 지점이 보이므로 satisfies가 아니라
+CHA 팬아웃으로 다룹니다(`unnamedModuleMethod` → `instanceImplementers`, 문서 표시
+`moduleLocalDispatch: true`). reflection·제네릭 인터페이스 경유 디스패치는 여전히
 안 보이고, 메서드 보고에 그 limitation이 실립니다.
 
 ## 절대 하지 말 것

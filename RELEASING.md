@@ -24,6 +24,19 @@ helper는 여섯 예상 자산(다섯 압축 파일과 `checksums.txt`)을 모�
 릴리스 메타데이터에서 immutability 여부를 확인하지 못해도 게시를 중단한다.
 
 최종 성공은 태그가 빌드 커밋을 가리키고 여섯 자산이 모두 검증된 바이트일 때다. 공개 다운로드·설치까지
-확인한 뒤 준비 중인 노트를 갱신한다. Homebrew tap 자격 증명이 없으면 이전처럼 자동 갱신을 건너뛴다.
+확인한 뒤 준비 중인 노트를 갱신한다. Homebrew tap 자격 증명이 없으면 이전처럼 자동 갱신을 건너뛴다 —
+이때 Release 실행은 성공으로 끝나지만 `Homebrew tap not updated` 경고와 실행 요약 표(대상별 SHA-256)를
+남긴다. Release 성공을 tap 갱신 완료로 읽지 않는다.
+
+## Homebrew tap 수동 갱신
+
+`HOMEBREW_TAP_TOKEN`이 없을 때의 절차다. 새 자격 증명을 만들거나 권한을 넓히는 일은 이 절차에 없다.
+
+1. 게시된 `checksums.txt`를 받아 공개 자산과 대조한다(`shasum -a 256 -c checksums.txt`). 실행 요약 표의 값과도 같아야 한다.
+2. 이 저장소의 `Formula/gartograph.rb`에서 `@TAG@`·`@VERSION@`·`@SHA_DARWIN_ARM64@`·`@SHA_DARWIN_AMD64@`·
+   `@SHA_LINUX_ARM64@`·`@SHA_LINUX_AMD64@` 자리표시자를 `release.yml`의 `sed`와 같은 값으로 채운다.
+3. 채운 파일을 `ictechgy/homebrew-tap`의 `Formula/gartograph.rb`로 두고 `gartograph X.Y.Z` 커밋으로 반영한다(기존 관례).
+4. `brew update && brew upgrade ictechgy/tap/gartograph`(새 설치는 `brew install`) 뒤 `gartograph --version`과
+   `brew test ictechgy/tap/gartograph`로 설치본을 확인하고, 설치된 바이너리의 SHA-256이 자산과 같은지 본다.
 
 오프라인 회귀 검사: `bash Scripts/test-publish-release-assets.sh`. 모든 GitHub 요청은 가짜 `gh`가 처리한다.

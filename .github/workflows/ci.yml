@@ -38,7 +38,18 @@ jobs:
 
       - run: go build ./...
       - run: go vet ./...
+      # gofmt가 형식의 정본이다(AGENTS.md) — 어긋난 파일 목록을 보여 주고 실패한다.
+      - run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would reformat these files (run gofmt -w):" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
       - run: Scripts/coverage.sh
+      # 종료 코드 계약(0/1/2)을 새로 빌드한 바이너리로 본다. 릴리스에서만 돌면 계약이 깨진 채
+      # 태그가 나가고, 태그는 옮기지 않으므로(RELEASING.md) 새 패치 버전이 필요해진다.
+      - run: Scripts/verify-cli-contract.sh
 
       # 도그푸딩 — 이 도구로 이 저장소를 분석한다
       # 기존 직렬화·공개 API findings를 임의의 strict baseline으로 승인하지 않고 근거를 보고한다.
@@ -46,3 +57,21 @@ jobs:
       - run: go run ./cmd/gartograph rules --strict
       - run: go run ./cmd/gartograph cycles --level type --strict
       - run: go run ./cmd/gartograph cycles --level symbol --strict
+
+  # Windows·macOS 전용 경로(export의 원자적 교체·재시도, 경로 구분자, 심볼릭 링크 해석)를 실제 러너에서
+  # 돌린다. 커버리지 게이트와 도그푸딩은 test 잡이 한 번 맡는다. cli 테스트가 수확·출력 경로를 끝까지 지난다.
+  platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./export ./cli ./graph ./config

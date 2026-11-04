@@ -175,7 +175,8 @@ func Describe(v any) string {
 }
 
 // extraLibFile은 testsCountFixture의 lib에 더하는 파일이다 — 모듈 밖 import 하나(strings), 모듈
-// 밖 참조 둘, //go:linkname 하나를 더한다.
+// 밖 참조 둘, 모듈 심볼로 해석하지 못하는 //go:linkname 하나(메서드 표기 대상)를 더한다.
+// 모듈 밖 심볼을 당겨 오는 지시문(runtime.nanotime)은 모듈 안에 살릴 대상이 없어 세지 않는다.
 const extraLibFile = `package lib
 
 import (
@@ -183,8 +184,12 @@ import (
 	_ "unsafe"
 )
 
-//go:linkname runtimeFastrand runtime.fastrand
-func runtimeFastrand() uint32
+type clock struct{}
+
+func (clock) tick() {}
+
+//go:linkname viaMethod example.com/fixture/lib.clock.tick
+func viaMethod()
 
 // Shout은 앞뒤 공백을 지우고 대문자로 바꾼다.
 func Shout(s string) string { return strings.ToUpper(strings.TrimSpace(s)) }
@@ -225,7 +230,7 @@ func TestTestsCountsEachFileOnce(t *testing.T) {
 	for _, phrase := range []string{
 		"imports of packages outside the module were omitted",
 		"references to symbols outside the module were omitted",
-		"//go:linkname directives found",
+		"//go:linkname directives could not be tied",
 	} {
 		plain := limitationCount(t, plainMore, phrase) - limitationCount(t, plainBase, phrase)
 		tests := limitationCount(t, testsMore, phrase) - limitationCount(t, testsBase, phrase)

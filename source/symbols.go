@@ -32,7 +32,9 @@ type harvester struct {
 	fieldIDs map[types.Object]string // struct 필드 객체 → 정점 ID — 참조 간선 해석용
 	extRefs  int                     // 모듈 밖 심볼 참조 수
 	noTypes  int                     // 타입 정보 없는 패키지 수
-	linkname int                     // //go:linkname 지시문 수
+	linkname int                     // 모듈 심볼로 해석하지 못한 //go:linkname 지시문 수
+	// linknameUnmodeled는 함수·변수 정점이 없는 레벨(type 등)이라 잇지 않은 //go:linkname 지시문 수다.
+	linknameUnmodeled int
 	// reflectPkgs는 reflect를 import하는 패키지의 PkgPath다 — 테스트 변형이 원 패키지와 같은
 	// 패키지를 다시 싣으므로 수가 아니라 집합으로 센다.
 	reflectPkgs map[string]bool
@@ -64,6 +66,12 @@ type harvester struct {
 	// vertexOnly는 정점 집합만 쓰는 수확(usrDocument)이다. 구조 간선·외부 디스패치·CHA 팬아웃을 건너뛰고 간선을
 	// 기록하지 않는다. 정점을 만드는 판정(init·pkg._·필드)은 vertices·fieldIDs만 보고 간선과 무관해 정점 집합은 같다.
 	vertexOnly bool
+	// modulePkgs는 수확하는 모듈 패키지의 PkgPath다. 패키지 스코프에 이름이 없는 모듈 인터페이스
+	// (단언·type switch의 리터럴, 함수 안 선언, 이름 없는 제약)의 메서드는 정점이 없지만 호출 지점이
+	// 모듈 안에 보이므로, 모듈 밖 인터페이스(satisfies 규칙)와 갈라 CHA로 퍼뜨리는 기준이다.
+	modulePkgs map[string]bool
+	// moduleTypes는 모듈 패키지의 PkgPath → 타입 패키지다 — //go:linkname 대상 이름을 정점으로 푼다.
+	moduleTypes map[string]*types.Package
 }
 
 // harvestSymbols는 in-module 패키지의 선언을 순회해 심볼/타입 정점과
@@ -89,6 +97,8 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		baseFiles:      baseSyntaxFiles(internal),
 		spell:          newTypeSpeller(),
 		vertexOnly:     vertexOnly,
+		modulePkgs:     packagePathSet(internal),
+		moduleTypes:    moduleTypesByPath(internal),
 	}
 	for _, v := range doc.Vertices {
 		h.vertices[v.ID] = true
@@ -101,6 +111,8 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	doc.InitializerRoots = wantSymbols // specEdges가 심볼 레벨에서 pkg._를 수확한다
 	doc.InterfaceTypeSets = true       // fillTypeShape가 인터페이스 TypeSet도 채운다
 	doc.DispatchEvidence = wantSymbols // CHA 팬아웃(candidateEdge)은 심볼 레벨에서만 생긴다
+	// 정점 없는 모듈 인터페이스 메서드의 팬아웃(unnamedModuleMethod)도 심볼 레벨 몸체 순회에서 생긴다.
+	doc.ModuleLocalDispatch = wantSymbols
 
 	h.addSymbolVertices(internal, wantSymbols)
 	// 구조 간선(embeds·implements, 구체 타입 × 인터페이스 판정)과 외부 디스패치 사실(satisfies)은 정점을 만들지 않는다.
@@ -127,7 +139,13 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	}
 	if h.linkname > 0 {
 		doc.Limitation(fmt.Sprintf(
-			"%d //go:linkname directives found; their targets may appear unreachable", h.linkname))
+			"%d //go:linkname directives could not be tied to package-level module symbols "+
+				"(method targets, unknown names); their targets may appear unreachable", h.linkname))
+	}
+	if h.linknameUnmodeled > 0 {
+		doc.Limitation(fmt.Sprintf(
+			"%d //go:linkname directives bind functions or variables, which are not vertices at %s level; "+
+				"harvest at symbol level to see those bindings", h.linknameUnmodeled, level))
 	}
 	if h.abbreviated > 0 {
 		doc.Limitation(fmt.Sprintf("%d fields/methods/typeSet/satisfies entries abbreviate a type spelling "+
@@ -724,7 +742,11 @@ func (h *harvester) addBodyEdges(internal []*packages.Package, wantSymbols bool)
 			physical := p.Fset.PositionFor(file.Pos(), false).Filename
 			logical := p.Fset.Position(file.Pos()).Filename
 			if !h.revisit && (!h.isGenerated(physical) || (h.loadedFiles[logical] && !h.isGenerated(logical))) {
-				h.linkname += countLinknames(file)
+				if wantSymbols {
+					h.linkname += h.linknames(p, file)
+				} else {
+					h.linknameUnmodeled += countLinknames(file) // 이을 함수·변수 정점이 이 레벨에 없다
+				}
 			}
 			for _, decl := range file.Decls {
 				h.declEdges(p, decl, wantSymbols)
@@ -822,7 +844,8 @@ func (h *harvester) declEdges(p *packages.Package, decl ast.Decl, wantSymbols bo
 		}
 		// //deadcode:keep·//gartograph:keep은 선언 옆에 "의도적으로
 		// 남긴다"를 적는 표지다 — 루트 목록은 그래프 사실이라 문서에 남는다.
-		if keepMarked(d.Doc) || cgoExported(d) {
+		// cgo //export와 //go:wasmexport는 그래프 밖(C·wasm 호스트)이 부르는 진입점이다.
+		if keepMarked(d.Doc) || cgoExported(d) || wasmExported(d) {
 			h.root(from)
 		}
 		h.sigTypeEdges(p, d.Type, from)
@@ -876,6 +899,16 @@ func (h *harvester) isGenerated(file string) bool {
 		h.generatedFiles[file] = gen
 	}
 	return gen
+}
+
+// packagePathSet은 패키지들의 PkgPath 집합이다. 테스트 변형("p [p.test]")은 원 패키지와 같은
+// PkgPath라 한 원소로 합쳐진다.
+func packagePathSet(pkgs []*packages.Package) map[string]bool {
+	out := make(map[string]bool, len(pkgs))
+	for _, p := range pkgs {
+		out[p.PkgPath] = true
+	}
+	return out
 }
 
 // loadedFileSet은 패키지들이 로드한 Go 파일 경로 집합이다. 고르는 기준(CompiledGoFiles, 비면
@@ -1216,7 +1249,9 @@ func (h *harvester) callEdge(p *packages.Package, ce *ast.CallExpr, from string)
 			}
 			id := h.id(fn)
 			pos := position(p, ce.Pos())
-			h.edge(from, id, graph.EdgeCall, pos)
+			if !h.unnamedModuleMethod(fn, id) { // 정점 없는 모듈 인터페이스 메서드는 모듈 밖 참조가 아니다
+				h.edge(from, id, graph.EdgeCall, pos)
+			}
 			h.promotedFields(sel, from, pos)
 			for _, impl := range h.dispatchTargets(sel, fn, id) {
 				h.candidateEdge(from, impl, graph.EdgeCall, pos)
@@ -1244,10 +1279,66 @@ func (h *harvester) dispatchTargets(sel *types.Selection, fn *types.Func, id str
 	if !isInterface(sel.Recv()) && (recv == nil || !types.IsInterface(recv.Type())) {
 		return nil
 	}
+	if h.unnamedModuleMethod(fn, id) {
+		// 함수 안 인터페이스는 ID가 같은 이름의 패키지 인터페이스와 겹칠 수 있다 — 그 정점의 구현 목록을
+		// 빌리지 않고 호출 지점의 인터페이스로 구현자를 찾는다.
+		return h.instanceImplementers(recv.Type(), fn)
+	}
 	if impls := h.impls[id]; len(impls) > 0 || recv == nil || !h.vertices[id] {
 		return impls
 	}
 	return h.instanceImplementers(recv.Type(), fn)
+}
+
+// unnamedModuleMethod는 fn이 패키지 스코프에 이름이 없는 모듈 인터페이스의 메서드인지 본다 —
+// 선택적 인터페이스 단언(x.(interface{ M() })), type switch의 이름 없는 case, 함수 안에 선언한
+// 인터페이스, 이름 없는 제네릭 제약. 정점이 없어 미리 계산한 구현 목록도 없지만 호출 지점이
+// 모듈 안에 보이므로 호출 지점의 인터페이스로 구현자를 찾는다(AGENTS: 디스패치 과소 근사 금지).
+// 모듈 밖 패키지의 이름 없는 인터페이스는 해당하지 않는다 — satisfies·receiver 규칙이 다룬다.
+// 함수 안 명명 인터페이스는 정점 ID(패키지 경로.(이름).메서드)가 같은 이름의 패키지 수준 인터페이스와
+// 겹칠 수 있으므로 정점이 있어도 이름 없는 쪽으로 다룬다 — 그 정점은 가려진 다른 타입의 것이다.
+func (h *harvester) unnamedModuleMethod(fn *types.Func, id string) bool {
+	if fn.Pkg() == nil || !h.modulePkgs[fn.Pkg().Path()] {
+		return false
+	}
+	recv := fn.Signature().Recv()
+	if recv == nil || !types.IsInterface(recv.Type()) {
+		return false
+	}
+	return !h.vertices[id] || declaredInFunction(recv.Type())
+}
+
+// declaredInFunction은 t가 함수 안에서 선언한 명명 타입인지 본다. 객체의 스코프가 패키지 스코프가
+// 아니면 그렇다. export data에서 읽은 객체는 스코프가 없어(nil) 해당하지 않는다.
+func declaredInFunction(t types.Type) bool {
+	n, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := n.Obj()
+	return obj.Pkg() != nil && obj.Parent() != nil && obj.Parent() != obj.Pkg().Scope()
+}
+
+// functionLocalTypeKey는 t가 언급하는 함수 안 명명 타입들의 선언 위치를 이어 붙인다. 함수 안 타입은
+// 철자(p.v)가 다른 함수의 같은 이름 타입과 같아 구현자 캐시 키를 철자만으로 만들면 서로의 결과를
+// 재사용한다 — 위치로 구분한다. 타입 파라미터는 느슨한 판정 결과가 같아 구분하지 않는다.
+func functionLocalTypeKey(root types.Type) string {
+	var key strings.Builder
+	seen := map[types.Type]bool{}
+	stack := []types.Type{root}
+	for len(stack) > 0 {
+		t := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		if declaredInFunction(t) {
+			fmt.Fprintf(&key, "\x00%d", types.Unalias(t).(*types.Named).Obj().Pos())
+		}
+		stack = append(stack, typeComponents(t)...)
+	}
+	return key.String()
 }
 
 // instanceImplementers는 (인스턴스화된) 인터페이스 타입의 메서드 fn을 구현하는 모듈 구체
@@ -1256,7 +1347,7 @@ func (h *harvester) dispatchTargets(sel *types.Selection, fn *types.Func, id str
 // 함수 안의 G[X]) 구체 타입이 제네릭 원형(Box[X])이면 Implements로 판정할 수 없어 같은
 // 메서드를 가진 것으로 과대 근사한다("살아 있다" 쪽). 결과는 캐시한다.
 func (h *harvester) instanceImplementers(iface types.Type, fn *types.Func) []string {
-	key := types.TypeString(iface, nil) + "\x00" + fn.Id()
+	key := types.TypeString(iface, nil) + "\x00" + fn.Id() + functionLocalTypeKey(iface)
 	if out, ok := h.instanceImpls[key]; ok {
 		return out
 	}
@@ -1415,6 +1506,9 @@ func (h *harvester) refObject(obj types.Object, from string, pos *graph.Position
 		return
 	}
 	id := h.id(obj)
+	if fn, ok := obj.(*types.Func); ok && h.unnamedModuleMethod(fn, id) {
+		return // 모듈 안 인터페이스 메서드다 — 모듈 밖 참조로 세지 않고, 구현자는 dispatchTargets가 잇는다
+	}
 	if !h.vertices[id] {
 		h.omitRef()
 		return
@@ -1642,20 +1736,6 @@ func namedOf(t types.Type) *types.TypeName {
 func isInterface(t types.Type) bool {
 	_, ok := t.Underlying().(*types.Interface)
 	return ok
-}
-
-// countLinknames는 파일의 //go:linkname 주석 수를 센다.
-// linkname은 심볼 그래프 밖에서 함수를 살리므로 limitation 대상이다.
-func countLinknames(file *ast.File) int {
-	n := 0
-	for _, cg := range file.Comments {
-		for _, c := range cg.List {
-			if strings.HasPrefix(c.Text, "//go:linkname") {
-				n++
-			}
-		}
-	}
-	return n
 }
 
 // position은 패키지 fset 기준 위치를 만든다.

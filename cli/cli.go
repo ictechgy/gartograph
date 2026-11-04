@@ -498,7 +498,8 @@ func cyclesLimitations(doc *graph.Document, stale int) []string {
 	}
 	if candidates > 0 {
 		limitations = append(limitations, fmt.Sprintf(
-			"%d CHA candidate dependency relations in the input are excluded from definite cycle analysis", candidates))
+			"%d candidate dependency relations (CHA interface-dispatch fan-out or //go:linkname bindings) "+
+				"in the input are excluded from definite cycle analysis", candidates))
 	}
 	if stale > 0 {
 		limitations = append(limitations, fmt.Sprintf(
@@ -760,9 +761,8 @@ func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknow
 		limitations = append(limitations,
 			fmt.Sprintf("retention root %q is not in the graph", u))
 	}
-	if len(doc.Roots) == 0 && !retainPublic {
-		limitations = append(limitations,
-			"no main or init roots found; exported API may appear unreachable (use --retain-public)")
+	if !retainPublic {
+		limitations = append(limitations, missingRootLimitations(doc)...)
 	}
 	if algo == "rta" {
 		limitations = append(limitations,
@@ -771,6 +771,7 @@ func deadLimitations(doc *graph.Document, algo string, retainPublic bool, unknow
 		// RTA는 SSA 전체 프로그램으로 외부 호출까지 보고, 모든 합성 init을 루트로 삼아 아래 둘과 무관하다.
 		if hasMethodFinding(findings) {
 			limitations = append(limitations, externalDispatchLimitation(doc))
+			limitations = append(limitations, moduleLocalDispatchLimitation(doc)...)
 		}
 		limitations = append(limitations, initializerRootsLimitation(doc, findings)...)
 	}
@@ -846,6 +847,61 @@ func generatedFindings(findings []analysis.Finding) int {
 		}
 	}
 	return n
+}
+
+// missingRootLimitations는 프로그램 진입점이 없는 dead 보고의 --retain-public 안내다. main 패키지는
+// 패키지 레벨에서도 루트 목록에 오르므로 목록 길이가 아니라 심볼 루트로 판정한다 — 그렇지 않으면 func
+// main 없는 package main(plugin·c-shared 빌드)에서 안내가 사라진다. 다른 패키지에 진입점이 있으면
+// func main 없는 main 패키지 수를 따로 센다(그 패키지의 공개 API는 호스트가 부른다).
+func missingRootLimitations(doc *graph.Document) []string {
+	if !hasSymbolRoot(doc) {
+		return []string{"no main or init roots found; exported API may appear unreachable (use --retain-public)"}
+	}
+	if n := mainPackagesWithoutMain(doc); n > 0 {
+		return []string{fmt.Sprintf("%d main packages declare no func main (a plugin or c-shared build); "+
+			"their exported API is called by the host and may appear unreachable (use --retain-public)", n)}
+	}
+	return nil
+}
+
+// hasSymbolRoot는 루트 목록에 패키지 정점이 아닌 루트(main·init·pkg._·keep·지시문)가 있는지 본다.
+// 문서에 없는 루트 ID도 심볼 루트로 센다 — 패키지 정점이 아니라는 것만 알면 된다.
+func hasSymbolRoot(doc *graph.Document) bool {
+	byID := graph.VertexIndex(doc)
+	for _, r := range doc.Roots {
+		if v := byID[r]; v == nil || v.Kind != graph.KindPackage {
+			return true
+		}
+	}
+	return false
+}
+
+// mainPackagesWithoutMain은 모듈 안 main 패키지 중 func main 정점이 없는 수다.
+func mainPackagesWithoutMain(doc *graph.Document) int {
+	byID := graph.VertexIndex(doc)
+	n := 0
+	for _, v := range doc.Vertices {
+		if v.Kind != graph.KindPackage || v.Name != "main" || v.External {
+			continue
+		}
+		if m := byID[v.ID+".main"]; m == nil || m.Kind != graph.KindFunc {
+			n++
+		}
+	}
+	return n
+}
+
+// moduleLocalDispatchLimitation은 모듈 안 이름 없는 인터페이스 팬아웃 표시(moduleLocalDispatch)가
+// 없는 문서의 CHA dead 메서드 보고에 붙는 재수확 권고다. 표시가 없다는 사실만 말한다 — 메서드
+// 보고가 없으면 호출부(deadLimitations)가 부르지 않아 조용하다.
+func moduleLocalDispatchLimitation(doc *graph.Document) []string {
+	if doc.ModuleLocalDispatch {
+		return nil
+	}
+	return []string{"this document lacks the moduleLocalDispatch marker (harvested before calls through " +
+		"module interfaces without a package-scope name were fanned out): methods called only through " +
+		"x.(interface{ M() }), a type switch case, a function-local interface, or an unnamed type " +
+		"constraint may appear unreachable — re-harvest"}
 }
 
 // initializerRootsLimitation은 초기화 루트 표시(initializerRoots)가 없는 문서의 CHA dead

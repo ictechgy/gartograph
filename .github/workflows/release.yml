@@ -96,9 +96,10 @@ jobs:
           ## Install
 
           \`\`\`bash
-          brew install ictechgy/tap/gartograph
-          # or
           go install github.com/ictechgy/gartograph/cmd/gartograph@${TAG}
+          # Homebrew (the tap formula is updated from these assets, automatically or by hand when the
+          # tap token is not configured; if brew does not offer ${VERSION} yet, use go install above):
+          brew install ictechgy/tap/gartograph
           \`\`\`
 
           ## Assets
@@ -108,18 +109,29 @@ jobs:
           bash Scripts/publish-release-assets.sh "$TAG" "$RELEASE_COMMIT" notes.md
 
       # tap 저장소는 다른 저장소라 기본 GITHUB_TOKEN으로는 쓸 수 없다.
-      # HOMEBREW_TAP_TOKEN 시크릿이 있을 때만 formula를 갱신하고, 없으면 조용히 건너뛴다.
+      # HOMEBREW_TAP_TOKEN 시크릿이 있을 때만 formula를 갱신한다. 없으면 자산은 이미 게시됐으므로
+      # 실패시키지 않되, 경고(::warning::)와 실행 요약에 수동 갱신 값을 남긴다 — 로그 안의 echo만으로는
+      # 성공 표시 뒤에 묻혀 tap이 낡은 채로 남았다. 수동 절차는 RELEASING.md에 있다.
       - name: Update the Homebrew tap
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           sha() { grep "gartograph-${VERSION}-$1" checksums.txt | cut -d' ' -f1; }
           if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
-            echo "HOMEBREW_TAP_TOKEN is not configured; update the tap with these values:"
-            echo "  version   ${VERSION}"
-            for t in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
-              echo "  $t  $(sha "$t.tar.gz")"
-            done
+            echo "::warning title=Homebrew tap not updated::HOMEBREW_TAP_TOKEN is not configured; update ictechgy/homebrew-tap by hand (RELEASING.md)."
+            {
+              echo "## Homebrew tap not updated"
+              echo
+              echo "HOMEBREW_TAP_TOKEN is not configured. Follow RELEASING.md with these values:"
+              echo
+              echo "| target | sha256 |"
+              echo "| --- | --- |"
+              for t in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+                echo "| $t | $(sha "$t.tar.gz") |"
+              done
+              echo
+              echo "version: ${VERSION}, tag: ${TAG}"
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           git clone "https://github.com/ictechgy/homebrew-tap.git" tap
@@ -135,6 +147,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/gartograph.rb
+          # 같은 버전을 다시 실행하면(workflow_dispatch) formula가 이미 같아 커밋할 것이 없다 — 실패하지 않는다.
+          if git diff --cached --quiet; then
+            echo "The tap formula already matches ${VERSION}; nothing to push."
+            exit 0
+          fi
           git commit -m "gartograph ${VERSION}"
           auth="$(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 | tr -d '\n')"
           git -c "http.extraheader=Authorization: Basic ${auth}" push origin main

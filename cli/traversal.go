@@ -708,7 +708,10 @@ func (s symbolizer) location(pos *graph.Position) *traversalLocation {
 	for _, base := range s.bases {
 		for _, file := range files {
 			rel, err := filepath.Rel(base, file)
-			if err != nil || rel == ".." || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
+			// filepath.Rel은 OS 구분자로 답한다 — 윈도에서 벗어나는 경로는 "..\"로 시작해 "../"
+			// 접두사 검사를 통과했고, 8.3 짧은 이름 기준과 긴 이름 파일 사이의 "..\..\RUNNER~1\…"
+			// 경로가 위치로 실렸다. IsLocal은 구분자와 무관하게 "..", 상위로 벗어나는 경로, 절대 경로를 거른다.
+			if err != nil || !filepath.IsLocal(rel) {
 				continue
 			}
 			return &traversalLocation{Path: filepath.ToSlash(rel), Line: pos.Line, Column: max(pos.Column, 0)}

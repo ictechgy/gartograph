@@ -378,7 +378,8 @@ func buildDocument(root string, reachable []*packages.Package,
 	// limitation은 실제로 세어서 만든다 — 알릴 것이 없으면 붙이지 않는다.
 	if ignored := countIgnored(reachable, kept); ignored > 0 {
 		doc.Limitation(fmt.Sprintf(
-			"%d source files were excluded by build constraints (use --tags to include)", ignored))
+			"%d source files were excluded by build constraints (use --tags for custom tags or "+
+				"--goos/--goarch for platform-specific files to include)", ignored))
 	}
 	if len(extImports) > 0 {
 		doc.Limitation(fmt.Sprintf(

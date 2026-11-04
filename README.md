@@ -110,6 +110,9 @@ brew install ictechgy/tap/gartograph
 go install github.com/ictechgy/gartograph/cmd/gartograph@latest
 ```
 
+`go install` and source builds need Go 1.27.1 or newer (the `go` line in
+`go.mod`); the Homebrew formula installs a prebuilt binary.
+
 Or from source:
 
 ```bash
@@ -129,7 +132,11 @@ gartograph graph --level type --format mermaid    # or --format dot for Graphviz
 gartograph graph --level symbol --out .gartograph/graph.json
 
 # Detect dependency cycles — package cycles are impossible in Go,
-# so real checks run at type/symbol level
+# so real checks run at type/symbol level. Only definite dependencies count:
+# candidate edges (CHA interface-dispatch fan-out and //go:linkname bindings)
+# stay in the graph for reachability but are not cycle evidence, so recursion
+# that goes only through an interface call does not fail --strict; the report
+# counts those excluded relations in limitations.
 gartograph cycles --level symbol --strict
 
 # Report symbols unreachable from retention roots (main, init)
@@ -143,6 +150,7 @@ gartograph dead --algo rta                # RTA precision: needs source, not --g
 gartograph dead --algo rta --explain my/pkg.F   # path on the RTA call graph itself
 # Source-level keep: //deadcode:keep or //gartograph:keep on a declaration
 # (also on a struct field) marks it as a retention root in the document.
+# cgo //export, //go:wasmexport and //go:linkname functions are roots too.
 
 # Emit an isthmus bridge-facts document (platform "go")
 # Go reports cgo via unscanned-ffi-interop limitations — no channel facts.
@@ -582,8 +590,18 @@ timeout, `ulimit`, or a container.
   (`//deadcode:keep` or `// deadcode:keep <reason>`); put it on the doc
   comment above the declaration or on a field line inside a struct —
   a trailing comment after a `func` body does not attach to it.
+- Compiler directives that call code from outside the graph are roots too:
+  a cgo `//export Name` function and a `//go:wasmexport name` function (the
+  export name may differ from the function name). A `//go:linkname local
+  importpath.name` pair whose two sides are both package-level module
+  symbols is tied by candidate `references` edges in both directions, and
+  the side with a function body becomes a root (RTA stops at the bodyless
+  declaration). A one-argument `//go:linkname name` or a function body
+  pushed to a name outside the module is a root as well. Only directives
+  that cannot be tied to a package-level module symbol (method targets,
+  unknown names) are counted in `limitations`.
 - `limitations` is counted per run (omitted external imports/references,
-  `reflect` use, `//go:linkname`, packages without type info) — absent
+  `reflect` use, unresolved `//go:linkname`, packages without type info) — absent
   means nothing to report, not a boilerplate warning.
 - No delete verdicts. `unreachable` is a graph fact ("not reachable from
   retention roots"), never "safe to delete".
@@ -618,9 +636,18 @@ timeout, `ulimit`, or a container.
 ## Graph document
 
 `version: 2`, `tool: "gartograph"`, `level`, `root` (filesystem dir),
-`module` (module path), `roots` (harvested retention roots: `main`, `init`,
-plus `Test*`/`Benchmark*`/`Example*`/`Fuzz*` entry points under `--tests`),
-`vertices`, `edges`, `limitations`, `anonymousDispatch: true` when
+`module` (module path), `roots` (harvested retention roots: `main` and
+`main` package vertices, `init`, package initializers `pkg/path._`,
+declarations marked `//deadcode:keep` or `//gartograph:keep`, cgo `//export`
+and `//go:wasmexport` functions, `//go:linkname` bodies the linker can call
+from outside or bind a bodyless declaration to, plus
+`Test*`/`Benchmark*`/`Example*`/`Fuzz*` entry points under `--tests`),
+`vertices`, `edges`, `limitations`, `moduleLocalDispatch: true` when
+interface calls through module interfaces with no package-scope name
+(assertions like `x.(interface{ M() })`, type switch cases, interfaces declared
+in a function, unnamed generic constraints) fan out to their implementers
+(symbol-level harvests; older documents lack it and `dead` suggests
+re-harvesting), `anonymousDispatch: true` when
 method `satisfies` facts include anonymous interfaces from dependency
 source (symbol-level harvests; older documents lack it), and
 `interfaceMethodSets: true` when interface type vertices carry `methods`
@@ -667,10 +694,13 @@ entry counts the entries that carry an abbreviation, and
 since the rest may lie past the prefix.
 
 `dispatchEvidence: true` (symbol-level harvests) marks documents whose edges
-carry `candidate: true` when every site of the relation is an interface-dispatch
-(CHA) fan-out to a possible implementation — a relation with at least one
-compiler-resolved site stays unmarked. Traversal documents grade evidence from
-it; older saved documents lack the marker and are not graded.
+carry `candidate: true` when no site of the relation is compiler-resolved: every
+site is an interface-dispatch (CHA) fan-out to a possible implementation, or a
+`//go:linkname` binding from a bodyless declaration to the body the linker
+supplies (one direction only — the body does not depend on the declaration). A
+relation with at least one compiler-resolved site stays unmarked. Traversal
+documents grade evidence from it; older saved documents lack the marker and are
+not graded.
 
 Edges carry `positions` — every source site where the relation holds
 (import decls for `import`, call expressions for `call`, and so on).
@@ -952,9 +982,14 @@ gartograph does not harvest (gorilla/mux, httprouter, fiber, chi v1–v4 paths,
 echo v3/v5, grpc-gateway, …) add an unscoped `route-coverage:` limitation, so
 a zero-fact document never reads as "scanned, none". The document is
 self-checked against the contract (templates, methods, catch-all prefix
-originals) before it is written; `conformance/` vendors the isthmus
-`http-template`, `http-dispatch` and `url-compose` vectors (`conformance.lock`),
-and all 114 producer cases pass (51 for route declarations, 63 for route calls).
+originals) before it is written, and a `limitationScopes` entry the consumer
+would reject is dropped (the limitation then stays document-wide, the broader
+reading); `conformance/` vendors the isthmus `http-template`, `http-dispatch`,
+`http-limitation-scope`, `url-compose` and `sql-relations` vectors
+(`conformance.lock`), and all 155 producer cases pass (51 for route
+declarations, 27 for limitation scopes, 63 for route calls, 14 for SQL
+relation names). `dynamicScope` cases are skipped because gartograph does not
+emit that field.
 
 `experiments/routes-oracle` (a separate module; `run.sh` fetches chi, gin and
 echo from proxy.golang.org) builds synthetic ServeMux/chi/gin/echo servers and

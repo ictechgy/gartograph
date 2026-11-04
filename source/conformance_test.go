@@ -1,10 +1,11 @@
 // isthmus 공유 적합성 벡터(벤더링 사본)로 생산자 규칙을 검증한다.
 //
 //   - 벡터 파일은 conformance/SHA256SUMS·conformance.lock(isthmus 커밋·파일별 sha256)과 같아야 한다.
-//   - 생산자 대상 사례(template.grammar·template.normalize·dispatch.validate, url-compose의 compose.*·
-//     wrapper.*)는 appliesTo가 "producer"나 "producer:gartograph"면 전부 통과해야 한다.
-//   - 해당 없는 사례는 이유별로 분류하고(다른 생산자 전용 사례 포함), 모르는 ruleId가 생기면 실패해
-//     벤더링 갱신 때 판단하게 한다.
+//   - 생산자 대상 사례(template.grammar·template.normalize·dispatch.validate, http-limitation-scope의
+//     scope.validate·scope.applies, sql-relations의 relations.*, url-compose의 compose.*·wrapper.*)는
+//     appliesTo가 "producer"나 "producer:gartograph"면 전부 통과해야 한다.
+//   - 이 생산자 대상이 아닌 사례(consumer 전용, 다른 생산자 전용)는 실행하지 않는다. 이 생산자 대상인데
+//     실행하지 않는 ruleId는 이유를 적어 건너뛰고, 모르는 ruleId가 생기면 실패해 벤더링 갱신 때 판단하게 한다.
 package source
 
 import (
@@ -36,6 +37,8 @@ var producerRules = map[string]bool{
 	"compose.interpolation": true, "compose.query-tail": true, "compose.suffix": true, "compose.normalize": true,
 	"compose.base-join": true, "compose.strip": true, "compose.mask": true,
 	"wrapper.method": true, "wrapper.location": true,
+	"scope.validate": true, "scope.applies": true,
+	"relations.cte": true, "relations.function-from": true, "relations.distinct-from": true,
 }
 
 // appliesToUs는 사례가 이 생산자 대상인지 본다("producer"나 "producer:gartograph").
@@ -48,26 +51,10 @@ func appliesToUs(c conformanceCase) bool {
 	return false
 }
 
-// otherProducerOnly는 사례가 다른 생산자 전용("producer:<다른 이름>"만)인지 본다.
-func otherProducerOnly(c conformanceCase) bool {
-	if len(c.AppliesTo) == 0 {
-		return false
-	}
-	for _, target := range c.AppliesTo {
-		if !strings.HasPrefix(target, "producer:") || target == "producer:gartograph" {
-			return false
-		}
-	}
-	return true
-}
-
-// skippedRules는 건너뛰는 ruleId 접두사와 이유다.
+// skippedRules는 이 생산자 대상인데 실행하지 않는 ruleId 접두사와 이유다. consumer 전용이나 다른 생산자
+// 전용 사례는 appliesToUs가 이미 걸러 여기에 적지 않는다.
 var skippedRules = map[string]string{
-	"match.":             "consumer-only matching rule",
-	"dispatch.match":     "consumer-only binding across dispatch units",
-	"dispatch.shadow":    "consumer-only shadowing diagnostics",
-	"framework.openapi.": "another producer (openapi)",
-	"framework.spring.":  "another producer (kartograph)",
+	"scope.dynamic-": "dynamicScope validation (gartograph does not emit dynamicScope)",
 }
 
 // conformanceDir는 벤더링한 벡터 디렉터리다(저장소 루트 기준).
@@ -157,7 +144,7 @@ func TestConformanceLock(t *testing.T) {
 func TestConformanceEveryCaseClassified(t *testing.T) {
 	var unknown []string
 	for _, c := range loadConformance(t) {
-		if (producerRules[c.RuleID] && appliesToUs(c)) || otherProducerOnly(c) {
+		if !appliesToUs(c) || producerRules[c.RuleID] {
 			continue
 		}
 		known := false
@@ -180,8 +167,9 @@ func TestConformanceProducerCaseCount(t *testing.T) {
 	for rule := range producerRules {
 		total += len(producerCases(t, rule))
 	}
-	if total != 114 {
-		t.Fatalf("producer cases = %d, want 114 (26 grammar + 7 normalize + 18 dispatch.validate + 63 url-compose)", total)
+	if total != 155 {
+		t.Fatalf("producer cases = %d, want 155 (26 grammar + 7 normalize + 18 dispatch.validate + 63 url-compose "+
+			"+ 9 scope.validate + 18 scope.applies + 14 sql-relations)", total)
 	}
 }
 
@@ -278,5 +266,112 @@ func mustDecodeNumbers(t *testing.T, raw json.RawMessage, v any) {
 	dec.UseNumber()
 	if err := dec.Decode(v); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestConformanceScopeValidate는 스코프 검증기가 소비자와 같이 판정하는지 본다 — 생산자는 이 검증을 통과한
+// 스코프만 문서에 싣는다(routelimits.go).
+func TestConformanceScopeValidate(t *testing.T) {
+	for _, c := range producerCases(t, "scope.validate") {
+		var in struct {
+			Scope map[string]any `json:"scope"`
+		}
+		var want struct{ Valid bool }
+		mustDecodeNumbers(t, c.Input, &in)
+		mustDecode(t, c.Expect, &want)
+		in.Scope["limitationIndex"] = json.Number("0")
+		if got := scopeProblem(in.Scope); (got == "") != want.Valid {
+			t.Errorf("%s: problem %q, want valid=%v", c.ID, got, want.Valid)
+		}
+	}
+}
+
+// TestConformanceScopeApplies는 스코프 적용 판정이 벡터와 같은지 본다 — 스코프 설계가 기대는 세그먼트
+// 경계·대소문자·끝 슬래시·동사 규칙이 바뀌면 여기서 알린다.
+func TestConformanceScopeApplies(t *testing.T) {
+	for _, c := range producerCases(t, "scope.applies") {
+		var in struct {
+			Scope map[string]any `json:"scope"`
+			Probe struct {
+				Template   string `json:"template"`
+				Method     string `json:"method"`
+				PathAnchor string `json:"pathAnchor"`
+				Side       string `json:"side"`
+			} `json:"probe"`
+		}
+		var want struct{ Applies bool }
+		mustDecodeNumbers(t, c.Input, &in)
+		mustDecode(t, c.Expect, &want)
+		probe := scopeProbe{Template: in.Probe.Template, Method: in.Probe.Method,
+			Base: in.Probe.PathAnchor == "base", Side: in.Probe.Side}
+		if got := scopeApplies(in.Scope, probe); got != want.Applies {
+			t.Errorf("%s: scopeApplies = %v, want %v (%+v)", c.ID, got, want.Applies, probe)
+		}
+	}
+}
+
+// TestConformanceSQLRelations는 SQL 텍스트의 관계 이름 추출이 벡터의 집합과 같은지 본다. 벡터는 순서·중복
+// 없이 비교하라고 하지만 이 추출기는 한 텍스트에서 같은 이름을 한 번만 내므로 중복도 실패로 본다.
+func TestConformanceSQLRelations(t *testing.T) {
+	cases := 0
+	for rule := range producerRules {
+		if !strings.HasPrefix(rule, "relations.") {
+			continue
+		}
+		for _, c := range producerCases(t, rule) {
+			cases++
+			var in struct{ SQL string }
+			var want struct{ Relations []string }
+			mustDecode(t, c.Input, &in)
+			mustDecode(t, c.Expect, &want)
+			got, _, _ := sqlRelations(in.SQL)
+			if sortedNames(got) != sortedNames(want.Relations) {
+				t.Errorf("%s: sqlRelations(%q) = %v, want the set %v", c.ID, in.SQL, got, want.Relations)
+			}
+		}
+	}
+	if cases == 0 {
+		t.Fatal("no sql-relations cases ran; re-vendor conformance/sql-relations.json")
+	}
+}
+
+// TestValidScopeGuardsEmittedScopes는 생산자가 만든 스코프가 소비자 검증을 거치는지 본다 — 루트가 아닌
+// 접두사의 끝 슬래시나 비정규 템플릿이 실리면 isthmus가 문서 전체를 거부한다.
+func TestValidScopeGuardsEmittedScopes(t *testing.T) {
+	for _, tc := range []struct {
+		scope LimitationScope
+		valid bool
+	}{
+		{LimitationScope{Templates: []string{"/orders/{}"}, Methods: []string{"GET"}}, true},
+		{LimitationScope{TemplatePrefixes: []string{"/"}}, true},
+		{LimitationScope{TemplatePrefixes: []string{"/admin/"}}, false},
+		{LimitationScope{TemplateSuffixes: []string{"/{**}"}}, false},
+		{LimitationScope{Templates: []string{"orders"}}, false},
+		{LimitationScope{Templates: []string{"/a"}, Methods: []string{"ANY"}}, false},
+		{LimitationScope{}, false},
+	} {
+		if got := validScope(tc.scope); got != tc.valid {
+			t.Errorf("validScope(%+v) = %v, want %v", tc.scope, got, tc.valid)
+		}
+	}
+}
+
+// TestLimitationsDropInvalidScopes는 limitations가 소비자가 거부할 스코프를 버리되 그 한계 문구는 남기는지
+// 본다 — 스코프 하나가 isthmus에서 문서 전체를 입력 오류로 만들고, 스코프 없는 한계는 문서 전체 효과라
+// 넓은 쪽이다. 검토에서 호출 지점의 validScope를 지워도 모든 테스트가 통과했다.
+func TestLimitationsDropInvalidScopes(t *testing.T) {
+	s := &routeScan{gaps: map[string]*routeGap{
+		"a-invalid": {prefix: "route-coverage:", message: "registration(s) under a root suffix", count: 1,
+			suffixes: map[string]bool{"/": true}},
+		"b-valid": {prefix: "route-coverage:", message: "registration(s) under a known template", count: 1,
+			templates: map[string]bool{"/orders/{}": true}},
+	}}
+	lims, scopes := s.limitations()
+	if len(lims) != 2 {
+		t.Fatalf("both gaps keep their limitation text: %v", lims)
+	}
+	if len(scopes) != 1 || scopes[0].LimitationIndex != 1 || len(scopes[0].Templates) != 1 ||
+		scopes[0].Templates[0] != "/orders/{}" {
+		t.Errorf("only the valid scope may be emitted, pointing at its limitation: %+v", scopes)
 	}
 }

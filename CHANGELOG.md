@@ -4,6 +4,54 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `dead`(CLI·MCP)·`graph --level symbol`: 패키지 스코프에 이름이 없는 모듈 인터페이스의 메서드 호출을 CHA로
+  구현 메서드에 퍼뜨린다 — 선택적 인터페이스 단언(`v, ok := x.(interface{ Validate() error })`), type switch의
+  이름 없는 case, 함수 안에 선언한 인터페이스, 이름 없는 제네릭 제약(`func f[T interface{ Ping() }](x T)`), 그
+  메서드 값. 전에는 정점이 없다는 이유로 팬아웃이 막혀 살아 있는 메서드가 unreachable로 보고되고 `--strict`가
+  실패했다. RTA의 필드 판정도 같은 그래프를 따르므로 그 메서드가 읽는 필드도 살아난다. 이 호출은 모듈 안
+  참조라 "references to symbols outside the module were omitted" 수치에서 뺀다. 심볼 문서에 표시
+  `moduleLocalDispatch: true`를 싣고, 표시가 없는 옛 문서(`--graph`)의 CHA 메서드 보고에는 재수확을 권하는
+  limitation을 붙인다. 모듈 밖 인터페이스는 계속 satisfies·receiver 규칙을 따른다.
+- `dead`: `//go:wasmexport name` 함수를 보존 루트로 둔다(cgo `//export`와 같은 종류 — wasm 호스트가 부른다).
+- `dead`: `//go:linkname local importpath.name`의 양쪽이 모두 모듈의 패키지 수준 심볼이면 본문 없는 선언 → 본문
+  한 방향 후보 references 간선으로 잇고 본문 있는 함수 쪽을 루트로 둔다 — 다른 패키지에서 당겨 쓰는 구현이
+  unreachable로 보고되던 문제다. 본문은 선언에 의존하지 않으므로 역방향은 긋지 않는다(rules·query·`--explain`에
+  없는 의존이 생기지 않는다). local 함수의 본문은 지시문과 다른 파일이어도 같은 패키지에서 찾는다. 인자 하나짜리
+  지시문과 모듈 밖 이름으로 밀어 넣는 함수 본문도 루트다. limitation은 이제 모듈 심볼로 잇지 못한 지시문(메서드
+  대상, 없는 이름, 소스에서 찾지 못한 local 선언)만 `N //go:linkname directives could not be tied to package-level
+  module symbols …`로 센다 — 모듈 밖 심볼을 당겨 오는 본문 없는 선언(`runtime.nanotime`)은 모듈 안에 살릴 대상이
+  없어 세지 않는다. 함수·변수 정점이 없는 type·package 레벨에서는 지시문을 잇지 않고 `N //go:linkname directives
+  bind functions or variables, which are not vertices at <level> level …`로 센다.
+- `dead`·`graph --level symbol`: 함수 안 인터페이스가 다른 인터페이스의 구현 목록을 빌려 쓰지 않는다 — 같은
+  패키지의 두 함수가 같은 이름의 지역 인터페이스를 선언하면 먼저 계산된 쪽 결과를 재사용했고(선언 순서만 바꿔도
+  결과가 달랐다), 함수 안 `V`가 패키지 수준 `V`를 가리면 패키지 `V`의 구현 목록과 거짓 확정 간선을 썼다.
+  그 거짓 간선으로만 살아 있던 패키지 인터페이스 메서드(모듈 안에서 패키지 `V`로 부르는 곳이 없는 것)는 이제
+  unreachable로 보고된다 — 거짓 근거를 지운 결과이며, 이 변경에서 보존이 main보다 좁아지는 경우다.
+- `reach`·`impact`(윈도): 심볼 위치가 프로젝트 밖 상대 경로(`../../RUNNER~1/…`)로 실리던 문제. `filepath.Rel`이
+  `..\`로 답하는데 벗어남 검사가 `../`만 보았다 — 8.3 짧은 이름 기준과 심링크를 푼 긴 이름 파일 사이에서
+  드러났다.
+- `cycles`: 순환 근거에서 뺀 후보 관계 수 limitation을 `N candidate dependency relations (CHA interface-dispatch
+  fan-out or //go:linkname bindings) …`로 바꿨다 — linkname 묶음도 후보 관계인데 "CHA candidate"로만 셌다.
+- 빌드 제약으로 빠진 파일 수 limitation이 `--tags`뿐 아니라 `--goos/--goarch`도 안내한다 — `_windows.go` 같은
+  플랫폼 파일은 태그가 아니라 대상 플랫폼으로만 들어온다.
+- `dead`(CLI·MCP): 루트 부재 안내(`no main or init roots found … (use --retain-public)`)를 루트 목록 길이가 아니라
+  심볼 루트로 판정한다. main 패키지 정점도 루트 목록에 올라 `func main` 없는 `package main`(plugin·c-shared
+  빌드)에서 안내가 사라졌다. 다른 패키지에 진입점이 있으면 `N main packages declare no func main …`을 따로 센다.
+  `--retain-public`이면 둘 다 조용하다.
+- `routes`: 소비자가 거부할 `limitationScopes` 항목(비정규 템플릿, 끝 슬래시 접두사, `{**}` 접두사·접미사,
+  계약 밖 동사)은 문서에 싣지 않는다 — 스코프 하나가 isthmus에서 문서 전체를 입력 오류로 만들기 때문이다. 그
+  한계는 스코프 없이(문서 전체 효과로) 남는다.
+
+### Changed
+
+- isthmus 적합성 벡터를 `c76e105`로 다시 벤더링하고 `http-limitation-scope`·`sql-relations`를 더했다. 생산자
+  사례는 114건에서 155건이다(`scope.validate` 9, `scope.applies` 18, `relations.*` 14). 분류 테스트는 이 생산자
+  대상이 아닌 사례(consumer 전용, 다른 생산자 전용)를 실행하지 않고, 생산자 대상인데 모르는 ruleId만 실패로
+  본다 — 소비자 전용 사례가 늘 때마다 재벤더링이 깨지던 문제다. SQL 관계 이름 공통 사례는 손으로 옮긴 사본
+  대신 벡터를 직접 읽는다.
+
 ## [0.11.0] - 2026-11-03
 
 - 실제 `//export` cgo 콜백을 실행 루트로 보존하고 생성 인프라의 물리 소스 provenance를 표시한다. Go 테스트 이름·시그니처를 확인해 일반 helper를 테스트 루트로 오인하지 않는다.

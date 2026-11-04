@@ -377,15 +377,15 @@ type Outer struct {
 		"example.com/fixture/b.Inner", graph.EdgeEmbeds) {
 		t.Fatal("embedded *Inner must produce an embeds edge")
 	}
-	// linkname은 그래프 밖에서 심볼을 살리므로 limitation으로 남아야 한다.
-	var linknameNoted bool
+	// 인자 하나짜리 linkname은 그래프 밖(다른 패키지의 당겨 쓰기)에서 불릴 수 있어 루트다 — 모듈 심볼로
+	// 해석했으므로 limitation으로 세지 않는다(해석하지 못한 지시문만 센다: TestLinknameTiesModuleSymbols).
+	if !slices.Contains(doc.Roots, a+".hidden") {
+		t.Fatalf("a one-argument //go:linkname function must be a root: %v", doc.Roots)
+	}
 	for _, l := range doc.Limitations {
 		if strings.Contains(l, "linkname") {
-			linknameNoted = true
+			t.Fatalf("a resolved linkname must not be counted: %v", doc.Limitations)
 		}
-	}
-	if !linknameNoted {
-		t.Fatalf("expected linkname limitation: %v", doc.Limitations)
 	}
 }
 
