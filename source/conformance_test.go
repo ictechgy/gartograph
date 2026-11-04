@@ -355,3 +355,23 @@ func TestValidScopeGuardsEmittedScopes(t *testing.T) {
 		}
 	}
 }
+
+// TestLimitationsDropInvalidScopes는 limitations가 소비자가 거부할 스코프를 버리되 그 한계 문구는 남기는지
+// 본다 — 스코프 하나가 isthmus에서 문서 전체를 입력 오류로 만들고, 스코프 없는 한계는 문서 전체 효과라
+// 넓은 쪽이다. 검토에서 호출 지점의 validScope를 지워도 모든 테스트가 통과했다.
+func TestLimitationsDropInvalidScopes(t *testing.T) {
+	s := &routeScan{gaps: map[string]*routeGap{
+		"a-invalid": {prefix: "route-coverage:", message: "registration(s) under a root suffix", count: 1,
+			suffixes: map[string]bool{"/": true}},
+		"b-valid": {prefix: "route-coverage:", message: "registration(s) under a known template", count: 1,
+			templates: map[string]bool{"/orders/{}": true}},
+	}}
+	lims, scopes := s.limitations()
+	if len(lims) != 2 {
+		t.Fatalf("both gaps keep their limitation text: %v", lims)
+	}
+	if len(scopes) != 1 || scopes[0].LimitationIndex != 1 || len(scopes[0].Templates) != 1 ||
+		scopes[0].Templates[0] != "/orders/{}" {
+		t.Errorf("only the valid scope may be emitted, pointing at its limitation: %+v", scopes)
+	}
+}
