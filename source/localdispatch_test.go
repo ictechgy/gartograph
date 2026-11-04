@@ -140,3 +140,126 @@ func TestModuleLocalInterfaceDispatch(t *testing.T) {
 		}
 	}
 }
+
+// localInterfaceNameFixture는 같은 패키지의 두 함수가 같은 이름 v의 지역 인터페이스를 선언한 모듈이다.
+// mFirst가 참이면 메서드 하나(M)짜리 v를 가진 함수를 먼저 선언한다. 검토에서 구현자 캐시 키가
+// 타입 철자(p.v)라 먼저 계산된 v의 구현 목록이 다른 v에 재사용됐다 — 선언 순서만 바꿔도 결과가 달랐다.
+func localInterfaceNameFixture(t *testing.T, mFirst bool) string {
+	t.Helper()
+	onlyM := `
+func Second(x any) {
+	type v interface{ M() }
+	if y, ok := x.(v); ok {
+		y.M()
+	}
+}
+`
+	mAndN := `
+func First(x any) {
+	type v interface {
+		M()
+		N()
+	}
+	if y, ok := x.(v); ok {
+		y.M()
+	}
+}
+`
+	body := mAndN + onlyM
+	if mFirst {
+		body = onlyM + mAndN
+	}
+	return testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/p"
+
+func main() {
+	p.First(p.B{})
+	p.Second(p.A{})
+}
+`,
+		"p/p.go": `package p
+
+type A struct{}
+
+func (A) M() {}
+
+type B struct{}
+
+func (B) M() {}
+func (B) N() {}
+` + body,
+	})
+}
+
+// TestFunctionLocalInterfacesKeepTheirOwnImplementers는 이름이 같은 지역 인터페이스가 서로의 구현자
+// 목록을 빌려 쓰지 않는지 본다. M만 요구하는 v는 A와 B 모두로, M·N을 요구하는 v는 B로만 퍼져야 하고
+// 선언 순서와 무관해야 한다.
+func TestFunctionLocalInterfacesKeepTheirOwnImplementers(t *testing.T) {
+	const p = "example.com/fixture/p"
+	for _, mFirst := range []bool{true, false} {
+		doc := loadSymbol(t, localInterfaceNameFixture(t, mFirst))
+		for _, want := range [][2]string{
+			{p + ".Second", p + ".(A).M"}, {p + ".Second", p + ".(B).M"}, {p + ".First", p + ".(B).M"},
+		} {
+			if e, ok := findEdge(doc, want[0], want[1], graph.EdgeCall); !ok || !e.Candidate {
+				t.Errorf("mFirst=%v: missing candidate call %s -> %s", mFirst, want[0], want[1])
+			}
+		}
+		if _, ok := findEdge(doc, p+".First", p+".(A).M", graph.EdgeCall); ok {
+			t.Errorf("mFirst=%v: First's v requires N, so it must not fan out to A.M", mFirst)
+		}
+	}
+}
+
+// TestFunctionLocalInterfaceShadowingPackageInterface는 함수 안 인터페이스가 같은 이름의 패키지 수준
+// 인터페이스를 가릴 때 그 패키지 인터페이스의 정점·구현 목록을 쓰지 않는지 본다. 검토에서 지역 V의
+// 메서드 ID가 패키지 V의 메서드 ID와 같아 확정 간선 Local -> p.(V).M이 거짓으로 생기고 A.M이
+// unreachable이 됐다.
+func TestFunctionLocalInterfaceShadowingPackageInterface(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/p"
+
+func main() {
+	p.UseV(p.B{})
+	p.Local(p.A{})
+}
+`,
+		"p/p.go": `package p
+
+type A struct{}
+
+func (A) M() {}
+
+type B struct{}
+
+func (B) M() {}
+func (B) N() {}
+
+type V interface {
+	M()
+	N()
+}
+
+func UseV(x V) { x.N() }
+
+func Local(x any) {
+	type V interface{ M() }
+	if y, ok := x.(V); ok {
+		y.M()
+	}
+}
+`,
+	})
+	doc := loadSymbol(t, dir)
+	const p = "example.com/fixture/p"
+	if e, ok := findEdge(doc, p+".Local", p+".(A).M", graph.EdgeCall); !ok || !e.Candidate {
+		t.Errorf("the function-local V requires only M, so Local must fan out to A.M (found=%v)", ok)
+	}
+	if _, ok := findEdge(doc, p+".Local", p+".(V).M", graph.EdgeCall); ok {
+		t.Errorf("Local calls the function-local V, not the package-level V; no edge to p.(V).M may exist")
+	}
+}

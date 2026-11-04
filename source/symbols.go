@@ -1268,7 +1268,12 @@ func (h *harvester) dispatchTargets(sel *types.Selection, fn *types.Func, id str
 	if !isInterface(sel.Recv()) && (recv == nil || !types.IsInterface(recv.Type())) {
 		return nil
 	}
-	if impls := h.impls[id]; len(impls) > 0 || recv == nil || (!h.vertices[id] && !h.unnamedModuleMethod(fn, id)) {
+	if h.unnamedModuleMethod(fn, id) {
+		// 함수 안 인터페이스는 ID가 같은 이름의 패키지 인터페이스와 겹칠 수 있다 — 그 정점의 구현 목록을
+		// 빌리지 않고 호출 지점의 인터페이스로 구현자를 찾는다.
+		return h.instanceImplementers(recv.Type(), fn)
+	}
+	if impls := h.impls[id]; len(impls) > 0 || recv == nil || !h.vertices[id] {
 		return impls
 	}
 	return h.instanceImplementers(recv.Type(), fn)
@@ -1279,12 +1284,50 @@ func (h *harvester) dispatchTargets(sel *types.Selection, fn *types.Func, id str
 // 인터페이스, 이름 없는 제네릭 제약. 정점이 없어 미리 계산한 구현 목록도 없지만 호출 지점이
 // 모듈 안에 보이므로 호출 지점의 인터페이스로 구현자를 찾는다(AGENTS: 디스패치 과소 근사 금지).
 // 모듈 밖 패키지의 이름 없는 인터페이스는 해당하지 않는다 — satisfies·receiver 규칙이 다룬다.
+// 함수 안 명명 인터페이스는 정점 ID(패키지 경로.(이름).메서드)가 같은 이름의 패키지 수준 인터페이스와
+// 겹칠 수 있으므로 정점이 있어도 이름 없는 쪽으로 다룬다 — 그 정점은 가려진 다른 타입의 것이다.
 func (h *harvester) unnamedModuleMethod(fn *types.Func, id string) bool {
-	if h.vertices[id] || fn.Pkg() == nil || !h.modulePkgs[fn.Pkg().Path()] {
+	if fn.Pkg() == nil || !h.modulePkgs[fn.Pkg().Path()] {
 		return false
 	}
 	recv := fn.Signature().Recv()
-	return recv != nil && types.IsInterface(recv.Type())
+	if recv == nil || !types.IsInterface(recv.Type()) {
+		return false
+	}
+	return !h.vertices[id] || declaredInFunction(recv.Type())
+}
+
+// declaredInFunction은 t가 함수 안에서 선언한 명명 타입인지 본다. 객체의 스코프가 패키지 스코프가
+// 아니면 그렇다. export data에서 읽은 객체는 스코프가 없어(nil) 해당하지 않는다.
+func declaredInFunction(t types.Type) bool {
+	n, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := n.Obj()
+	return obj.Pkg() != nil && obj.Parent() != nil && obj.Parent() != obj.Pkg().Scope()
+}
+
+// functionLocalTypeKey는 t가 언급하는 함수 안 명명 타입들의 선언 위치를 이어 붙인다. 함수 안 타입은
+// 철자(p.v)가 다른 함수의 같은 이름 타입과 같아 구현자 캐시 키를 철자만으로 만들면 서로의 결과를
+// 재사용한다 — 위치로 구분한다. 타입 파라미터는 느슨한 판정 결과가 같아 구분하지 않는다.
+func functionLocalTypeKey(root types.Type) string {
+	var key strings.Builder
+	seen := map[types.Type]bool{}
+	stack := []types.Type{root}
+	for len(stack) > 0 {
+		t := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		if declaredInFunction(t) {
+			fmt.Fprintf(&key, "\x00%d", types.Unalias(t).(*types.Named).Obj().Pos())
+		}
+		stack = append(stack, typeComponents(t)...)
+	}
+	return key.String()
 }
 
 // instanceImplementers는 (인스턴스화된) 인터페이스 타입의 메서드 fn을 구현하는 모듈 구체
@@ -1293,7 +1336,7 @@ func (h *harvester) unnamedModuleMethod(fn *types.Func, id string) bool {
 // 함수 안의 G[X]) 구체 타입이 제네릭 원형(Box[X])이면 Implements로 판정할 수 없어 같은
 // 메서드를 가진 것으로 과대 근사한다("살아 있다" 쪽). 결과는 캐시한다.
 func (h *harvester) instanceImplementers(iface types.Type, fn *types.Func) []string {
-	key := types.TypeString(iface, nil) + "\x00" + fn.Id()
+	key := types.TypeString(iface, nil) + "\x00" + fn.Id() + functionLocalTypeKey(iface)
 	if out, ok := h.instanceImpls[key]; ok {
 		return out
 	}
