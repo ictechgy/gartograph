@@ -86,6 +86,19 @@ func (h *harvester) linknames(p *packages.Package, file *ast.File) int {
 	return unresolved
 }
 
+// countLinknames는 파일의 //go:linkname 지시문 수다 — 심볼이 아닌 레벨은 잇지 않고 세기만 한다.
+func countLinknames(file *ast.File) int {
+	n := 0
+	for _, cg := range file.Comments {
+		for _, c := range cg.List {
+			if strings.HasPrefix(c.Text, "//go:linkname") {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // applyLinkname은 지시문 하나를 루트·간선으로 옮긴다. 해석했으면 true다. local 함수의 본문 유무는
 // 패키지의 모든 파일에서 찾는다 — gc는 local 이름을 패키지 스코프에서 찾으므로 선언이 지시문과 다른
 // 파일에 있어도 유효하다. 함수 선언을 소스에서 찾지 못하면 방향과 루트를 정할 수 없어 해석하지 못한

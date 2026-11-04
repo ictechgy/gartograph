@@ -105,7 +105,8 @@ gartograph graph --level symbol --out .gartograph/graph.json
 
 gartograph cycles --level symbol --strict     # 순환 검사 — 패키지 순환은 Go가 금지하므로
                                               # 실전 검사는 type/symbol 레벨. 확정 의존만 셉니다:
-                                              # CHA 후보 간선(인터페이스 디스패치 팬아웃)은 도달성에는
+                                              # 후보 간선(CHA 인터페이스 디스패치 팬아웃과
+                                              # //go:linkname 묶음)은 도달성에는
                                               # 남지만 순환 근거가 아니어서, 인터페이스 호출로만 도는
                                               # 재귀는 --strict를 깨지 않고 제외한 관계 수가 limitation에 남습니다.
 gartograph dead                               # main·init에서 도달 불가 심볼 보고
@@ -639,7 +640,9 @@ created_at)`·`TRIM`·`SUBSTRING`. 그 안의 하위 질의는 그대로 셉니�
   조합)는 표준 출력을 비우고 64입니다.
 
 그래프 문서의 `dispatchEvidence: true`(symbol 레벨 수확)는 간선의 `candidate: true`
-(모든 지점이 CHA 팬아웃인 관계)를 수확했다는 표시입니다. 표시 없는 옛 저장 문서로 순회하면
+(컴파일러가 확정한 지점이 없는 관계 — 모든 지점이 CHA 팬아웃이거나, 본문 없는 선언에서 링커가 잇는
+본문으로 가는 `//go:linkname` 묶음. 묶음은 한 방향뿐이고 본문은 선언에 의존하지 않습니다)를 수확했다는
+표시입니다. 표시 없는 옛 저장 문서로 순회하면
 등급을 싣지 않고 `evidence-unassessed:` 한계를 답니다.
 
 `--type-edges members|all`(기본 `members`)은 struct 필드 타입을 따라가는 방식입니다. 심볼 수확은

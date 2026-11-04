@@ -222,3 +222,49 @@ func Local() { _ = hook() }
 		}
 	}
 }
+
+// TestLinknameLimitationAtTypeLevel은 심볼이 아닌 레벨의 linkname limitation이 원인을 사실대로 적는지
+// 본다. type 레벨에는 함수·변수 정점이 없어 지시문을 이을 수 없는데, 검토에서 해석 가능한 지시문까지
+// "could not be tied … (method targets, unknown names)"로 세어 원인을 잘못 설명했다.
+func TestLinknameLimitationAtTypeLevel(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go": `package main
+
+import "example.com/fixture/high"
+
+func main() { high.Run() }
+`,
+		"high/high.go": `package high
+
+import (
+	_ "unsafe"
+
+	_ "example.com/fixture/low"
+)
+
+//go:linkname pulled example.com/fixture/low.hidden
+func pulled() int
+
+func Run() { _ = pulled() }
+`,
+		"high/empty.s": "",
+		"low/low.go": `package low
+
+func hidden() int { return 42 }
+`,
+	})
+	doc, err := Load(Options{Dir: dir, Level: graph.LevelType})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	for _, l := range doc.Limitations {
+		if strings.Contains(l, "//go:linkname") {
+			notes = append(notes, l)
+		}
+	}
+	if len(notes) != 1 || !strings.HasPrefix(notes[0], "1 //go:linkname directives") ||
+		!strings.Contains(notes[0], "not vertices at type level") || strings.Contains(notes[0], "could not be tied") {
+		t.Errorf("type-level linkname limitation must say functions are not vertices at this level: %v", notes)
+	}
+}

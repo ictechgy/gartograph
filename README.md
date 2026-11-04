@@ -133,10 +133,10 @@ gartograph graph --level symbol --out .gartograph/graph.json
 
 # Detect dependency cycles — package cycles are impossible in Go,
 # so real checks run at type/symbol level. Only definite dependencies count:
-# CHA candidate edges (interface dispatch fan-out) stay in the graph for
-# reachability but are not cycle evidence, so recursion that goes only through
-# an interface call does not fail --strict; the report counts those excluded
-# relations in limitations.
+# candidate edges (CHA interface-dispatch fan-out and //go:linkname bindings)
+# stay in the graph for reachability but are not cycle evidence, so recursion
+# that goes only through an interface call does not fail --strict; the report
+# counts those excluded relations in limitations.
 gartograph cycles --level symbol --strict
 
 # Report symbols unreachable from retention roots (main, init)
@@ -685,10 +685,13 @@ entry counts the entries that carry an abbreviation, and
 since the rest may lie past the prefix.
 
 `dispatchEvidence: true` (symbol-level harvests) marks documents whose edges
-carry `candidate: true` when every site of the relation is an interface-dispatch
-(CHA) fan-out to a possible implementation — a relation with at least one
-compiler-resolved site stays unmarked. Traversal documents grade evidence from
-it; older saved documents lack the marker and are not graded.
+carry `candidate: true` when no site of the relation is compiler-resolved: every
+site is an interface-dispatch (CHA) fan-out to a possible implementation, or a
+`//go:linkname` binding from a bodyless declaration to the body the linker
+supplies (one direction only — the body does not depend on the declaration). A
+relation with at least one compiler-resolved site stays unmarked. Traversal
+documents grade evidence from it; older saved documents lack the marker and are
+not graded.
 
 Edges carry `positions` — every source site where the relation holds
 (import decls for `import`, call expressions for `call`, and so on).

@@ -498,7 +498,8 @@ func cyclesLimitations(doc *graph.Document, stale int) []string {
 	}
 	if candidates > 0 {
 		limitations = append(limitations, fmt.Sprintf(
-			"%d CHA candidate dependency relations in the input are excluded from definite cycle analysis", candidates))
+			"%d candidate dependency relations (CHA interface-dispatch fan-out or //go:linkname bindings) "+
+				"in the input are excluded from definite cycle analysis", candidates))
 	}
 	if stale > 0 {
 		limitations = append(limitations, fmt.Sprintf(

@@ -45,6 +45,12 @@ func hidden() int { return 42 }
 	if code, _, errb := run(t, "graph", "--dir", dir, "--level", "symbol", "--out", saved); code != 0 {
 		t.Fatalf("graph: %d %s", code, errb)
 	}
+	// 묶음은 확정 호출이 아니라 후보 관계로 남아 순환 근거에서 빠진다 — 그 수를 CHA 팬아웃과 구분해 알린다.
+	code, cyclesOut, errb := run(t, "cycles", "--graph", saved, "--format", "json")
+	if code != 0 || !strings.Contains(cyclesOut,
+		"1 candidate dependency relations (CHA interface-dispatch fan-out or //go:linkname bindings)") {
+		t.Errorf("cycles must count the linkname binding as a candidate relation: %d %s%s", code, cyclesOut, errb)
+	}
 	cfg := filepath.Join(t.TempDir(), "rules.yml")
 	rules := "components:\n  low: [\"low\"]\n  high: [\"high\"]\n  app: [\".\"]\n" +
 		"deps:\n  app: [high]\n  high: [low]\nforbidden:\n  - {from: low, to: high}\n"

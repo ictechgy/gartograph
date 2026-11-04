@@ -33,6 +33,8 @@ type harvester struct {
 	extRefs  int                     // 모듈 밖 심볼 참조 수
 	noTypes  int                     // 타입 정보 없는 패키지 수
 	linkname int                     // 모듈 심볼로 해석하지 못한 //go:linkname 지시문 수
+	// linknameUnmodeled는 함수·변수 정점이 없는 레벨(type 등)이라 잇지 않은 //go:linkname 지시문 수다.
+	linknameUnmodeled int
 	// reflectPkgs는 reflect를 import하는 패키지의 PkgPath다 — 테스트 변형이 원 패키지와 같은
 	// 패키지를 다시 싣으므로 수가 아니라 집합으로 센다.
 	reflectPkgs map[string]bool
@@ -139,6 +141,11 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		doc.Limitation(fmt.Sprintf(
 			"%d //go:linkname directives could not be tied to package-level module symbols "+
 				"(method targets, unknown names); their targets may appear unreachable", h.linkname))
+	}
+	if h.linknameUnmodeled > 0 {
+		doc.Limitation(fmt.Sprintf(
+			"%d //go:linkname directives bind functions or variables, which are not vertices at %s level; "+
+				"harvest at symbol level to see those bindings", h.linknameUnmodeled, level))
 	}
 	if h.abbreviated > 0 {
 		doc.Limitation(fmt.Sprintf("%d fields/methods/typeSet/satisfies entries abbreviate a type spelling "+
@@ -735,7 +742,11 @@ func (h *harvester) addBodyEdges(internal []*packages.Package, wantSymbols bool)
 			physical := p.Fset.PositionFor(file.Pos(), false).Filename
 			logical := p.Fset.Position(file.Pos()).Filename
 			if !h.revisit && (!h.isGenerated(physical) || (h.loadedFiles[logical] && !h.isGenerated(logical))) {
-				h.linkname += h.linknames(p, file)
+				if wantSymbols {
+					h.linkname += h.linknames(p, file)
+				} else {
+					h.linknameUnmodeled += countLinknames(file) // 이을 함수·변수 정점이 이 레벨에 없다
+				}
 			}
 			for _, decl := range file.Decls {
 				h.declEdges(p, decl, wantSymbols)
