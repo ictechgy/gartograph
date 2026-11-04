@@ -511,6 +511,17 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
 
 ## 그래프 문서
 
+`roots`는 수확한 보존 루트입니다. 다음이 들어갑니다.
+- `main` 함수와 `main` 패키지 정점, `init`, 패키지 초기화 루트 `pkg/path._`
+- `//deadcode:keep`·`//gartograph:keep` 표지를 단 선언
+- cgo `//export`·`//go:wasmexport` 함수
+- 링커가 밖에서 부르거나 본문 없는 선언에 묶는 `//go:linkname` 본문
+- `--tests`일 때 `Test*`/`Benchmark*`/`Example*`/`Fuzz*` 진입점
+
+`moduleLocalDispatch: true`(symbol 레벨 수확)는 패키지 스코프에 이름이 없는 모듈 인터페이스를 거친 호출이
+구현자로 퍼졌다는 표시입니다. 이런 호출에는 `x.(interface{ M() })` 같은 단언, type switch의 case, 함수 안에
+선언한 인터페이스, 이름 없는 제네릭 제약이 있습니다. 표시 없는 옛 문서에 `dead`는 재수확을 권합니다.
+
 정점 ID: 패키지는 `pkg/path`, 패키지 수준 심볼은 `pkg/path.Name`,
 메서드는 `pkg/path.(Recv).Name`. 패키지마다 초기화 루트 정점 `pkg/path._`가 최대
 하나 있습니다(`init`과 같은 방식, kind `var`). 기여하는 선언이 모듈 심볼을 참조할 때만

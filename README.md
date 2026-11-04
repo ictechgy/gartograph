@@ -636,9 +636,18 @@ timeout, `ulimit`, or a container.
 ## Graph document
 
 `version: 2`, `tool: "gartograph"`, `level`, `root` (filesystem dir),
-`module` (module path), `roots` (harvested retention roots: `main`, `init`,
-plus `Test*`/`Benchmark*`/`Example*`/`Fuzz*` entry points under `--tests`),
-`vertices`, `edges`, `limitations`, `anonymousDispatch: true` when
+`module` (module path), `roots` (harvested retention roots: `main` and
+`main` package vertices, `init`, package initializers `pkg/path._`,
+declarations marked `//deadcode:keep` or `//gartograph:keep`, cgo `//export`
+and `//go:wasmexport` functions, `//go:linkname` bodies the linker can call
+from outside or bind a bodyless declaration to, plus
+`Test*`/`Benchmark*`/`Example*`/`Fuzz*` entry points under `--tests`),
+`vertices`, `edges`, `limitations`, `moduleLocalDispatch: true` when
+interface calls through module interfaces with no package-scope name
+(assertions like `x.(interface{ M() })`, type switch cases, interfaces declared
+in a function, unnamed generic constraints) fan out to their implementers
+(symbol-level harvests; older documents lack it and `dead` suggests
+re-harvesting), `anonymousDispatch: true` when
 method `satisfies` facts include anonymous interfaces from dependency
 source (symbol-level harvests; older documents lack it), and
 `interfaceMethodSets: true` when interface type vertices carry `methods`
