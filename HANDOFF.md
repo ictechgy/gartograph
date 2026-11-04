@@ -43,9 +43,6 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
 
 ## 남은 일 (사용자가 고른다)
 
-- **`query` 출력 스키마 정렬**: AGENTS.md는 계열과 같게 유지하라고 하지만 gartograph `query`는
-  `dependsOn`/`dependedBy`·`truncated: bool`이고, cartograph·kartograph·dartograph는 `usedBy`/`dependsOn`/
-  `members`/`declaredIn`·`reachability.state`·`truncated{…}`다. 공개 JSON 계약을 깨는 변경이라 결정이 필요하다.
 - 공개 API 보존 기본값(`--retain-public` 기본 꺼짐)이 dartograph(기본 보존)와 다르다 — 의도라면 문서로 남긴다.
 - `http-limitation-scope`의 `scope.dynamic-*`: gartograph가 `dynamicScope`를 내지 않아 건너뛴다.
 - 릴리스(0.12.0)와 tap 갱신은 승인된 별도 작업이다. 새 자격 증명은 만들지 않는다.

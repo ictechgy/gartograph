@@ -14,7 +14,13 @@
 [rustograph](../rustograph)(Rust) · [pythograph](../pythograph)(Python) ·
 [tsograph](../tsograph)(TypeScript/JavaScript) · [schemagraph](../schemagraph)(DB) ·
 [isthmus](../isthmus)(언어 경계 조인).
-`query` 출력 스키마와 출력 철학(`state`/`edges`/`limitations`)은 계열과 같게 유지합니다.
+`query` 출력 스키마는 이 저장소 고유의 공개 계약이며 cartograph·kartograph·dartograph와 맞추지 않습니다.
+최상위는 `id`·`kind`·`depth`·`dependsOn`·`dependedBy`(`truncated`·`limitations`는 값이 없으면 생략)이고
+이웃은 `{id, edges}`입니다. 계열의 `usedBy`/`members`/`declaredIn`/`reachability` 구성으로 바꾸면 소비자가
+깨지므로, 키 이름·구조를 바꿀 때는 CHANGELOG Breaking 항목과 마이그레이션 안내가 필요합니다.
+계열과 같게 유지하는 것은 출력 철학입니다: `state`는 삭제 판정이 아니라 그래프 사실이고, 이웃에 닿는
+간선 종류는 전부 싣고(`edges`), `limitations`는 그 실행에서 실제로 센 값이며, 잘렸으면 `truncated`로
+밝힙니다. 새 필드를 더할 때 계열에 같은 의미의 이름이 있으면 그 이름을 씁니다.
 브리지 교환이 생기면 `../isthmus/docs/GRAPH-EXCHANGE.md`가 정본입니다.
 
 ---
