@@ -316,12 +316,8 @@ func levelHint(doc *graph.Document, graphPath string, err error) error {
 	if !errors.Is(err, analysis.ErrNotFound) {
 		return err
 	}
-	// 정점이 하나도 없으면 레벨이 아니라 수확 범위가 원인이다 — 패턴 오류 같은 그 문서의 limitation을 함께 낸다.
 	if len(doc.Vertices) == 0 {
-		if len(doc.Limitations) == 0 {
-			return fmt.Errorf("%w (the graph has no vertices)", err)
-		}
-		return fmt.Errorf("%w (the graph has no vertices: %s)", err, strings.Join(doc.Limitations, "; "))
+		return emptyGraphHint(doc, err)
 	}
 	if doc.Level.Rank() >= graph.LevelSymbol.Rank() {
 		return err
@@ -334,10 +330,36 @@ func levelHint(doc *graph.Document, graphPath string, err error) error {
 		err, doc.Level, remedy)
 }
 
+// emptyGraphHint는 정점이 하나도 없는 문서에서 정점을 못 찾은 오류에 그 문서의 limitation을 덧붙인다 — 레벨이
+// 아니라 수확 범위(패턴 오류·패턴 불일치)가 원인이다. CLI의 ID 명령(levelHint)과 MCP 도구가 같은 문구를 쓴다.
+// 다른 오류나 정점이 있는 문서면 err를 그대로 돌려준다.
+func emptyGraphHint(doc *graph.Document, err error) error {
+	if doc == nil || !errors.Is(err, analysis.ErrNotFound) || len(doc.Vertices) > 0 {
+		return err
+	}
+	if len(doc.Limitations) == 0 {
+		return fmt.Errorf("%w (the graph has no vertices)", err)
+	}
+	return fmt.Errorf("%w (the graph has no vertices: %s)", err, strings.Join(doc.Limitations, "; "))
+}
+
 // fail은 에러를 출력하고 종료 코드 2를 돌려준다.
 func fail(stderr io.Writer, err error) int {
-	textLine(stderr, "error: %v", err)
+	writeErrorLines(stderr, "error: ", err.Error())
 	return 2
+}
+
+// writeErrorLines는 오류 문구를 줄 단위로 쓴다 — 첫 줄에 prefix를 붙이고 이어지는 줄은 두 칸 들여 쓴다. yaml
+// unmarshal 오류·go.mod 파싱 오류처럼 원래 여러 줄인 오류가 한 줄의 `\x0a`로 뭉개지지 않고 읽히는 모양으로 남는다.
+// 줄마다 textLine으로 거른다(제어 문자 이스케이프, 앞 공백류 뒤 `::`와 모든 `##[` 무력화) — 인자 속 개행 뒤의
+// `::error::`는 들여쓴 이어지는 줄이 되고, neutralizeWorkflowCommand가 앞 공백류를 지우고 보므로 워크플로 명령이
+// 되지 않으며, 들여쓰기 때문에 오류의 첫 줄(`error: …`)로 위장하지도 못한다. 끝 개행은 지운다.
+func writeErrorLines(w io.Writer, prefix, msg string) {
+	lines := strings.Split(strings.TrimRight(msg, "\n"), "\n")
+	textLine(w, "%s%s", prefix, lines[0])
+	for _, line := range lines[1:] {
+		textLine(w, "  %s", line)
+	}
 }
 
 // setFlagOutput은 flag 패키지의 출력을 정한다. flag는 사용법 오류를 출력에 `fmt.Fprintln(Output(), err)`로 쓰는데,
@@ -356,12 +378,13 @@ func setFlagOutput(fs *flag.FlagSet, stderr io.Writer) {
 	}
 }
 
-// flagErrorWriter는 flag가 쓰는 오류 한 줄(Fprintln 한 번 = Write 한 번)을 textLine으로 거른다.
+// flagErrorWriter는 flag가 쓰는 오류 한 줄(Fprintln 한 번 = Write 한 번)을 fail과 같은 줄 규칙으로 거른다.
 type flagErrorWriter struct{ w io.Writer }
 
-// Write는 io.Writer 계약이다. 끝 개행 하나를 떼고 거른 뒤 textLine이 다시 붙인다.
+// Write는 io.Writer 계약이다. 끝 개행을 떼고 줄마다 거른 뒤(writeErrorLines) textLine이 다시 붙인다 — 인자 속
+// 개행은 들여쓴 이어지는 줄이 된다.
 func (f flagErrorWriter) Write(p []byte) (int, error) {
-	textLine(f.w, "%s", strings.TrimSuffix(string(p), "\n"))
+	writeErrorLines(f.w, "", string(p))
 	return len(p), nil
 }
 
@@ -1127,8 +1150,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	if cfgPath == "" {
 		found, ok := config.Find(opts.Dir)
 		if !ok {
-			textLine(stderr, "error: no .gartograph.yml found in %s", opts.Dir)
-			return 2
+			return fail(stderr, fmt.Errorf("no .gartograph.yml found in %s", opts.Dir))
 		}
 		cfgPath = found
 	}
@@ -1577,8 +1599,7 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if doc.Level.Rank() < graph.LevelPackage.Rank() {
-		textLine(stderr, "error: metrics needs package-level data; document is %s level", doc.Level)
-		return 2
+		return fail(stderr, fmt.Errorf("metrics needs package-level data; document is %s level", doc.Level))
 	}
 	rep := analysis.Metrics(doc, cfg)
 	limitations := metricsLimitations(doc, configNotes)
@@ -1672,8 +1693,7 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 	if cfgPath == "" {
 		found, ok := config.Find(opts.Dir)
 		if !ok {
-			textLine(stderr, "error: no .gartograph.yml found in %s", opts.Dir)
-			return 2
+			return fail(stderr, fmt.Errorf("no .gartograph.yml found in %s", opts.Dir))
 		}
 		cfgPath = found
 	}
@@ -1687,8 +1707,7 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if doc.Level.Rank() < graph.LevelPackage.Rank() {
-		textLine(stderr, "error: mapping needs package-level data; document is %s level", doc.Level)
-		return 2
+		return fail(stderr, fmt.Errorf("mapping needs package-level data; document is %s level", doc.Level))
 	}
 	m := analysis.MapComponents(doc, cfg)
 	switch *format {
@@ -1740,8 +1759,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if _, ok := config.Find(opts.Dir); ok {
-		textLine(stderr, "error: .gartograph.yml already exists in %s — remove it to regenerate", opts.Dir)
-		return 2
+		return fail(stderr, fmt.Errorf(".gartograph.yml already exists in %s — remove it to regenerate", opts.Dir))
 	}
 	opts.Level = graph.LevelPackage
 	doc, err := loadDoc(opts, *graphPath)
@@ -1750,12 +1768,10 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	}
 	cfg := analysis.ScaffoldConfig(doc)
 	if len(cfg.Components) == 0 {
-		textLine(stderr, "error: no internal packages found in %s — nothing to scaffold", opts.Dir)
+		code := fail(stderr, fmt.Errorf("no internal packages found in %s — nothing to scaffold", opts.Dir))
 		// 패턴 오류처럼 수확이 센 이유를 함께 낸다 — 디렉터리만 말하면 --pattern 오타가 "패키지 없음"으로 보인다.
-		for _, l := range doc.Limitations {
-			textLine(stderr, "limitation: %s", l)
-		}
-		return 2
+		writeLimitationLines(stderr, doc.Limitations)
+		return code
 	}
 	data, err := config.Render(cfg)
 	if err != nil {
@@ -1776,7 +1792,18 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("closing %s: %w", path, err))
 	}
 	fmt.Fprintf(stdout, "wrote %s (%d components)\n", path, len(cfg.Components))
+	// 성공해도 수확이 센 공백을 알린다 — init은 문서를 내지 않아, --pattern 하나가 틀리면 나머지 패턴의 컴포넌트만
+	// 담긴 설정이 아무 표시 없이 생겼다. 표준 출력과 종료 코드는 그대로다.
+	writeLimitationLines(stderr, doc.Limitations)
 	return 0
+}
+
+// writeLimitationLines는 수확 limitation을 `limitation: …` 한 줄씩 쓴다(textLine 규칙). 문서를 내지 않는 init이
+// 수확이 보지 못한 몫을 알리는 통로다.
+func writeLimitationLines(w io.Writer, limitations []string) {
+	for _, l := range limitations {
+		textLine(w, "limitation: %s", l)
+	}
 }
 
 // cmdUnusedDeps는 go.mod의 require 중 어느 패키지도 import하지 않는

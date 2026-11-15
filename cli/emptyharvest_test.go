@@ -118,6 +118,16 @@ func TestEmptyHarvestExitTwoCommands(t *testing.T) {
 			if code != 2 || !strings.Contains(errb, "vertex not found") || !strings.Contains(errb, patternErrorNote) {
 				t.Errorf("query: exit %d, want 2 explaining the empty graph\n%s", code, errb)
 			}
+			// MCP의 ID 도구도 CLI처럼 빈 그래프의 이유를 붙인다 — 예전에는 `vertex not found: X`만 돌려줬다.
+			for _, call := range []string{
+				mcpCall(1, "gartograph_query", `{"id":"example.com/fixture/lib"}`),
+				mcpCall(2, "gartograph_path", `{"from":"example.com/fixture","to":"example.com/fixture/lib"}`),
+			} {
+				answer := runMcpTools(t, c.args, call)[0]
+				if !answer.isError || !strings.Contains(answer.text, "(the graph has no vertices: 1 "+patternErrorNote) {
+					t.Errorf("mcp %s: want an isError result explaining the empty graph, got %+v", call, answer)
+				}
+			}
 		})
 	}
 }
@@ -269,5 +279,23 @@ func TestEmptyHarvestRoutesNoMatch(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestInitReportsLimitations는 init이 설정을 쓰고 성공할 때도 수확 limitation을 stderr에 싣는지 본다. 예전에는
+// `--pattern ./lib --pattern ./interal/...`이 lib만 담은 설정을 쓰고 아무 표시 없이 0으로 끝났다. 표준 출력과
+// 종료 코드는 그대로다.
+func TestInitReportsLimitations(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go":    "package main\n\nimport \"example.com/fixture/lib\"\n\nfunc main() { lib.Used() }\n",
+		"lib/lib.go": "package lib\n\nfunc Used() {}\n",
+	})
+	code, out, errb := run(t, "init", "--dir", dir, "--pattern", "./lib", "--pattern", "./interal/...")
+	if code != 0 || !strings.HasPrefix(out, "wrote ") {
+		t.Fatalf("init: exit %d\n%s%s", code, out, errb)
+	}
+	if !strings.Contains(errb, "limitation: 1 "+patternErrorNote+" (first: pattern ./interal/...") ||
+		!strings.Contains(errb, partialLoadNote) {
+		t.Errorf("init must report the pattern error on stderr after writing the config:\n%s", errb)
 	}
 }
