@@ -20,22 +20,28 @@
   - isthmus 적합성 벡터 재벤더링(`c76e105`, `http-limitation-scope`·`sql-relations` 추가, 생산자 사례 155건).
     소비자가 거부할 limitationScopes는 문서에 싣지 않는다.
   - CI: gofmt, CLI 계약, Windows·macOS 테스트. Release: tap 미갱신 경고·실행 요약.
-- 2026-11-15 브랜치 `ccr-37904670-hxdjsx`(main `1eb292b` 기준, push·PR 전):
+- PR #57(2026-11-15, main `1eb292b` 기준, 머지 전 — squash 머지되면 브랜치 커밋 해시는 사라지므로 PR 번호로 찾는다):
   - `--retain-public` 기본 꺼짐이 의도임을 이력으로 확인하고 README·README.ko "출력 계약"(라이브러리 모듈 사용법),
-    AGENTS의 dead 절, 아래 결정 기록에 남겼다(`240c2f8`). 동작은 그대로다.
+    AGENTS의 dead 절, 아래 결정 기록에 남겼다. 동작은 그대로다.
   - 개요 도움말(`gartograph help`)이 명령이 받는 플래그를 빠짐없이 싣게 고쳤다 — `dead --algo`, 공통 `--tags`,
     `mcp --level/--config`, `routes --tags`, `reach --format`이 빠져 있었다. 회귀 테스트 `TestUsageListsEveryFlag`가
-    명령별 `-h`와 개요를 대조한다(`c36e25f`, CHANGELOG Fixed).
-  - 빈 수확을 센다(`fbfa500`): `--pattern` 오타·없는 디렉터리·`go.mod` 없는 `--dir`이면 go list가 돌려주는 패턴 오류
-    가짜 패키지를 `keep`이 버려 `cycles --strict`·`dead --strict`·MCP가 limitation 없이 "0"으로 성공했다. 이제 모든 수확
-    문서가 `N package patterns reported load errors and loaded no packages (first: …)`(패턴이 고른 패키지가 없으면
-    `no packages matched the patterns (…)`)를 싣고, 정점이 없으면 `(use --retain-public)` 안내를 붙이지 않는다. 종료
-    코드와 `--strict` 판정은 그대로다(limitation은 판정에 들어가지 않는다). 원래 2로 거부하던 `unused-deps`·`dead --algo
-    rta`·`init`·ID 명령은 원인을 바로 말하고, `schema`·`routes`는 기존 isthmus 접두사의 로드 오류 수로 센다.
-  - `bridges`·`schema --generated-at`(`5f89c0c`): routes·reach와 같은 문법·문구·종료 2. 같은 입력과 값이면 같은
-    바이트다.
-  - stderr 오류 문구를 textLine 규칙으로 거른다(`419698f`): 경로·ID·플래그 이름·저장 문서 값의 개행·ESC가 워크플로
-    명령·터미널 시퀀스가 되던 문제다. 오류 하나는 한 줄이다(가운데 줄바꿈은 `\x0a`).
+    명령별 `-h`와 개요를 대조한다(CHANGELOG Fixed).
+  - 패턴 오류를 센다: `--pattern` 오타·없는 디렉터리·`go.mod` 없는 `--dir`·없는 replace 대상·읽을 수 없는 하위
+    디렉터리면 go list가 돌려주는 패턴 오류 가짜 패키지를 `keep`이 버려 `cycles --strict`·`dead --strict`·MCP가
+    limitation 없이 "0"으로 성공했다. 이제 모든 수확 문서가 `N package patterns reported errors from go list (first: …)`
+    뒤에 본 것만 붙인다 — 다른 패키지가 하나도 없으면 `no packages were loaded, so nothing was harvested`, 있으면
+    `packages they could not resolve were not analyzed`(같은 패턴이 실제 패키지도 고를 수 있다: replace 대상이 없는
+    `example.com/...`, permission denied 하위 디렉터리가 있는 `./...`). 패턴이 고른 패키지가 없으면 `no packages
+    matched the patterns (…)`. 종료 코드와 `--strict` 판정은 그대로다. `unused-deps`·`dead --algo rta`·`init`·ID
+    명령(CLI·MCP)은 원인을 바로 말하고, `schema`·`routes`는 기존 isthmus 접두사로 센다(`routes`가 주 모듈 패키지를
+    하나도 스캔하지 못하면 `route-coverage:`·`route-call-coverage: no package of the module was scanned …`).
+    `init`은 성공해도 limitation을 stderr에 낸다.
+  - `bridges`·`schema --generated-at`: routes·reach와 같은 문법·문구·종료 2. 영 시각은 모든 통로(reach 포함)에서
+    사용법 오류다 — source가 영 시각을 "주지 않음"으로 읽기 때문이다.
+  - stderr 오류 문구를 줄마다 textLine 규칙으로 거른다: 첫 줄 `error: …`, 나머지 줄은 두 칸 들여쓰기(yaml 오류 목록·
+    go.mod 파싱 오류가 읽히는 모양으로 남고, 인자 속 개행 뒤 `::error::`는 들여쓴 줄에서도 무력화된다).
+  - 독립 리뷰(r2) 지적 1–4·6–8·10–13을 반영했다. 5의 `; to add it:` 꼬리는 뗐고, 5의 경로 상대화와 9는 아래
+    "남은 일"에 이유와 함께 남겼다.
   - 남은 설계 후보는 아래 "남은 일"에 있다. 두 번 돌린 출력은 이제 `bridges`·`schema`도 `--generated-at`을 주면 같다.
 
 ## 검증 방법
@@ -66,6 +72,15 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
   메서드는 이제 보고된다 — main 대비 보존이 좁아지는 유일한 경우이며 CHANGELOG에 밝혔다.
 
 ## 남은 일 (사용자가 고른다)
+
+- PR #57 리뷰에서 미룬 것 둘(작지 않거나 보존 범위를 바꾼다):
+  - 패턴 오류 `first:` 발췌의 기계별 경로(`--dir` 절대 경로, GOROOT): 그래프 문서가 이미 절대 `root`와 위치를 싣고
+    있어 발췌만 상대화해도 문서가 기계 사이에서 같아지지 않고, go 명령 문구를 고쳐 쓰면 잘못 인용할 수 있다.
+    바꾸려면 문서 전체의 경로 표기(root·positions)와 함께 정한다.
+  - `--deps`에서 루트가 import하는 풀리지 않은 경로는 이름 없는 정점이 되고 "packages reported load errors"로도
+    세인다 — 그 경로를 `--pattern`으로도 주면 패턴 오류와 두 번 세인다. 이름 없는 정점은 main에서도 같은 기존
+    동작이라(`--deps` + 없는 import) 이 PR의 회귀가 아니고, 없애면 `--deps` 그래프의 정점 집합이 바뀌므로 반대
+    코퍼스 증거와 함께 별도로 다룬다. 두 계수는 각각 참이다(패턴 오류, 그 패키지를 import한 쪽의 로드 오류).
 
 - 빈 수확을 종료 2로 거부할지: 지금은 limitation으로 세고 종료 코드는 그대로다(`cycles --strict`·`dead --strict`는
   빈 그래프에서도 0). CI가 패턴 오타를 실패로 잡게 하려면 "주 모듈 패키지가 하나도 없으면 2"를 더할 수 있다 —

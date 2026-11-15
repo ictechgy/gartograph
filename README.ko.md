@@ -123,7 +123,8 @@ gartograph dead --algo rta                    # RTA 정밀도 — 소스 필요,
 # isthmus bridge-facts 문서 생성(platform "go")
 # Go는 cgo를 unscanned-ffi-interop limitation으로만 신고 — 채널 사실 없음.
 # generatedAt은 추출 시각이다. --generated-at TS(RFC 3339, routes·reach와 같음)로
-# 고정하면 같은 입력이 같은 바이트가 된다.
+# 고정하면 같은 입력이 같은 바이트가 된다. 영 시각 0001-01-01T00:00:00Z는
+# "주지 않음"이라 모든 명령에서 사용법 오류다.
 gartograph bridges --out go-facts.json
 gartograph bridges --generated-at 2026-09-30T00:00:00Z --out go-facts.json
 
@@ -185,7 +186,7 @@ gartograph metrics                             # Ca/Ce/불안정성 + 추상성(
                                                # 거리(D=|A+I-1|) + orphan 패키지
                                                # (A/D는 타입 레벨 수확이 필요)
 gartograph mapping                             # 패키지→컴포넌트 매핑 보기
-gartograph init                                # .gartograph.yml 스캐폴딩
+gartograph init                                # .gartograph.yml 스캐폴딩(수확 limitation은 stderr)
 gartograph mcp --level symbol                  # MCP stdio로 에이전트에 서빙
 gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 ```
@@ -194,7 +195,7 @@ gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 동시 실행끼리 임시 이름을 공유하지 않습니다. 새 파일은 소유자만 읽고 쓸 수 있고(0600), 기존 일반 파일은
 권한 비트를 보존합니다. 출력 링크는 따라가지 않고 링크 자체를 교체하며, 쓰기 실패 시 기존 산출물을 보존합니다.
 
-공통 플래그: `--dir`(모듈 루트), `--pattern`(반복 가능, 아무것도 적재하지 못한 패턴은 limitations에 셈), `--tests`(테스트
+공통 플래그: `--dir`(모듈 루트), `--pattern`(반복 가능, go list가 오류를 낸 패턴과 아무 패키지도 고르지 않은 패턴은 limitations에 셈), `--tests`(테스트
 진입점이 보존 루트가 됨; 끄면 다른 패키지의 `_test.go`에서만 import되는 테스트 헬퍼
 패키지 수를 limitations에 셈), `--deps`, `--tags`(빌드 태그; 제약으로 빠진 파일은
 limitations에 셈), `--goos`/`--goarch`(다른 타깃 플랫폼으로 수확 — 선택 사실이
@@ -357,6 +358,8 @@ gartograph dead   --baseline .dead-baseline.json --strict
 `rules`·`cycles`·`dead` 모두 `--format sarif`를 받습니다 — 순환은
 `dependency-cycle` error, unreachable은 `unreachable-symbol` warning
 (삭제 판정이 아니라 사실)으로 보고됩니다.
+SARIF 로그에는 결과만 실립니다 — `limitations`(패턴 오류를 포함해 수확이 보지 못한 몫)는
+텍스트·JSON 보고에 있으므로 SARIF를 올릴 때 그중 하나를 함께 보세요.
 `artifactLocation.uri`는 모듈 루트 기준 상대 경로를 세그먼트마다 퍼센트
 인코딩한 값(RFC 3986)이고 `"uriBaseId": "%SRCROOT%"`를 답니다.
 `run.originalUriBaseIds`는 `%SRCROOT%`를 절대 경로 없이 설명만 하므로, 업로드한
@@ -511,20 +514,24 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
   대상, 없는 이름)만 `limitations`에 셉니다.
 - `limitations`는 매 실행에서 실제로 세어 만듭니다(생략한 외부 참조 수,
   `reflect` 사용, 해석하지 못한 `//go:linkname`) — 없으면 키가 빠집니다.
-- 아무것도 적재하지 못한 패턴은 버리지 않고 셉니다. `--pattern` 오타(`./interal/...`), 없는
-  디렉터리, 어느 모듈도 제공하지 않는 import 경로, 모듈 밖 `--dir`이면 go list가 패키지 대신
-  오류를 돌려줍니다. 수확하는 모든 명령이 `N package patterns reported load errors and loaded no
-  packages (first: …)`를 싣고, 패턴이 고른 패키지가 하나도 없는 수확(Go 파일이 없는 디렉터리)은
-  `no packages matched the patterns (…)`를 싣습니다. 종료 코드는 그대로입니다 — limitation은
-  `--strict`에 들어가지 않으므로 `cycles --strict`·`dead --strict`는 빈 그래프에서도 통과하되 이제
-  이유가 `limitations`에 남고, 정점이 없으면 `dead`의 `(use --retain-public)` 안내는 나오지
-  않습니다. 원래 빈 수확을 거부하던 명령은 추측 대신 패턴 오류를 밝힙니다: `unused-deps`(종료 2 —
-  모듈의 go.mod와 import가 둘 다 필요), `dead --algo rta`(종료 2 — 출발할 함수가 없음),
-  `init`(종료 2, limitation 함께), `query`·`impact`·`path`·`shared`(`vertex not found`, 종료 2,
-  limitation 함께). isthmus 문서는 기존 접두사를 지킵니다: `schema`는 `unparsed-sources:`,
-  `routes`는 `route-coverage:`·`route-call-coverage:`에 세고, `reach`·`impact --format
-  language-traversal`은 그래프 limitation을 싣습니다. `--deps`에서 그 오류가 이름 없는 정점이
-  되지도 않습니다.
+- 패턴 오류는 버리지 않고 셉니다. `--pattern` 오타(`./interal/...`), 없는 디렉터리, 어느 모듈도
+  제공하지 않는 import 경로, 모듈 밖 `--dir`, 없는 `replace` 대상, 읽을 수 없는 하위 디렉터리면
+  go list가 그 패턴의 오류 항목을 돌려줍니다 — 그 패턴이 고른 패키지가 있으면 그것도 함께 옵니다.
+  수확하는 모든 명령의 그래프 문서와 텍스트·JSON 보고가 `N package patterns reported errors from
+  go list (first: …)`를 싣고, 다른 패키지가 하나도 적재되지 않았으면 `no packages were loaded, so
+  nothing was harvested — check --pattern and --dir`를, 적재됐으면 `packages they could not
+  resolve were not analyzed`를 덧붙입니다. 패턴이 고른 패키지가 하나도 없는 수확(Go 파일이 없는
+  디렉터리)은 `no packages matched the patterns (…)`를 싣습니다. 종료 코드는 그대로입니다 —
+  limitation은 `--strict`에 들어가지 않으므로 `cycles --strict`·`dead --strict`는 빈 그래프에서도
+  통과하되 이제 이유가 `limitations`에 남고, 정점이 없으면 `dead`의 `(use --retain-public)` 안내는
+  나오지 않습니다. 원래 빈 수확을 거부하던 명령은 추측 대신 패턴 오류를 밝힙니다:
+  `unused-deps`(종료 2 — 모듈의 go.mod와 import가 둘 다 필요), `dead --algo rta`(종료 2 — 출발할
+  함수가 없음), `init`(종료 2, limitation 함께. 성공하면 파일을 쓴 뒤 stderr에 limitation을 냄),
+  `query`·`impact`·`path`·`shared`(`vertex not found`, 종료 2, limitation 함께. MCP 도구도 같은
+  안내를 붙임). isthmus 문서는 기존 접두사를 지킵니다: `schema`는 `unparsed-sources:`, `routes`는
+  `route-coverage:`·`route-call-coverage:`에 세고(주 모듈 패키지를 하나도 스캔하지 못한 `routes`도
+  같은 접두사로 알림), `reach`·`impact --format language-traversal`은 그래프 limitation을
+  싣습니다. `--deps`에서 그 오류가 이름 없는 정점이 되지도 않습니다.
 - 삭제 판정은 없습니다. `unreachable`은 그래프 사실이지 "지워도 됨"이 아닙니다.
 - 모듈 밖에서 선언된 인터페이스(`error`, `fmt.Stringer`, `flag.Value`,
   `encoding.TextUnmarshaler` 등)를 구현하는 메서드는 심볼 그래프에
@@ -547,9 +554,12 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
   명령 형식도 같은 표기로 바꿉니다 — 공백류(NBSP 포함) 뒤 줄 첫머리의 `::`는 `\x3a:`,
   모든 `##[`는 `\x23#[`가 됩니다. 그 밖의 문자열은 그대로 찍고, JSON·SARIF는 원래
   문자열을 JSON 이스케이프로 싣습니다.
-- stderr 오류 문구도 같은 규칙입니다. 경로·ID·플래그 이름과 저장 문서·go 명령에서 온 값을
-  이스케이프해 오류 하나가 한 줄이 되고(`error: reading nope\x0a::error::x: …`), 플래그 파싱
-  오류(`flag provided but not defined: -…`)도 거릅니다. 그 뒤에 찍는 플래그 목록은 그대로입니다.
+- stderr 오류 문구도 줄마다 같은 규칙입니다. 첫 줄은 `error: …`이고, 문구의 나머지 줄(YAML 오류
+  목록, go 명령의 `errors parsing go.mod:` 아래 줄, 인자 속 개행)은 두 칸 들여 씁니다. 줄마다 텍스트
+  출력처럼 이스케이프하고 들여쓰기가 `::` 무력화를 피하지 못하므로, 경로·ID·플래그 이름과 저장
+  문서·go 명령에서 온 값이 워크플로 명령이나 `error:` 줄을 위장하지 못합니다(`error: reading nope`
+  다음 줄 `  \x3a:error::x: …`). 플래그 파싱 오류(`flag provided but not defined: -…`)도 같은
+  규칙이고, 그 뒤에 찍는 플래그 목록은 그대로입니다.
 
 ## 그래프 문서
 
@@ -689,7 +699,7 @@ created_at)`·`TRIM`·`SUBSTRING`. 그 안의 하위 질의는 그대로 셉니�
   `--generated-at`은 시각을 고정합니다.
 - 정점이 아닌 id는 `symbol` 없이 `roots`에 싣고 `root-not-found:` 한계·잘림 이유와 함께
   문서를 쓴 뒤 64로 끝납니다. 사용법 오류(root 없음, 제어 문자, 범위 밖 숫자, 잘못된
-  `--revision`·`--generated-at`, 순회 형식과 `--since`·`--files`·symbol 아닌 `--level`
+  `--revision`·`--generated-at`(영 시각 포함), 순회 형식과 `--since`·`--files`·symbol 아닌 `--level`
   조합)는 표준 출력을 비우고 64입니다.
 
 그래프 문서의 `dispatchEvidence: true`(symbol 레벨 수확)는 간선의 `candidate: true`
@@ -783,7 +793,8 @@ gin은 `optional`(`RedirectTrailingSlash` 기본 true가 다른 형태에 301/30
 핸들러(정적 파일 서버, `promhttp.Handler()`)와 exclude 패키지는 symbol 없이 `missing-route-usrs:`로
 셉니다. 수확하지 않는 라우터 import(gorilla/mux, httprouter, fiber, chi v1–v4 경로, echo v3/v5,
 grpc-gateway 등)는 스코프 없는 `route-coverage:`를 더해, 사실 0건 문서가 "스캔했으나 없음"으로 읽히지
-않게 합니다. 문서는 쓰기 전에 계약 자기 검증(템플릿·동사·catch-all 접두사 원본)을 거치고, 소비자가
+않게 합니다. 로드 오류 없이 주 모듈 패키지를 하나도 스캔하지 못한 실행(Go 파일 없는 디렉터리의
+`--pattern ./docs/...`)도 같습니다. 문서는 쓰기 전에 계약 자기 검증(템플릿·동사·catch-all 접두사 원본)을 거치고, 소비자가
 거부할 `limitationScopes` 항목은 버립니다(그 한계는 문서 전체 효과로 남아 넓은 쪽입니다).
 `conformance/`에 isthmus `http-template`·`http-dispatch`·`http-limitation-scope`·`url-compose`·`sql-relations`
 벡터를 벤더링했고(`conformance.lock`) 생산자 사례 155건(route 선언 51, limitation 스코프 27, route 호출 63,
@@ -857,7 +868,7 @@ language-traversal --roots-from go-calls.json`이 호출 지점에서 호출자�
 호출식이 시작하는 자리입니다. dynamic 사실은 `channel: null`입니다(원문 식에 자격 증명이 있을 수
 있음). userinfo·query·fragment는 떼고 고엔트로피·웹훅 세그먼트는 가립니다(`maskedSegments`).
 `baseRef`는 풀지 못한 base를 담은 필드·패키지 변수의 정점 ID입니다(workspace `match.baseRefs`용).
-호출 측 한계는 세어서만 냅니다: `route-call-coverage:`(로드 오류, 모델링하지 않은 클라이언트 import —
+호출 측 한계는 세어서만 냅니다: `route-call-coverage:`(로드 오류, 스캔한 주 모듈 패키지 없음, 모델링하지 않은 클라이언트 import —
 resty v1/v3, fasthttp, req, retryablehttp 등 — 와 URL 인자 없이 만든 요청: `http.Request` 리터럴, resty
 `Send`), `unresolved-base-url:`, `ambiguous-base-join:`, `url-rewrite-interceptors:`(만든 요청의
 `URL`·`Method` 대입), `http-wrapper-unresolved:`, `http-wrapper-undeclared:`(파라미터를 URL 머리나
