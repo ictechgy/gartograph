@@ -116,8 +116,9 @@ Usage:
   gartograph metrics [--config FILE] [--format text|json] [flags]
   gartograph mapping [--config FILE] [--format text|json] [flags]
   gartograph init   [--dir PATH] [flags]  scaffold .gartograph.yml from observed imports
-  gartograph bridges [--dir PATH] [--out FILE]  isthmus bridge-facts (platform "go")
-  gartograph schema  [--dir PATH] [--out FILE]  isthmus persistence relation-uses (platform "go")
+  gartograph bridges [--dir PATH] [--generated-at TS] [--out FILE]  isthmus bridge-facts (platform "go")
+  gartograph schema  [--dir PATH] [--generated-at TS] [--out FILE]
+                     isthmus persistence relation-uses (platform "go")
   gartograph routes  [--role server|client] [--dir PATH] [--pattern P]... [--tags T] [--service NAME]
                      [--wrappers FILE] [--generated-at TS] [--out FILE]
                      isthmus http route declarations or route calls (platform "go")
@@ -1815,10 +1816,16 @@ func cmdBridges(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", ".", "module root to scan")
 	out := fs.String("out", "", "write the document to FILE instead of stdout")
+	generatedAt := fs.String("generated-at", "", "fixed generatedAt timestamp (RFC 3339, UTC)")
 	if fs.Parse(args) != nil {
 		return 2
 	}
-	doc, err := source.BridgeFacts(*dir, Version)
+	// 시각 검증은 스캔과 --out 쓰기보다 먼저다(routes와 같다).
+	generated, err := parseFactsGeneratedAt(*generatedAt)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	doc, err := source.BridgeFacts(*dir, generated, Version)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -1845,8 +1852,13 @@ func cmdSchema(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", ".", "module root to scan")
 	out := fs.String("out", "", "write the document to FILE instead of stdout")
+	generatedAt := fs.String("generated-at", "", "fixed generatedAt timestamp (RFC 3339, UTC)")
 	if fs.Parse(args) != nil {
 		return 2
+	}
+	generated, err := parseFactsGeneratedAt(*generatedAt)
+	if err != nil {
+		return fail(stderr, err)
 	}
 	// usr 확인용 그래프는 impact와 같은 exclude로 만든다 — 기본 impact 그래프에
 	// 없는 정점 ID를 usr로 실으면 trace가 순회에서 찾지 못하는 유령 신원이 된다.
@@ -1854,7 +1866,7 @@ func cmdSchema(args []string, stdout, stderr io.Writer) int {
 	if err := applyConfigExclude(&opts); err != nil {
 		return fail(stderr, err)
 	}
-	doc, err := source.SchemaFacts(opts, Version)
+	doc, err := source.SchemaFacts(opts, generated, Version)
 	if err != nil {
 		return fail(stderr, err)
 	}

@@ -1102,13 +1102,9 @@ func sortedKeys[V any](m map[string]V) []string {
 // document는 문서를 조립한다. 사실은 위치·동사·템플릿 순으로 정렬한다.
 func (s *routeScan) document(opts RouteOptions, toolVersion string) *RouteFactsDocument {
 	sortRouteFacts(s.facts)
-	generated := opts.GeneratedAt
-	if generated.IsZero() {
-		generated = time.Now()
-	}
 	doc := &RouteFactsDocument{
 		Format: "bridge-facts", Version: 1, Tool: BridgeFactsTool{Name: "gartograph", Version: toolVersion},
-		GeneratedAt: bridgeTimestamp(generated), Platform: "go", Target: "http", Project: s.root,
+		GeneratedAt: factsTimestamp(opts.GeneratedAt), Platform: "go", Target: "http", Project: s.root,
 		Service: opts.Service, Roles: []string{"server"}, Dispatch: "specificity",
 		SourceSets: map[string]string{"tests": "excluded"}, Facts: s.facts,
 	}

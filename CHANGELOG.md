@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- `bridges`·`schema --generated-at TS`: bridge-facts 문서의 `generatedAt`(계약상 추출 시각, 기본 지금)을 고정한다.
+  `routes`·`reach`와 같은 문법(RFC 3339, 문서에는 UTC 밀리초 `2026-09-30T00:00:00.000Z`)이고, 틀린 값은 스캔과
+  `--out` 쓰기 전에 같은 문구(`--generated-at must be an RFC 3339 timestamp such as …`)의 종료 2다. 같은 입력과 같은
+  값이면 같은 바이트가 된다 — 전에는 두 명령만 실행마다 `generatedAt`이 달라 문서 비교·캐시에 쓸 수 없었다.
+
 ### Fixed
 
 - 아무것도 적재하지 못한 패턴을 버리지 않고 센다. `--pattern` 오타(`./interal/...`), 없는 디렉터리, 어느 모듈도

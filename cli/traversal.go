@@ -301,7 +301,7 @@ func parseGeneratedAt(value string) (string, error) {
 	}
 	t, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
-		return "", &usageError{"--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z"}
+		return "", &usageError{generatedAtUsage}
 	}
 	return t.UTC().Format("2006-01-02T15:04:05.000Z"), nil
 }

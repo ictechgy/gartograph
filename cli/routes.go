@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -82,12 +83,22 @@ func validateRoutesFlags(f routesFlags) (time.Time, error) {
 	if f.wrappers != "" && f.role != "client" {
 		return time.Time{}, fmt.Errorf("--wrappers declares client HTTP wrappers; it needs --role client")
 	}
-	if f.generatedAt == "" {
+	return parseFactsGeneratedAt(f.generatedAt)
+}
+
+// generatedAtUsage는 --generated-at 값이 틀렸을 때의 문구다 — routes·bridges·schema(종료 2)와 reach·impact
+// 순회 문서(종료 64)가 같은 문법과 같은 문구를 쓴다.
+const generatedAtUsage = "--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z"
+
+// parseFactsGeneratedAt은 bridge-facts 문서(routes·bridges·schema)의 --generated-at을 읽는다. 빈 값은 영(零)
+// 시각이고 문서는 추출 시각(지금)을 싣는다. 정규화(UTC 밀리초)는 문서를 만드는 source가 한다.
+func parseFactsGeneratedAt(value string) (time.Time, error) {
+	if value == "" {
 		return time.Time{}, nil
 	}
-	t, err := time.Parse(time.RFC3339Nano, f.generatedAt)
+	t, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z")
+		return time.Time{}, errors.New(generatedAtUsage)
 	}
 	return t, nil
 }

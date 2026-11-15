@@ -684,13 +684,9 @@ func (s *clientScan) push(fact RouteCallFact) bool {
 // document는 문서를 조립한다. 사실은 위치·동사·템플릿 순으로 정렬한다.
 func (s *clientScan) document(opts ClientRouteOptions, toolVersion string) *ClientRouteDocument {
 	sortRouteCalls(s.finalFacts)
-	generated := opts.GeneratedAt
-	if generated.IsZero() {
-		generated = time.Now()
-	}
 	doc := &ClientRouteDocument{
 		Format: "bridge-facts", Version: 1, Tool: BridgeFactsTool{Name: "gartograph", Version: toolVersion},
-		GeneratedAt: bridgeTimestamp(generated), Platform: "go", Target: "http", Project: s.root,
+		GeneratedAt: factsTimestamp(opts.GeneratedAt), Platform: "go", Target: "http", Project: s.root,
 		Service: opts.Service, Roles: []string{"client"}, SourceSets: map[string]string{"tests": "excluded"},
 		Facts: s.finalFacts,
 	}

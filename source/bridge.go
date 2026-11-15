@@ -45,7 +45,8 @@ type BridgeFactsTool struct {
 // BridgeFacts는 dir 아래 Go 소스를 스캔해 bridge-facts v1 문서를 만든다.
 // go 플랫폼 문서는 사실을 담지 않는다 — cgo 사용 파일 수를
 // unscanned-ffi-interop limitation으로 신고하는 것이 v1의 계약이다.
-func BridgeFacts(dir, toolVersion string) (*BridgeFactsDocument, error) {
+// generatedAt이 영(零)이면 지금 시각이다(factsTimestamp).
+func BridgeFacts(dir string, generatedAt time.Time, toolVersion string) (*BridgeFactsDocument, error) {
 	root, err := realPath(dir)
 	if err != nil {
 		return nil, err
@@ -58,7 +59,7 @@ func BridgeFacts(dir, toolVersion string) (*BridgeFactsDocument, error) {
 		Format:      "bridge-facts",
 		Version:     1,
 		Tool:        BridgeFactsTool{Name: "gartograph", Version: toolVersion},
-		GeneratedAt: bridgeTimestamp(time.Now()),
+		GeneratedAt: factsTimestamp(generatedAt),
 		Platform:    "go",
 		Target:      nil,
 		Project:     root,
@@ -212,4 +213,14 @@ func ProjectPath(dir string) (string, error) {
 // bridgeTimestamp는 계약의 UTC 밀리초 형식으로 정규화한다.
 func bridgeTimestamp(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+// factsTimestamp는 bridge-facts 문서(bridges·schema·routes)의 generatedAt이다. 계약상 추출 시각이라 기본은 지금이고,
+// --generated-at으로 받은 시각(영이 아닌 값)이 있으면 그 시각이다 — 같은 입력을 같은 바이트로 다시 내야 하는 비교·
+// 캐시용이다.
+func factsTimestamp(generatedAt time.Time) string {
+	if generatedAt.IsZero() {
+		generatedAt = time.Now()
+	}
+	return bridgeTimestamp(generatedAt)
 }

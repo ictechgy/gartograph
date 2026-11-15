@@ -122,11 +122,15 @@ gartograph dead --algo rta                    # RTA 정밀도 — 소스 필요,
 
 # isthmus bridge-facts 문서 생성(platform "go")
 # Go는 cgo를 unscanned-ffi-interop limitation으로만 신고 — 채널 사실 없음.
+# generatedAt은 추출 시각이다. --generated-at TS(RFC 3339, routes·reach와 같음)로
+# 고정하면 같은 입력이 같은 바이트가 된다.
 gartograph bridges --out go-facts.json
+gartograph bridges --generated-at 2026-09-30T00:00:00Z --out go-facts.json
 
 # isthmus persistence 사실 생성 — 타입 확인된 database/sql·sqlx·gorm
 # 호출, SQL 리터럴, TableName() 바인딩, db/sql/gorm 컬럼 태그에서
 # SQL 관계 참조를 수확한다(platform "go", target "persistence").
+# --generated-at TS로 generatedAt을 고정할 수 있다.
 gartograph schema --out go-schema-facts.json
 
 # isthmus http route 선언 생성 — net/http ServeMux·chi·gin·echo 라우트를

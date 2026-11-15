@@ -154,11 +154,15 @@ gartograph dead --algo rta --explain my/pkg.F   # path on the RTA call graph its
 
 # Emit an isthmus bridge-facts document (platform "go")
 # Go reports cgo via unscanned-ffi-interop limitations — no channel facts.
+# generatedAt is the extraction time; --generated-at TS (RFC 3339, as for
+# routes and reach) fixes it so the same input gives the same bytes.
 gartograph bridges --out go-facts.json
+gartograph bridges --generated-at 2026-09-30T00:00:00Z --out go-facts.json
 
 # Emit isthmus persistence facts: SQL relation references harvested from
 # typed database/sql·sqlx·gorm calls, SQL literals, TableName() bindings,
 # and db/sql/gorm column tags (platform "go", target "persistence").
+# --generated-at TS fixes generatedAt here too.
 gartograph schema --out go-schema-facts.json
 
 # Emit isthmus http route declarations: net/http ServeMux, chi, gin, echo
