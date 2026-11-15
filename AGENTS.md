@@ -64,7 +64,9 @@ import를 막으므로, 패키지 레벨 "순환 없음"은 빈 결과가 정상
 정점(`pkg._`), keep 표지(`//deadcode:keep`·`//gartograph:keep`), 그래프 밖이 부르는
 지시문(cgo `//export`·`//go:wasmexport`·`//go:linkname`의 본문 쪽), `--tests`의
 테스트 진입점. 라이브러리에서는 저장소 안에 호출자가 없는 공개 API 전체가
-unreachable로 나옵니다 — `--retain-public`이 그때의 스위치입니다. 모듈 밖 인터페이스(error, flag.Value 같은)를 만족하는
+unreachable로 나옵니다 — `--retain-public`이 그때의 스위치입니다. 기본값이 꺼져 있는 것은
+의도입니다(근거는 [HANDOFF.md](HANDOFF.md)의 결정 기록, 사용자 안내는 README "Output contract").
+기본값을 바꾸면 모든 사용자의 보고가 바뀌므로 CONTRIBUTING의 증거 요건을 따릅니다. 모듈 밖 인터페이스(error, flag.Value 같은)를 만족하는
 메서드는 수확이 정점에 `satisfies`·`receiver` 사실로 남기고, `analysis`가
 "리시버 타입이 도달하면 그 메서드도 도달"로 계산합니다(`ReachAdjacency`).
 문서 간선으로 긋지 마세요 — 메서드→리시버 references와 맞물려 cycles에

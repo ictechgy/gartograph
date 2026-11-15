@@ -568,6 +568,34 @@ timeout, `ulimit`, or a container.
   is the triage axis: an unexported unreachable symbol is confined to the
   repo, while an exported one may have external callers, reflection, or
   plugin use — classify on the fact, the tool does not grade confidence.
+- Public-API retention is off by default, on purpose. `dead` starts from
+  program entry points (`main`, `init`, package initializers, keep markers,
+  directive roots, and test entry points with `--tests`); `--retain-public`
+  (MCP `retainPublic: true`) adds every exported symbol as a root. A call
+  across Go packages needs an exported name, so in an application module
+  most exported symbols serve other packages of the same module, not outside
+  callers: rooting them by default would hide the unused ones, and the
+  `exported` fact is there to triage them instead. Go also has no file that
+  declares a module's public API the way a Dart package's
+  `lib/<package>.dart` does (which is why dartograph retains public API by
+  default); the public surface is every exported name of every package
+  another module can import.
+  - If other modules import yours — a library, including one that also ships
+    a `main` package — run `dead --retain-public`. What it still reports is
+    code that no exported symbol or entry point reaches. It roots exported
+    symbols of every package, `internal/` and `main` included (nested
+    modules can import `internal/`, and a plugin's host looks up `main`
+    symbols by name), so it leans toward "alive".
+  - Do not wait for the `(use --retain-public)` limitation. It appears only
+    when the harvest has no symbol root at all or a `main` package has no
+    `func main`; a library with an `init` function, a package-level variable
+    whose initializer calls a function, a keep marker, a directive root, or
+    `--tests` gets the whole unused exported API reported without the hint.
+  - To keep a few entry points rather than the whole exported surface, use
+    `--root ID` or a keep marker. For a package imported only by code the same
+    harvest sees (its own module, or a `go.work` workspace analyzed together),
+    leave `--retain-public` off: those unreachable exported symbols really
+    have no caller.
 - `dead` also reports struct fields (`kind: "field"`) — a field with no
   named access (`x.F`, `T{F: v}`, positional literal, promotion path,
   `==`) is unreachable. Reflection, serialization, and whole-struct copies
