@@ -26,7 +26,7 @@ type routesFlags struct {
 func cmdRoutes(args []string, stdout, stderr io.Writer) int {
 	var f routesFlags
 	fs := flag.NewFlagSet("routes", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	fs.StringVar(&f.role, "role", "server", "document role: server (route declarations) or client (route calls)")
 	fs.StringVar(&f.harvest.Dir, "dir", ".", "module root to scan")
 	fs.Var((*patterns)(&f.harvest.Patterns), "pattern", "package pattern (repeatable)")
@@ -40,8 +40,7 @@ func cmdRoutes(args []string, stdout, stderr io.Writer) int {
 	}
 	generated, err := validateRoutesFlags(f)
 	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 2
+		return fail(stderr, err)
 	}
 	// usr 확인용 그래프는 impact와 같은 exclude로 만든다(schema와 같은 이유).
 	if err := applyConfigExclude(&f.harvest); err != nil {
@@ -63,8 +62,7 @@ func clientRoutes(f routesFlags, generated time.Time, stdout, stderr io.Writer) 
 	if f.wrappers != "" {
 		file, err := source.LoadWrapperFile(f.wrappers)
 		if err != nil {
-			fmt.Fprintln(stderr, "error:", err)
-			return 2
+			return fail(stderr, err)
 		}
 		opts.Wrappers = file
 	}

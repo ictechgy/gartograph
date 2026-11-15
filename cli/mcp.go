@@ -139,7 +139,7 @@ func (s *mcpServer) serve(in io.Reader, out, errOut io.Writer) int {
 		}
 		data, err := json.Marshal(resp)
 		if err != nil {
-			fmt.Fprintf(errOut, "mcp: encoding response: %v\n", err)
+			textLine(errOut, "mcp: encoding response: %v", err)
 			continue
 		}
 		w.Write(data)
@@ -147,7 +147,7 @@ func (s *mcpServer) serve(in io.Reader, out, errOut io.Writer) int {
 		w.Flush()
 	}
 	if err := sc.Err(); err != nil {
-		fmt.Fprintf(errOut, "mcp: reading stdin: %v\n", err)
+		textLine(errOut, "mcp: reading stdin: %v", err)
 		return 2
 	}
 	return 0

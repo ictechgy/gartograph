@@ -146,7 +146,7 @@ func flagSet(name string, stderr io.Writer) (*flag.FlagSet, *source.Options, *st
 	var opts source.Options
 	var graphPath string
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	fs.StringVar(&opts.Dir, "dir", ".", "module root to analyze")
 	fs.Var((*patterns)(&opts.Patterns), "pattern", "package pattern (repeatable)")
 	fs.BoolVar(&opts.Tests, "tests", false, "include test variant packages")
@@ -336,8 +336,33 @@ func levelHint(doc *graph.Document, graphPath string, err error) error {
 
 // fail은 에러를 출력하고 종료 코드 2를 돌려준다.
 func fail(stderr io.Writer, err error) int {
-	fmt.Fprintln(stderr, "error:", err)
+	textLine(stderr, "error: %v", err)
 	return 2
+}
+
+// setFlagOutput은 flag 패키지의 출력을 정한다. flag는 사용법 오류를 출력에 `fmt.Fprintln(Output(), err)`로 쓰는데,
+// 그 문구는 정의되지 않은 플래그 이름(`flag provided but not defined: -<인자>`)과 문법이 틀린 인자를 그대로 담는다 —
+// 인자 속 개행·ESC가 stderr에 워크플로 명령 줄·터미널 시퀀스를 만든다. 그래서 출력은 오류 줄을 textLine처럼 거르는
+// flagErrorWriter이고, 사용법(-h와 오류 뒤의 플래그 목록)은 이 도구가 쓴 설명이라 Usage가 원래 stderr에 그대로
+// 쓴다(flag의 기본 사용법과 같은 바이트 — 설명의 탭이 \x09가 되지 않는다).
+func setFlagOutput(fs *flag.FlagSet, stderr io.Writer) {
+	errOut := flagErrorWriter{stderr}
+	fs.SetOutput(errOut)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "Usage of %s:\n", fs.Name())
+		fs.SetOutput(stderr)
+		fs.PrintDefaults()
+		fs.SetOutput(errOut)
+	}
+}
+
+// flagErrorWriter는 flag가 쓰는 오류 한 줄(Fprintln 한 번 = Write 한 번)을 textLine으로 거른다.
+type flagErrorWriter struct{ w io.Writer }
+
+// Write는 io.Writer 계약이다. 끝 개행 하나를 떼고 거른 뒤 textLine이 다시 붙인다.
+func (f flagErrorWriter) Write(p []byte) (int, error) {
+	textLine(f.w, "%s", strings.TrimSuffix(string(p), "\n"))
+	return len(p), nil
 }
 
 // checkFormat은 --format 값이 allowed 중 하나인지 본다. 아니면 사용법 오류를 알리고 false다.
@@ -1102,7 +1127,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	if cfgPath == "" {
 		found, ok := config.Find(opts.Dir)
 		if !ok {
-			fmt.Fprintf(stderr, "error: no .gartograph.yml found in %s\n", opts.Dir)
+			textLine(stderr, "error: no .gartograph.yml found in %s", opts.Dir)
 			return 2
 		}
 		cfgPath = found
@@ -1360,7 +1385,7 @@ func impactTraversal(fs *flag.FlagSet, positional []string, opts *source.Options
 		}
 	})
 	if conflict != "" {
-		fmt.Fprintln(stderr, "error:", conflict)
+		textLine(stderr, "error: %v", conflict)
 		return exitUsage
 	}
 	return runTraversal(traversalRun{direction: analysis.DirectionDependents, positional: positional,
@@ -1429,7 +1454,7 @@ func cmdShared(args []string, stdout, stderr io.Writer) int {
 // 공개 시그니처의 타입 참조 제거)가 있을 때 1을 돌려준다.
 func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	format := fs.String("format", "text", "output format: text|json")
 	strict := fs.Bool("strict", false, "exit 1 on breaking changes")
 	positional, err := parseInterspersed(fs, args)
@@ -1552,8 +1577,7 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if doc.Level.Rank() < graph.LevelPackage.Rank() {
-		fmt.Fprintf(stderr,
-			"error: metrics needs package-level data; document is %s level\n", doc.Level)
+		textLine(stderr, "error: metrics needs package-level data; document is %s level", doc.Level)
 		return 2
 	}
 	rep := analysis.Metrics(doc, cfg)
@@ -1648,7 +1672,7 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 	if cfgPath == "" {
 		found, ok := config.Find(opts.Dir)
 		if !ok {
-			fmt.Fprintf(stderr, "error: no .gartograph.yml found in %s\n", opts.Dir)
+			textLine(stderr, "error: no .gartograph.yml found in %s", opts.Dir)
 			return 2
 		}
 		cfgPath = found
@@ -1663,8 +1687,7 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if doc.Level.Rank() < graph.LevelPackage.Rank() {
-		fmt.Fprintf(stderr,
-			"error: mapping needs package-level data; document is %s level\n", doc.Level)
+		textLine(stderr, "error: mapping needs package-level data; document is %s level", doc.Level)
 		return 2
 	}
 	m := analysis.MapComponents(doc, cfg)
@@ -1717,9 +1740,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if _, ok := config.Find(opts.Dir); ok {
-		fmt.Fprintf(stderr,
-			"error: .gartograph.yml already exists in %s — remove it to regenerate\n",
-			opts.Dir)
+		textLine(stderr, "error: .gartograph.yml already exists in %s — remove it to regenerate", opts.Dir)
 		return 2
 	}
 	opts.Level = graph.LevelPackage
@@ -1729,8 +1750,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	}
 	cfg := analysis.ScaffoldConfig(doc)
 	if len(cfg.Components) == 0 {
-		fmt.Fprintf(stderr,
-			"error: no internal packages found in %s — nothing to scaffold\n", opts.Dir)
+		textLine(stderr, "error: no internal packages found in %s — nothing to scaffold", opts.Dir)
 		// 패턴 오류처럼 수확이 센 이유를 함께 낸다 — 디렉터리만 말하면 --pattern 오타가 "패키지 없음"으로 보인다.
 		for _, l := range doc.Limitations {
 			textLine(stderr, "limitation: %s", l)
@@ -1813,7 +1833,7 @@ func cmdUnusedDeps(args []string, stdout, stderr io.Writer) int {
 // 받지 않는다.
 func cmdBridges(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bridges", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	dir := fs.String("dir", ".", "module root to scan")
 	out := fs.String("out", "", "write the document to FILE instead of stdout")
 	generatedAt := fs.String("generated-at", "", "fixed generatedAt timestamp (RFC 3339, UTC)")
@@ -1849,7 +1869,7 @@ func cmdBridges(args []string, stdout, stderr io.Writer) int {
 // 코드가 SQL 관계를 이름으로 참조하는 경계를 relation-use 사실로 수확한다.
 func cmdSchema(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("schema", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	dir := fs.String("dir", ".", "module root to scan")
 	out := fs.String("out", "", "write the document to FILE instead of stdout")
 	generatedAt := fs.String("generated-at", "", "fixed generatedAt timestamp (RFC 3339, UTC)")

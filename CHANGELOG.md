@@ -73,6 +73,16 @@
   `[flags]`도 달지 않았다). 이제 목록은 `[flags]`를 단 명령 전부에 적용된다고 밝힌다. 테스트가 명령별 `-h`의
   플래그 정의와 개요를 대조한다. 명령의 동작과 출력은 그대로다.
 
+### Security
+
+- stderr 오류 문구의 제어 문자를 텍스트 출력과 같은 규칙으로 이스케이프한다(C0·C1·DEL·U+2028/U+2029·잘못된 UTF-8 →
+  `\xNN`·`\uNNNN`, 줄 첫머리 `::`와 `##[` 무력화). 전에는 `error: reading <경로>: open <경로>: …`, `vertex not found:
+  <ID>`, `no .gartograph.yml found in <dir>`, 저장 문서의 `level`, 플래그 파싱 오류(`flag provided but not defined:
+  -<인자>`)가 인자를 그대로 내서, 인자 속 개행 뒤 `::error::`가 GitHub Actions 워크플로 명령으로, ESC가 터미널
+  시퀀스로 읽혔다(CI가 브랜치 이름이나 변경 파일 목록을 인자로 넘기면 분석 대상이 고를 수 있는 값이다). 이제 오류
+  하나는 한 줄이다 — 여러 줄 go 명령 오류의 가운데 줄바꿈은 `\x0a`로 보이고, go 명령 stderr의 끝 개행은 지운다(전에는
+  `— check go.mod and build tags`가 다음 줄로 떨어졌다). 오류 뒤에 찍는 플래그 목록은 그대로다.
+
 ### Changed
 
 - isthmus 적합성 벡터를 `c76e105`로 다시 벤더링하고 `http-limitation-scope`·`sql-relations`를 더했다. 생산자

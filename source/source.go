@@ -277,8 +277,19 @@ func loaderError(what string, err error, advice string) error {
 	if toolchainRefused(err) {
 		advice = toolchainAdvice
 	}
-	return fmt.Errorf("%s: %w — %s", what, err, advice)
+	return fmt.Errorf("%s: %w — %s", what, trimmedError{err}, advice)
 }
+
+// trimmedError는 go 명령의 stderr를 그대로 담은 go/packages 오류에서 끝 개행을 지운다 — 원인과 해결 방향이 한
+// 줄로 이어진다. CLI는 오류 문구의 개행을 \x0a로 적으므로(textLine) 끝 개행이 남으면 "…\x0a — check go.mod"가
+// 된다. 가운데 줄바꿈(여러 줄 go 오류)은 그대로 둔다.
+type trimmedError struct{ error }
+
+// Error는 안의 오류 문구에서 끝 개행을 뗀다.
+func (e trimmedError) Error() string { return strings.TrimRight(e.error.Error(), "\n") }
+
+// Unwrap은 errors.Is·As가 원래 오류를 찾게 한다.
+func (e trimmedError) Unwrap() error { return e.error }
 
 // toolchainRefused는 go 명령이 GOTOOLCHAIN=local이라 툴체인을 바꾸지 않고 더 새 Go 요구를 거부했는지 오류
 // 문구로 본다. 문구는 cmd/go gover.TooNewError의 "X requires go >= V (running go L; GOTOOLCHAIN=local)"이다

@@ -683,6 +683,11 @@ timeout, `ulimit`, or a container.
   `::` after any whitespace (NBSP included) becomes `\x3a:`, and every `##[`
   becomes `\x23#[`. Other strings print unchanged; JSON and SARIF keep the
   original strings, JSON-escaped.
+- Error messages on stderr follow the same rule: paths, IDs, flag names, and
+  values from saved documents or the go command appear escaped, so each error
+  is one line (`error: reading nope\x0a::error::x: …`), and a flag parse error
+  (`flag provided but not defined: -…`) is escaped too. The flag list printed
+  after it is unchanged.
 
 ## Graph document
 

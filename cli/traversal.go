@@ -166,7 +166,7 @@ func runTraversal(in traversalRun, stdout, stderr io.Writer) int {
 func reportTraversalError(stderr io.Writer, err error) int {
 	var ue *usageError
 	if errors.As(err, &ue) {
-		fmt.Fprintln(stderr, "error:", ue.msg)
+		textLine(stderr, "error: %s", ue.msg)
 		return exitUsage
 	}
 	return fail(stderr, err)
