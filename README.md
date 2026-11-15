@@ -266,7 +266,7 @@ Harvest flags (all analysis commands):
 | Flag | Default | Meaning |
 |---|---|---|
 | `--dir` | `.` | module root to analyze |
-| `--pattern` | `./...` | package pattern (repeatable); patterns go list reports an error for, and patterns that match no package, are counted in `limitations` |
+| `--pattern` | `./...` | package pattern (repeatable); patterns go list reports an error for are counted in `limitations`, and so is a harvest whose patterns match no package at all |
 | `--tests` | off | include test variant packages (Test/Benchmark/Example/Fuzz become retention roots); without it, packages imported only by other packages' `_test.go` files (test helpers) are counted in `limitations` |
 | `--deps` | off | include dependency packages/modules outside the main module |
 | `--tags` | — | build tags for the loader; files excluded by constraints are counted in `limitations` |
