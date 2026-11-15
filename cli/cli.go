@@ -95,7 +95,7 @@ Usage:
   gartograph graph  [--level package|type|symbol] [--format json|mermaid|dot] [--out FILE] [flags]
   gartograph cycles [--level package|type|symbol] [--strict] [--format text|json|sarif]
                     [--baseline FILE | --write-baseline FILE] [flags]
-  gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--strict]
+  gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--algo cha|rta] [--strict]
                     [--format text|json|sarif]
                     [--baseline FILE | --write-baseline FILE] [flags]
   gartograph rules  [--config FILE] [--strict] [--format text|json|sarif]
@@ -108,27 +108,30 @@ Usage:
                     [--type-edges members|all] [--revision REV] [--generated-at TS] [flags]
                     isthmus dependents traversal
   gartograph reach  <id>... [--roots-from FILE|-] [--depth N] [--max N] [--type-edges members|all]
-                    [--revision REV] [--generated-at TS] [flags]   isthmus dependencies traversal
+                    [--revision REV] [--generated-at TS] [--format language-traversal] [flags]
+                    isthmus dependencies traversal
   gartograph path   <from-id> <to-id> [--level L] [flags]
   gartograph shared <id> <id> [more ids...] [--level L] [flags]
   gartograph diff   <old.json> <new.json> [--strict] [--format text|json]
   gartograph metrics [--config FILE] [--format text|json] [flags]
   gartograph mapping [--config FILE] [--format text|json] [flags]
-  gartograph init   [--dir PATH]  scaffold .gartograph.yml from observed imports
+  gartograph init   [--dir PATH] [flags]  scaffold .gartograph.yml from observed imports
   gartograph bridges [--dir PATH] [--out FILE]  isthmus bridge-facts (platform "go")
   gartograph schema  [--dir PATH] [--out FILE]  isthmus persistence relation-uses (platform "go")
-  gartograph routes  [--role server|client] [--dir PATH] [--pattern P]... [--service NAME]
+  gartograph routes  [--role server|client] [--dir PATH] [--pattern P]... [--tags T] [--service NAME]
                      [--wrappers FILE] [--generated-at TS] [--out FILE]
                      isthmus http route declarations or route calls (platform "go")
   gartograph unused-deps [--strict] [--format text|json] [flags]
-  gartograph mcp    serve the graph over MCP stdio [flags]
+  gartograph mcp    [--level package|type|symbol] [--config FILE] [flags]
+                    serve the graph over MCP stdio
   gartograph version | --version
 
-Harvest flags (graph, cycles, dead, rules, query):
+Harvest flags (commands marked [flags]):
   --dir PATH    module root to analyze (default ".")
   --pattern P   package pattern, repeatable (default "./...")
   --tests       include test variant packages
   --deps        include dependencies outside the main module
+  --tags T      build tags for the loader (comma-separated)
   --goos/--goarch  harvest for a different target platform (conditional files)
   --graph FILE  read a saved graph document instead of harvesting
 

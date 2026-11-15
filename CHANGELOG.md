@@ -43,6 +43,11 @@
 - `routes`: 소비자가 거부할 `limitationScopes` 항목(비정규 템플릿, 끝 슬래시 접두사, `{**}` 접두사·접미사,
   계약 밖 동사)은 문서에 싣지 않는다 — 스코프 하나가 isthmus에서 문서 전체를 입력 오류로 만들기 때문이다. 그
   한계는 스코프 없이(문서 전체 효과로) 남는다.
+- 개요 도움말(`gartograph help`·`--help`): 각 명령이 받는 플래그를 빠짐없이 싣는다. `dead --algo`, 공통 수확
+  플래그 `--tags`, `mcp --level`·`--config`, `routes --tags`, `reach --format`은 README와 명령별 `-h`에는 있었지만
+  개요에는 없었고, 공통 수확 플래그 목록은 다섯 명령(graph·cycles·dead·rules·query)만 이름으로 들었다(`init`은
+  `[flags]`도 달지 않았다). 이제 목록은 `[flags]`를 단 명령 전부에 적용된다고 밝힌다. 테스트가 명령별 `-h`의
+  플래그 정의와 개요를 대조한다. 명령의 동작과 출력은 그대로다.
 
 ### Changed
 
