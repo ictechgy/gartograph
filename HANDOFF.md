@@ -26,8 +26,17 @@
   - 개요 도움말(`gartograph help`)이 명령이 받는 플래그를 빠짐없이 싣게 고쳤다 — `dead --algo`, 공통 `--tags`,
     `mcp --level/--config`, `routes --tags`, `reach --format`이 빠져 있었다. 회귀 테스트 `TestUsageListsEveryFlag`가
     명령별 `-h`와 개요를 대조한다(`c36e25f`, CHANGELOG Fixed).
-  - 자기 분석·fixture 점검에서 고칠 것이 분명하지 않은 후보는 아래 "남은 일"에 적었다. 두 번 돌린 출력은
-    `bridges`·`schema`의 `generatedAt`(계약상 추출 시각)만 달랐다.
+  - 빈 수확을 센다(`fbfa500`): `--pattern` 오타·없는 디렉터리·`go.mod` 없는 `--dir`이면 go list가 돌려주는 패턴 오류
+    가짜 패키지를 `keep`이 버려 `cycles --strict`·`dead --strict`·MCP가 limitation 없이 "0"으로 성공했다. 이제 모든 수확
+    문서가 `N package patterns reported load errors and loaded no packages (first: …)`(패턴이 고른 패키지가 없으면
+    `no packages matched the patterns (…)`)를 싣고, 정점이 없으면 `(use --retain-public)` 안내를 붙이지 않는다. 종료
+    코드와 `--strict` 판정은 그대로다(limitation은 판정에 들어가지 않는다). 원래 2로 거부하던 `unused-deps`·`dead --algo
+    rta`·`init`·ID 명령은 원인을 바로 말하고, `schema`·`routes`는 기존 isthmus 접두사의 로드 오류 수로 센다.
+  - `bridges`·`schema --generated-at`(`5f89c0c`): routes·reach와 같은 문법·문구·종료 2. 같은 입력과 값이면 같은
+    바이트다.
+  - stderr 오류 문구를 textLine 규칙으로 거른다(`419698f`): 경로·ID·플래그 이름·저장 문서 값의 개행·ESC가 워크플로
+    명령·터미널 시퀀스가 되던 문제다. 오류 하나는 한 줄이다(가운데 줄바꿈은 `\x0a`).
+  - 남은 설계 후보는 아래 "남은 일"에 있다. 두 번 돌린 출력은 이제 `bridges`·`schema`도 `--generated-at`을 주면 같다.
 
 ## 검증 방법
 
@@ -58,23 +67,16 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
 
 ## 남은 일 (사용자가 고른다)
 
-- 빈 수확이 성공으로 끝난다: `--pattern` 오타(`./interal/...`)·없는 디렉터리·`go.mod` 없는 `--dir`이면 go list는
-  패턴 오류 패키지(모듈 없음)만 돌려주고, `keep`이 그것을 버린 뒤 로드 오류를 세서 limitation이 없다.
-  `cycles --strict`는 "0 cycles"·종료 0, `dead --strict`는 0건에 엉뚱한 `(use --retain-public)` 안내, MCP는 빈
-  스냅샷이다. 같은 입력에서 `dead --algo rta`는 "1 loaded packages have type or load errors"로 종료 2,
-  `unused-deps`는 "no main module found … is there a go.mod?"(패턴 오타에는 틀린 안내)로 종료 2다. 주 모듈 패키지가
-  하나도 없으면 종료 2로 거부할지(rules·rta·unused-deps와 같은 쪽), 패턴 오류를 limitation으로 셀지 고른다.
-- 루트 부재 안내 기준: 지금은 심볼 루트가 하나도 없을 때만 나와, `init`·함수를 부르는 초기화식·keep·지시문 루트가
+- 빈 수확을 종료 2로 거부할지: 지금은 limitation으로 세고 종료 코드는 그대로다(`cycles --strict`·`dead --strict`는
+  빈 그래프에서도 0). CI가 패턴 오타를 실패로 잡게 하려면 "주 모듈 패키지가 하나도 없으면 2"를 더할 수 있다 —
+  종료 코드 계약 변경이다.
+- 루트 부재 안내 기준: 지금은 정점은 있는데 심볼 루트가 하나도 없을 때만 나와, `init`·함수를 부르는 초기화식·keep·지시문 루트가
   있거나 `--tests`인 라이브러리는 공개 API 전체가 안내 없이 보고된다(README에 적었다). rustograph처럼 루트 없는
   패키지의 공개 심볼 수를 세는 limitation으로 바꿀지 고른다 — 보고가 늘어나는 변경이다.
 - `--retain-public`은 `internal/`·`main` 패키지의 공개 심볼도 루트로 삼는다. 중첩 모듈은 `internal/`을 import할 수
   있고 플러그인 호스트는 `main` 심볼을 이름으로 찾으므로 좁히려면 반대 코퍼스 증거가 먼저다(지금은 바꿀 근거 없음).
 - graph 문서의 빈 `vertices`/`edges`가 `null`이다(단일 패키지 모듈의 package 레벨이 흔한 경우). #27이 보고서는
   `[]`로 바꾸면서 `export`(graph 문서)는 범위 밖으로 뒀다. 바꾸면 그런 문서와 순회 `graphRevision`이 달라진다.
-- `bridges`·`schema`에는 `routes`·`reach`의 `--generated-at` 같은 고정 시각 플래그가 없어 같은 입력도 바이트가
-  다르다(isthmus 계약상 `generatedAt`은 추출 시각이라 결함은 아니다).
-- 오류 문구(stderr)가 사용자 인자(경로·ID)의 제어 문자를 그대로 낸다(`error: reading <path>: open <path>: …`).
-  저장소가 정한 이름(.gartograph.yml)은 `%q`라 안전하다. 텍스트 출력 escape 계약을 stderr로 넓힐지 고른다.
 - `http-limitation-scope`의 `scope.dynamic-*`: gartograph가 `dynamicScope`를 내지 않아 건너뛴다.
 - 릴리스(0.12.0)와 tap 갱신은 승인된 별도 작업이다. 새 자격 증명은 만들지 않는다.
 
