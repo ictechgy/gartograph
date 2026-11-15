@@ -312,7 +312,17 @@ func loadIDDoc(opts *source.Options, graphPath, level string) (*graph.Document, 
 // 존재하는 코드를 없다고 믿는다. 저장 문서(--graph)에는 --level이 듣지 않으므로
 // 다시 저장하는 길을 알린다 — 무시되는 플래그를 권하면 같은 오류가 되풀이된다.
 func levelHint(doc *graph.Document, graphPath string, err error) error {
-	if !errors.Is(err, analysis.ErrNotFound) || doc.Level.Rank() >= graph.LevelSymbol.Rank() {
+	if !errors.Is(err, analysis.ErrNotFound) {
+		return err
+	}
+	// 정점이 하나도 없으면 레벨이 아니라 수확 범위가 원인이다 — 패턴 오류 같은 그 문서의 limitation을 함께 낸다.
+	if len(doc.Vertices) == 0 {
+		if len(doc.Limitations) == 0 {
+			return fmt.Errorf("%w (the graph has no vertices)", err)
+		}
+		return fmt.Errorf("%w (the graph has no vertices: %s)", err, strings.Join(doc.Limitations, "; "))
+	}
+	if doc.Level.Rank() >= graph.LevelSymbol.Rank() {
 		return err
 	}
 	remedy := "re-run with --level symbol"
@@ -855,8 +865,12 @@ func generatedFindings(findings []analysis.Finding) int {
 // missingRootLimitations는 프로그램 진입점이 없는 dead 보고의 --retain-public 안내다. main 패키지는
 // 패키지 레벨에서도 루트 목록에 오르므로 목록 길이가 아니라 심볼 루트로 판정한다 — 그렇지 않으면 func
 // main 없는 package main(plugin·c-shared 빌드)에서 안내가 사라진다. 다른 패키지에 진입점이 있으면
-// func main 없는 main 패키지 수를 따로 센다(그 패키지의 공개 API는 호스트가 부른다).
+// func main 없는 main 패키지 수를 따로 센다(그 패키지의 공개 API는 호스트가 부른다). 정점이 하나도 없는 문서
+// (패턴 오류·패턴이 고른 패키지 없음 — 수확이 그 사실을 limitation으로 센다)에는 공개 API도 없어 안내하지 않는다.
 func missingRootLimitations(doc *graph.Document) []string {
+	if len(doc.Vertices) == 0 {
+		return nil
+	}
 	if !hasSymbolRoot(doc) {
 		return []string{"no main or init roots found; exported API may appear unreachable (use --retain-public)"}
 	}
@@ -1716,6 +1730,10 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	if len(cfg.Components) == 0 {
 		fmt.Fprintf(stderr,
 			"error: no internal packages found in %s — nothing to scaffold\n", opts.Dir)
+		// 패턴 오류처럼 수확이 센 이유를 함께 낸다 — 디렉터리만 말하면 --pattern 오타가 "패키지 없음"으로 보인다.
+		for _, l := range doc.Limitations {
+			textLine(stderr, "limitation: %s", l)
+		}
 		return 2
 	}
 	data, err := config.Render(cfg)

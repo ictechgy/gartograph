@@ -91,6 +91,10 @@ func SchemaFacts(opts Options, toolVersion string) (*BridgeFactsDocument, error)
 	scan := &schemaScan{root: root, ids: newSymbolIDs(symbolDoc)}
 	for _, p := range pkgs {
 		if !keep(p, false) {
+			// 패턴 오류(go.mod 없는 --dir 등)는 아무것도 스캔하지 못한 로드 오류다 — 버리면 빈 문서가 "관계 없음"으로 읽힌다.
+			if isPatternError(p) {
+				scan.unparsed += len(p.Errors)
+			}
 			continue
 		}
 		scan.unparsed += len(p.Errors)

@@ -55,6 +55,7 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	pkgs, patternErrs := splitPatternErrors(pkgs)
 	modPath, modDir := "", ""
 	for _, p := range pkgs {
 		if p.Module != nil && p.Module.Main {
@@ -63,7 +64,7 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 		}
 	}
 	if modDir == "" {
-		return nil, fmt.Errorf("no main module found under %s — is there a go.mod?", opts.Dir)
+		return nil, noMainModuleError(opts, len(pkgs), patternErrs)
 	}
 	mod, err := readGoMod(filepath.Join(modDir, "go.mod"))
 	if err != nil {
@@ -87,6 +88,10 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 		return nil, err
 	}
 	rep := &UnusedReport{Module: modPath, Limitations: unusedLimitations(reachable, excluded, unloaded)}
+	if len(patternErrs) > 0 {
+		// 남은 패턴의 판정은 그대로 내되, 아무것도 적재하지 못한 패턴이 있었다는 사실을 수확 문서와 같은 문구로 센다.
+		rep.Limitations = append(rep.Limitations, patternErrorLimitation(patternErrs))
+	}
 	for _, r := range requires {
 		if used[r.path] {
 			rep.UsedRequires++
@@ -101,6 +106,22 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 	sort.Strings(rep.Unused)
 	sort.Strings(rep.UnusedIndirect)
 	return rep, nil
+}
+
+// noMainModuleError는 주 모듈 패키지를 하나도 적재하지 못해 go.mod를 정할 수 없을 때의 오류다. require 판정에는
+// go.mod와 그 모듈의 import가 둘 다 필요해 빈 보고(모든 require가 미사용)를 내지 않고 거부한다(종료 2). 원인은
+// 실제로 본 것으로 가른다 — 예전에는 늘 "is there a go.mod?"라고 해서 --pattern 오타도 go.mod 문제로 보였다.
+func noMainModuleError(opts Options, roots int, patternErrs []*packages.Package) error {
+	switch {
+	case len(patternErrs) > 0:
+		return fmt.Errorf("no package of the main module was loaded under %s: %s — check --pattern, and that --dir "+
+			"is inside a module (go.mod)", opts.Dir, patternErrorSummary(patternErrs))
+	case roots == 0:
+		return fmt.Errorf("no packages matched the patterns (%s) under %s — check --pattern and --dir",
+			strings.Join(defaultPatterns(opts.Patterns), " "), opts.Dir)
+	}
+	return fmt.Errorf("none of the loaded packages under %s belongs to the main module — --pattern must select "+
+		"packages of the module, and --dir must be inside one (go.mod)", opts.Dir)
 }
 
 // requireEntry는 go.mod의 require 한 줄에서 필요한 두 필드다.

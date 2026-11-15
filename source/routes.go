@@ -158,12 +158,35 @@ func patternRoots(all []*packages.Package, root string, opts Options) ([]*packag
 		wanted[p.PkgPath] = true
 	}
 	var out []*packages.Package
+	loaded := map[string]bool{}
 	for _, p := range walkImports(all) {
+		loaded[p.PkgPath] = true
 		if wanted[p.PkgPath] {
 			out = append(out, p)
 		}
 	}
+	// 패턴 오류(오타·없는 디렉터리)는 전체 적재에 없는 ID로 돌아온다 — 루트에 그대로 넘겨 mainPackages가 로드
+	// 오류로 센다. 이름만 적재해 모듈·파일 정보가 없으므로 isPatternError가 아니라 "전체 적재에 없는 오류 패키지"로
+	// 고른다(빌드 제약으로 파일이 다 빠진 실제 패키지는 전체 적재에 있다).
+	for _, p := range named {
+		if len(p.Errors) > 0 && !loaded[p.PkgPath] {
+			out = append(out, p)
+		}
+	}
 	return out, nil
+}
+
+// patternLoadErrors는 루트 중 패턴 오류 가짜 패키지의 오류 수다 — route 문서의 "package load or parse
+// error(s)" 수에 더한다. keep이 가짜 패키지를 버려 예전에는 세지 않았다(go.mod 없는 --dir, --pattern 오타).
+// patternRoots가 넘긴 이름만 적재한 패턴 오류도 모듈·파일이 없어 같은 판정에 든다.
+func patternLoadErrors(roots []*packages.Package) int {
+	n := 0
+	for _, p := range roots {
+		if isPatternError(p) {
+			n += len(p.Errors)
+		}
+	}
+	return n
 }
 
 // mainPackages는 패턴 루트에서 import로 닿는 주 모듈 패키지를 고르고(--pattern ./cmd/api/...가 그
@@ -171,6 +194,7 @@ func patternRoots(all []*packages.Package, root string, opts Options) ([]*packag
 // 경로 순으로 정렬해 흐름 분석의 노드 번호가 로드 순서에 흔들리지 않게 한다.
 func mainPackages(scan *routeScan, pkgs []*packages.Package) []*packages.Package {
 	var out []*packages.Package
+	scan.loadErrors += patternLoadErrors(pkgs)
 	for _, p := range walkImports(pkgs) {
 		if !keep(p, false) {
 			continue

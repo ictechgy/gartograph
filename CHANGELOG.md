@@ -6,6 +6,23 @@
 
 ### Fixed
 
+- 아무것도 적재하지 못한 패턴을 버리지 않고 센다. `--pattern` 오타(`./interal/...`), 없는 디렉터리, 어느 모듈도
+  제공하지 않는 import 경로, 모듈 밖 `--dir`이면 go list는 패키지 대신 패턴 오류만 담은 가짜 패키지를 돌려주는데,
+  수확이 그것을 주 모듈 밖 패키지로 버린 뒤 로드 오류를 세어 limitation이 없었다 — `cycles --strict`·`dead
+  --strict`·`rules --strict`·MCP가 아무것도 보지 않고 "0"으로 성공했고, `dead`는 엉뚱한 `(use --retain-public)`
+  안내를 냈다. 이제 수확하는 모든 명령의 문서에 `N package patterns reported load errors and loaded no packages
+  (first: …); nothing was harvested for them — check --pattern and --dir`가 실리고(나머지 패턴의 수확은 그대로),
+  오류 없이 패턴이 고른 패키지가 없으면(Go 파일 없는 디렉터리) `no packages matched the patterns (…)`가 실린다.
+  종료 코드와 `--strict` 판정은 그대로다(limitation은 판정에 들어가지 않는다). 정점이 없는 문서에는
+  `(use --retain-public)` 안내를 붙이지 않는다. 원래 빈 수확을 거부하던 명령은 원인을 바로 말한다:
+  `unused-deps`는 패턴 오타에도 "is there a go.mod?"라고 하던 것을 패턴 오류·패턴 불일치·주 모듈 밖 패키지로 가르고
+  (종료 2 그대로, 일부 패턴만 틀리면 판정을 내고 같은 limitation을 싣는다), `dead --algo rta`는 패턴 오류를 "타입·로드
+  오류 패키지"로 세던 것을 따로 센다(종료 2 그대로). `init`은 거부 문구 뒤에 수확 limitation을 싣고,
+  `query`·`impact`·`path`·`shared`의 `vertex not found`는 정점이 없는 그래프면 그 limitation을 덧붙인다. isthmus
+  문서는 기존 접두사로 센다 — `schema`의 `unparsed-sources:`, `routes`의 `route-coverage:`·`route-call-coverage:`
+  (전에는 `--dir`에 go.mod가 없거나 `--pattern`이 틀려도 0이었다). `--deps`에서 가짜 패키지가 이름 없는 유령 정점이
+  되던 것과, module 레벨에서 "packages have no module (builtin)"으로 세던 것도 함께 고쳤다.
+
 - `dead`(CLI·MCP)·`graph --level symbol`: 패키지 스코프에 이름이 없는 모듈 인터페이스의 메서드 호출을 CHA로
   구현 메서드에 퍼뜨린다 — 선택적 인터페이스 단언(`v, ok := x.(interface{ Validate() error })`), type switch의
   이름 없는 case, 함수 안에 선언한 인터페이스, 이름 없는 제네릭 제약(`func f[T interface{ Ping() }](x T)`), 그

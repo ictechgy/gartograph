@@ -190,7 +190,7 @@ gartograph dead --graph .gartograph/graph.json # 저장 문서로 분석
 동시 실행끼리 임시 이름을 공유하지 않습니다. 새 파일은 소유자만 읽고 쓸 수 있고(0600), 기존 일반 파일은
 권한 비트를 보존합니다. 출력 링크는 따라가지 않고 링크 자체를 교체하며, 쓰기 실패 시 기존 산출물을 보존합니다.
 
-공통 플래그: `--dir`(모듈 루트), `--pattern`(반복 가능), `--tests`(테스트
+공통 플래그: `--dir`(모듈 루트), `--pattern`(반복 가능, 아무것도 적재하지 못한 패턴은 limitations에 셈), `--tests`(테스트
 진입점이 보존 루트가 됨; 끄면 다른 패키지의 `_test.go`에서만 import되는 테스트 헬퍼
 패키지 수를 limitations에 셈), `--deps`, `--tags`(빌드 태그; 제약으로 빠진 파일은
 limitations에 셈), `--goos`/`--goarch`(다른 타깃 플랫폼으로 수확 — 선택 사실이
@@ -471,7 +471,7 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
     심볼·진입점에서도 닿지 않는 코드입니다. `internal/`·`main`을 포함한 모든 패키지의
     공개 심볼을 루트로 삼으므로(중첩 모듈은 `internal/`을 import할 수 있고, 플러그인
     호스트는 `main`의 심볼을 이름으로 찾습니다) "살아 있다" 쪽으로 기웁니다.
-  - `(use --retain-public)` limitation을 기다리지 마세요. 수확에 심볼 루트가 하나도 없거나
+  - `(use --retain-public)` limitation을 기다리지 마세요. 정점은 있는데 심볼 루트가 하나도 없거나
     `func main` 없는 `main` 패키지가 있을 때만 나옵니다. `init` 함수, 함수를 부르는 초기화식의
     패키지 변수, keep 표지, 지시문 루트가 있거나 `--tests`로 돌린 라이브러리는 안내 없이
     쓰이지 않는 공개 API 전체가 보고됩니다.
@@ -507,6 +507,20 @@ gartograph가 실행하는 외부 프로그램은 둘입니다. 수확마다 패
   대상, 없는 이름)만 `limitations`에 셉니다.
 - `limitations`는 매 실행에서 실제로 세어 만듭니다(생략한 외부 참조 수,
   `reflect` 사용, 해석하지 못한 `//go:linkname`) — 없으면 키가 빠집니다.
+- 아무것도 적재하지 못한 패턴은 버리지 않고 셉니다. `--pattern` 오타(`./interal/...`), 없는
+  디렉터리, 어느 모듈도 제공하지 않는 import 경로, 모듈 밖 `--dir`이면 go list가 패키지 대신
+  오류를 돌려줍니다. 수확하는 모든 명령이 `N package patterns reported load errors and loaded no
+  packages (first: …)`를 싣고, 패턴이 고른 패키지가 하나도 없는 수확(Go 파일이 없는 디렉터리)은
+  `no packages matched the patterns (…)`를 싣습니다. 종료 코드는 그대로입니다 — limitation은
+  `--strict`에 들어가지 않으므로 `cycles --strict`·`dead --strict`는 빈 그래프에서도 통과하되 이제
+  이유가 `limitations`에 남고, 정점이 없으면 `dead`의 `(use --retain-public)` 안내는 나오지
+  않습니다. 원래 빈 수확을 거부하던 명령은 추측 대신 패턴 오류를 밝힙니다: `unused-deps`(종료 2 —
+  모듈의 go.mod와 import가 둘 다 필요), `dead --algo rta`(종료 2 — 출발할 함수가 없음),
+  `init`(종료 2, limitation 함께), `query`·`impact`·`path`·`shared`(`vertex not found`, 종료 2,
+  limitation 함께). isthmus 문서는 기존 접두사를 지킵니다: `schema`는 `unparsed-sources:`,
+  `routes`는 `route-coverage:`·`route-call-coverage:`에 세고, `reach`·`impact --format
+  language-traversal`은 그래프 limitation을 싣습니다. `--deps`에서 그 오류가 이름 없는 정점이
+  되지도 않습니다.
 - 삭제 판정은 없습니다. `unreachable`은 그래프 사실이지 "지워도 됨"이 아닙니다.
 - 모듈 밖에서 선언된 인터페이스(`error`, `fmt.Stringer`, `flag.Value`,
   `encoding.TextUnmarshaler` 등)를 구현하는 메서드는 심볼 그래프에

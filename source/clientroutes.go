@@ -229,6 +229,7 @@ func newClientScan(root string, ids symbolIDs, wrappers []*goWrapper) *clientSca
 // 클라이언트 import를 센다. 경로 순으로 정렬해 흐름 분석의 노드 번호를 고정한다.
 func (s *clientScan) mainPackages(roots []*packages.Package) []*packages.Package {
 	var out []*packages.Package
+	s.loadErrors += patternLoadErrors(roots)
 	for _, p := range walkImports(roots) {
 		if !keep(p, false) {
 			continue

@@ -260,7 +260,7 @@ Harvest flags (all analysis commands):
 | Flag | Default | Meaning |
 |---|---|---|
 | `--dir` | `.` | module root to analyze |
-| `--pattern` | `./...` | package pattern (repeatable) |
+| `--pattern` | `./...` | package pattern (repeatable); a pattern that loads nothing is counted in `limitations` |
 | `--tests` | off | include test variant packages (Test/Benchmark/Example/Fuzz become retention roots); without it, packages imported only by other packages' `_test.go` files (test helpers) are counted in `limitations` |
 | `--deps` | off | include dependency packages/modules outside the main module |
 | `--tags` | — | build tags for the loader; files excluded by constraints are counted in `limitations` |
@@ -587,8 +587,8 @@ timeout, `ulimit`, or a container.
     modules can import `internal/`, and a plugin's host looks up `main`
     symbols by name), so it leans toward "alive".
   - Do not wait for the `(use --retain-public)` limitation. It appears only
-    when the harvest has no symbol root at all or a `main` package has no
-    `func main`; a library with an `init` function, a package-level variable
+    when the harvest has vertices but no symbol root at all, or a `main`
+    package has no `func main`; a library with an `init` function, a package-level variable
     whose initializer calls a function, a keep marker, a directive root, or
     `--tests` gets the whole unused exported API reported without the hint.
   - To keep a few entry points rather than the whole exported surface, use
@@ -631,6 +631,25 @@ timeout, `ulimit`, or a container.
 - `limitations` is counted per run (omitted external imports/references,
   `reflect` use, unresolved `//go:linkname`, packages without type info) — absent
   means nothing to report, not a boilerplate warning.
+- A pattern that loads nothing is counted, not dropped. A typo'd `--pattern`
+  (`./interal/...`), a missing directory, an import path no module provides,
+  or a `--dir` outside any module makes go list return an error instead of a
+  package: every harvesting command reports `N package patterns reported load
+  errors and loaded no packages (first: …)`, and a harvest whose patterns
+  matched no package at all (a directory without Go files) reports `no packages
+  matched the patterns (…)`. Exit codes do not change — limitations never
+  count toward `--strict`, so `cycles --strict` and `dead --strict` still pass
+  on an empty graph, now with the reason in `limitations`, and `dead` drops
+  the `(use --retain-public)` hint when there are no vertices. Commands that
+  already refused an empty harvest name the pattern error instead of guessing:
+  `unused-deps` (exit 2; it needs the module's go.mod and imports), `dead
+  --algo rta` (exit 2; no function to start from), `init` (exit 2, with the
+  limitations), and `query`/`impact`/`path`/`shared` (`vertex not found`,
+  exit 2, with the limitations). isthmus documents keep their prefixes: `schema`
+  counts the error in `unparsed-sources:`, `routes` in `route-coverage:` and
+  `route-call-coverage:`; `reach` and `impact --format language-traversal`
+  carry the graph limitation. With `--deps`, the error no longer becomes a
+  vertex without a name.
 - No delete verdicts. `unreachable` is a graph fact ("not reachable from
   retention roots"), never "safe to delete".
 - Methods implementing interfaces declared outside the module (`error`,
