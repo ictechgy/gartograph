@@ -26,6 +26,10 @@ func (s *routeScan) limitations() ([]string, []LimitationScope) {
 		out = append(out, fmt.Sprintf(
 			"route-coverage: %d package load or parse error(s); route registrations there are not declared", s.loadErrors))
 	}
+	if s.unscanned != "" {
+		out = append(out, fmt.Sprintf(
+			"route-coverage: no package of the module was scanned for the patterns (%s); route registrations were not harvested", s.unscanned))
+	}
 	if len(s.unsupported) > 0 {
 		out = append(out, s.unsupportedLimitation())
 	}

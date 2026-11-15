@@ -101,6 +101,7 @@ func ClientRouteFacts(opts ClientRouteOptions, toolVersion string) (*ClientRoute
 	}
 	scan := newClientScan(root, newSymbolIDs(symbolDoc), wrappers)
 	main := scan.mainPackages(roots)
+	scan.unscanned = unscannedPatterns(main, scan.loadErrors, opts.Harvest.Patterns)
 	resolveDeclarations(wrappers, pkgs, scan.ids)
 	scan.harvest(main)
 	doc := scan.document(opts, toolVersion)
@@ -181,6 +182,7 @@ type clientScan struct {
 	// 계수(한계 문구의 근거).
 	latest       time.Time
 	loadErrors   int
+	unscanned    string
 	unsupported  map[string]int
 	unmodelled   map[string]int
 	rewrites     int
@@ -726,6 +728,9 @@ func (s *clientScan) limitations() []string {
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf(format, args...)) }
 	if s.loadErrors > 0 {
 		add("route-call-coverage: %d package load or parse error(s); HTTP calls there are not reported", s.loadErrors)
+	}
+	if s.unscanned != "" {
+		add("route-call-coverage: no package of the module was scanned for the patterns (%s); HTTP calls were not harvested", s.unscanned)
 	}
 	if len(s.unsupported) > 0 {
 		paths := sortedKeys(s.unsupported)

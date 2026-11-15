@@ -145,13 +145,13 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 	return doc, nil
 }
 
-// harvestScopeLimitation은 패턴이 아무것도 수확하지 못한 몫을 센다 — 패턴 오류가 있으면 그 수(남은 패턴의
-// 수확은 그대로다), 오류 없이 패키지가 하나도 없으면 패턴이 고른 것이 없다는 사실이다. 둘 다 없으면 조용하다.
+// harvestScopeLimitation은 패턴이 수확하지 못한 몫을 센다 — 패턴 오류가 있으면 그 수(다른 패키지의 수확은
+// 그대로다), 오류 없이 패키지가 하나도 없으면 패턴이 고른 것이 없다는 사실이다. 둘 다 없으면 조용하다.
 // 종료 코드와 --strict 판정은 바꾸지 않는다 — limitation은 판정에 들어가지 않는다.
 func harvestScopeLimitation(roots int, patternErrs []*packages.Package, patterns []string) string {
 	switch {
 	case len(patternErrs) > 0:
-		return patternErrorLimitation(patternErrs)
+		return patternErrorLimitation(patternErrs, roots)
 	case roots == 0:
 		return noMatchLimitation(patterns)
 	}

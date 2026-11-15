@@ -15,7 +15,13 @@ import (
 // 아무것도 보지 않고 limitation 없이 성공했고, dead는 엉뚱한 --retain-public 안내를 냈다.
 
 // patternErrorNote는 패턴 오류 limitation의 공통 부분이다.
-const patternErrorNote = "package patterns reported load errors and loaded no packages"
+const patternErrorNote = "package patterns reported errors from go list"
+
+// 패턴 오류 limitation의 뒷부분이다 — 아무 패키지도 적재하지 않았을 때와, 다른 패키지는 수확됐을 때.
+const (
+	nothingLoadedNote = "no packages were loaded, so nothing was harvested — check --pattern and --dir"
+	partialLoadNote   = "packages they could not resolve were not analyzed"
+)
 
 // emptyHarvestCase는 패턴 오류 하나를 일으키는 수확 인자와, limitation의 first: 뒤에 나올 go list 문구다.
 type emptyHarvestCase struct {
@@ -56,7 +62,8 @@ func TestEmptyHarvestCountsPatternErrors(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			want := "1 " + patternErrorNote + " (first: "
 			code, out, errb := run(t, append([]string{"cycles", "--strict"}, c.args...)...)
-			if code != 0 || !strings.Contains(out, want) || !strings.Contains(out, c.first) {
+			if code != 0 || !strings.Contains(out, want) || !strings.Contains(out, c.first) ||
+				!strings.Contains(out, nothingLoadedNote) || strings.Contains(out, partialLoadNote) {
 				t.Errorf("cycles --strict: exit %d, want 0 with the pattern error counted (%q)\n%s%s", code, c.first, out, errb)
 			}
 			code, out, errb = run(t, append([]string{"dead", "--strict"}, c.args...)...)
@@ -112,6 +119,50 @@ func TestEmptyHarvestExitTwoCommands(t *testing.T) {
 				t.Errorf("query: exit %d, want 2 explaining the empty graph\n%s", code, errb)
 			}
 		})
+	}
+}
+
+// TestPatternErrorWithHarvestedPackages는 go list가 패턴 오류와 함께 그 패턴이 고른 실제 패키지도 돌려줄 때
+// limitation이 "아무것도 적재하지 못했다"고 단정하지 않는지 본다. go.mod의 replace 대상 디렉터리가 없으면
+// `--pattern example.com/fixture/...`는 주 모듈 패키지와 `example.com/...` 패턴 오류를 함께 낸다(네트워크 없이
+// 결정적이다). 예전 문구는 정점이 있는 문서에도 "loaded no packages … nothing was harvested"라고 했다. 읽을 수 없는
+// 하위 디렉터리(`./...`의 permission denied)도 같은 모양이지만 root로 도는 CI에서는 재현되지 않아 이 사례로 고정한다.
+func TestPatternErrorWithHarvestedPackages(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\n" +
+			"replace example.com/dep => ./missingdep\n",
+		"main.go":    "package main\n\nimport \"example.com/fixture/lib\"\n\nfunc main() { lib.Used() }\n",
+		"lib/lib.go": "package lib\n\nfunc Used() {}\n",
+	})
+	code, out, errb := run(t, "graph", "--dir", dir, "--pattern", "example.com/fixture/...")
+	var doc struct {
+		Vertices []struct {
+			ID string `json:"id"`
+		} `json:"vertices"`
+		Limitations []string `json:"limitations"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &doc) != nil {
+		t.Fatalf("graph: exit %d\n%s%s", code, out, errb)
+	}
+	if len(doc.Vertices) != 2 {
+		t.Errorf("the module's packages must still be harvested, got %d vertices:\n%s", len(doc.Vertices), out)
+	}
+	note := strings.Join(doc.Limitations, "\n")
+	if !strings.Contains(note, "1 "+patternErrorNote+" (first: example.com/dep@v0.0.0 (replaced by ./missingdep)") ||
+		!strings.Contains(note, partialLoadNote) || strings.Contains(note, "nothing was harvested") ||
+		strings.Contains(note, "no packages were loaded") {
+		t.Errorf("the limitation must state only what go list reported, not that nothing was loaded:\n%s", note)
+	}
+}
+
+// TestPatternErrorFirstLine는 first: 발췌가 go list 문구의 첫 줄에서 다음 줄을 소개하는 절(`; to add it:`)을 떼는지
+// 본다 — 예전에는 "…; to add it"으로 끊긴 채 실렸다.
+func TestPatternErrorFirstLine(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{"main.go": "package main\n\nfunc main() {}\n"})
+	_, out, errb := run(t, "cycles", "--dir", dir, "--pattern", "example.com/missing")
+	if !strings.Contains(out, "(first: no required module provides package example.com/missing); ") ||
+		strings.Contains(out, "to add it") {
+		t.Errorf("first: must end at the error itself:\n%s%s", out, errb)
 	}
 }
 
@@ -173,9 +224,50 @@ func TestEmptyHarvestNoMatch(t *testing.T) {
 	if _, out, _ := run(t, "cycles", "--dir", dir); strings.Contains(out, patternErrorNote) || strings.Contains(out, "no packages matched") {
 		t.Errorf("a clean harvest must stay quiet:\n%s", out)
 	}
-	// 패턴 하나만 틀리면 나머지 수확은 그대로이고 그 패턴만 센다.
+	// 패턴 하나만 틀리면 나머지 수확은 그대로이고 그 패턴만 센다 — 다른 패키지가 수확됐으니 "아무것도 적재하지
+	// 못했다"고 쓰지 않는다.
 	code, out, errb = run(t, "dead", "--dir", dir, "--pattern", "./...", "--pattern", "./interal/...")
-	if code != 0 || !strings.Contains(out, "1 "+patternErrorNote) || !strings.Contains(out, "retention roots") {
+	if code != 0 || !strings.Contains(out, "1 "+patternErrorNote) || !strings.Contains(out, partialLoadNote) ||
+		strings.Contains(out, nothingLoadedNote) || !strings.Contains(out, "retention roots") {
 		t.Errorf("mixed patterns: exit %d\n%s%s", code, out, errb)
+	}
+}
+
+// TestEmptyHarvestRoutesNoMatch는 routes가 아무 패키지도 스캔하지 못한 패턴을 기존 isthmus 접두사로 세는지 본다.
+// 예전에는 Go 파일이 없는 디렉터리의 --pattern ./docs/...가 사실도 limitation도 없는 문서를 냈고, isthmus는 그런
+// 서버 문서를 "선언한 라우트 없음"으로 읽어 호출을 route-call-without-decl로 냈다. 접두사 목록은 닫혀 있어
+// route-coverage:·route-call-coverage:에 싣는다.
+func TestEmptyHarvestRoutesNoMatch(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"main.go":     "package main\n\nimport \"net/http\"\n\nfunc main() { http.HandleFunc(\"/a\", nil) }\n",
+		"docs/README": "no Go files here\n",
+	})
+	routeLimitations := func(args ...string) []string {
+		t.Helper()
+		code, out, errb := run(t, append([]string{"routes", "--dir", dir}, args...)...)
+		var doc struct {
+			Limitations []string `json:"limitations"`
+		}
+		if code != 0 || json.Unmarshal([]byte(out), &doc) != nil {
+			t.Fatalf("routes %v: exit %d\n%s%s", args, code, out, errb)
+		}
+		return doc.Limitations
+	}
+	want := map[string]string{
+		"server": "route-coverage: no package of the module was scanned for the patterns (./docs/...); route registrations were not harvested",
+		"client": "route-call-coverage: no package of the module was scanned for the patterns (./docs/...); HTTP calls were not harvested",
+	}
+	for _, role := range []string{"server", "client"} {
+		if got := routeLimitations("--role", role, "--pattern", "./docs/..."); len(got) != 1 || got[0] != want[role] {
+			t.Errorf("routes --role %s --pattern ./docs/...: limitations %q, want [%q]", role, got, want[role])
+		}
+		// 정상 수확(패턴 없음)과 패키지를 고른 패턴에는 이 limitation이 없다.
+		for _, args := range [][]string{{"--role", role}, {"--role", role, "--pattern", "./..."}} {
+			for _, l := range routeLimitations(args...) {
+				if strings.Contains(l, "no package of the module was scanned") {
+					t.Errorf("routes %v must stay quiet about scanning: %q", args, l)
+				}
+			}
+		}
 	}
 }

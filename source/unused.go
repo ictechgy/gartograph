@@ -89,8 +89,8 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 	}
 	rep := &UnusedReport{Module: modPath, Limitations: unusedLimitations(reachable, excluded, unloaded)}
 	if len(patternErrs) > 0 {
-		// 남은 패턴의 판정은 그대로 내되, 아무것도 적재하지 못한 패턴이 있었다는 사실을 수확 문서와 같은 문구로 센다.
-		rep.Limitations = append(rep.Limitations, patternErrorLimitation(patternErrs))
+		// 적재한 패키지의 판정은 그대로 내되, go list가 오류를 낸 패턴이 있었다는 사실을 수확 문서와 같은 문구로 센다.
+		rep.Limitations = append(rep.Limitations, patternErrorLimitation(patternErrs, len(pkgs)))
 	}
 	for _, r := range requires {
 		if used[r.path] {
@@ -118,7 +118,7 @@ func noMainModuleError(opts Options, roots int, patternErrs []*packages.Package)
 			"is inside a module (go.mod)", opts.Dir, patternErrorSummary(patternErrs))
 	case roots == 0:
 		return fmt.Errorf("no packages matched the patterns (%s) under %s — check --pattern and --dir",
-			strings.Join(defaultPatterns(opts.Patterns), " "), opts.Dir)
+			joinedPatterns(opts.Patterns), opts.Dir)
 	}
 	return fmt.Errorf("none of the loaded packages under %s belongs to the main module — --pattern must select "+
 		"packages of the module, and --dir must be inside one (go.mod)", opts.Dir)
