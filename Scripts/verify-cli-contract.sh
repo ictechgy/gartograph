@@ -105,6 +105,15 @@ check 2 "routes unknown role"   routes --role both
 check 2 "routes server wrappers" routes --role server --wrappers w.json
 check 2 "routes missing wrappers" routes --role client --wrappers /nonexistent/w.json
 check 2 "routes bad timestamp"  routes --generated-at yesterday
+check 2 "routes zero timestamp" routes --generated-at 0001-01-01T00:00:00Z
+# isthmus bridge-facts 문서(bridges·schema): --generated-at 문법과 종료 코드는 routes와 같다.
+check 0 "bridges"                bridges --generated-at 2026-09-30T00:00:00Z
+check 2 "bridges bad timestamp"  bridges --generated-at yesterday
+check 2 "bridges zero timestamp" bridges --generated-at 0001-01-01T00:00:00Z
+check 0 "schema"                 schema --generated-at 2026-09-30T00:00:00Z
+check 2 "schema bad timestamp"   schema --generated-at yesterday
+check 2 "schema zero timestamp"  schema --generated-at 0001-01-01T00:00:00Z
+check 64 "reach zero timestamp"  reach --generated-at 0001-01-01T00:00:00Z example.com/contract/lib.Run
 
 # --version은 version 하위 명령과 같은 한 줄이다 — isthmus 설치본 대조가 `<tool> --version`을 읽는다.
 want="$("$BIN" version)"

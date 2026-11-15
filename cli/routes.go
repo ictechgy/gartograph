@@ -88,15 +88,29 @@ func validateRoutesFlags(f routesFlags) (time.Time, error) {
 // 순회 문서(종료 64)가 같은 문법과 같은 문구를 쓴다.
 const generatedAtUsage = "--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z"
 
+// generatedAtZeroUsage는 --generated-at이 영(零) 시각(0001-01-01T00:00:00Z와 같은 순간)일 때의 문구다.
+const generatedAtZeroUsage = "--generated-at must not be the zero time 0001-01-01T00:00:00Z, which stands for " +
+	"\"not set\"; pass the timestamp to record"
+
 // parseFactsGeneratedAt은 bridge-facts 문서(routes·bridges·schema)의 --generated-at을 읽는다. 빈 값은 영(零)
 // 시각이고 문서는 추출 시각(지금)을 싣는다. 정규화(UTC 밀리초)는 문서를 만드는 source가 한다.
 func parseFactsGeneratedAt(value string) (time.Time, error) {
 	if value == "" {
 		return time.Time{}, nil
 	}
+	return parseTimestamp(value)
+}
+
+// parseTimestamp는 비어 있지 않은 --generated-at 값 하나를 읽는다(RFC 3339). 영 시각은 거부한다 — source가 영
+// 시각을 "주지 않음"(지금)으로 읽어, 그 값을 준 bridges·schema·routes는 조용히 지금 시각을 실었고 reach는 그대로
+// 실었다. 두 통로가 같은 값을 다르게 읽지 않게 둘 다 사용법 오류로 막는다.
+func parseTimestamp(value string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
 		return time.Time{}, errors.New(generatedAtUsage)
+	}
+	if t.IsZero() {
+		return time.Time{}, errors.New(generatedAtZeroUsage)
 	}
 	return t, nil
 }
