@@ -154,11 +154,16 @@ gartograph dead --algo rta --explain my/pkg.F   # path on the RTA call graph its
 
 # Emit an isthmus bridge-facts document (platform "go")
 # Go reports cgo via unscanned-ffi-interop limitations — no channel facts.
+# generatedAt is the extraction time; --generated-at TS (RFC 3339, as for
+# routes and reach) fixes it so the same input gives the same bytes. The zero
+# time 0001-01-01T00:00:00Z means "not set" and is a usage error everywhere.
 gartograph bridges --out go-facts.json
+gartograph bridges --generated-at 2026-09-30T00:00:00Z --out go-facts.json
 
 # Emit isthmus persistence facts: SQL relation references harvested from
 # typed database/sql·sqlx·gorm calls, SQL literals, TableName() bindings,
 # and db/sql/gorm column tags (platform "go", target "persistence").
+# --generated-at TS fixes generatedAt here too.
 gartograph schema --out go-schema-facts.json
 
 # Emit isthmus http route declarations: net/http ServeMux, chi, gin, echo
@@ -239,7 +244,8 @@ gartograph diff old.json new.json --strict
 gartograph metrics                # component-level when .gartograph.yml exists
 gartograph mapping                # how packages resolve to components
 
-# Scaffold .gartograph.yml — deps mirror observed imports, so rules pass clean
+# Scaffold .gartograph.yml — deps mirror observed imports, so rules pass clean.
+# Harvest limitations (a pattern error, for example) go to stderr.
 gartograph init
 
 # Serve the harvested document to agents over MCP stdio
@@ -260,7 +266,7 @@ Harvest flags (all analysis commands):
 | Flag | Default | Meaning |
 |---|---|---|
 | `--dir` | `.` | module root to analyze |
-| `--pattern` | `./...` | package pattern (repeatable) |
+| `--pattern` | `./...` | package pattern (repeatable); patterns go list reports an error for are counted in `limitations`, and so is a harvest whose patterns match no package at all |
 | `--tests` | off | include test variant packages (Test/Benchmark/Example/Fuzz become retention roots); without it, packages imported only by other packages' `_test.go` files (test helpers) are counted in `limitations` |
 | `--deps` | off | include dependency packages/modules outside the main module |
 | `--tags` | — | build tags for the loader; files excluded by constraints are counted in `limitations` |
@@ -439,7 +445,9 @@ would pass silently.
 `rules`, `cycles`, and `dead` all accept `--format sarif` for CI code
 scanning — cycles report as `dependency-cycle` errors, unreachable symbols
 as `unreachable-symbol` warnings (a fact, not a deletion verdict).
-Each `artifactLocation.uri` is the file's path relative to the module root,
+SARIF logs carry results only — `limitations` (what the harvest could not
+see, including pattern errors) are in the text and JSON reports, so read one
+of those alongside the SARIF upload. Each `artifactLocation.uri` is the file's path relative to the module root,
 percent-encoded per segment (RFC 3986), with `"uriBaseId": "%SRCROOT%"`;
 `run.originalUriBaseIds` describes `%SRCROOT%` without an absolute path, so
 an uploaded log carries no local path. A result whose file is not under the
@@ -568,6 +576,34 @@ timeout, `ulimit`, or a container.
   is the triage axis: an unexported unreachable symbol is confined to the
   repo, while an exported one may have external callers, reflection, or
   plugin use — classify on the fact, the tool does not grade confidence.
+- Public-API retention is off by default, on purpose. `dead` starts from
+  program entry points (`main`, `init`, package initializers, keep markers,
+  directive roots, and test entry points with `--tests`); `--retain-public`
+  (MCP `retainPublic: true`) adds every exported symbol as a root. A call
+  across Go packages needs an exported name, so in an application module
+  most exported symbols serve other packages of the same module, not outside
+  callers: rooting them by default would hide the unused ones, and the
+  `exported` fact is there to triage them instead. Go also has no file that
+  declares a module's public API the way a Dart package's
+  `lib/<package>.dart` does (which is why dartograph retains public API by
+  default); the public surface is every exported name of every package
+  another module can import.
+  - If other modules import yours — a library, including one that also ships
+    a `main` package — run `dead --retain-public`. What it still reports is
+    code that no exported symbol or entry point reaches. It roots exported
+    symbols of every package, `internal/` and `main` included (nested
+    modules can import `internal/`, and a plugin's host looks up `main`
+    symbols by name), so it leans toward "alive".
+  - Do not wait for the `(use --retain-public)` limitation. It appears only
+    when the harvest has vertices but no symbol root at all, or a `main`
+    package has no `func main`; a library with an `init` function, a package-level variable
+    whose initializer calls a function, a keep marker, a directive root, or
+    `--tests` gets the whole unused exported API reported without the hint.
+  - To keep a few entry points rather than the whole exported surface, use
+    `--root ID` or a keep marker. For a package imported only by code the same
+    harvest sees (its own module, or a `go.work` workspace analyzed together),
+    leave `--retain-public` off: those unreachable exported symbols really
+    have no caller.
 - `dead` also reports struct fields (`kind: "field"`) — a field with no
   named access (`x.F`, `T{F: v}`, positional literal, promotion path,
   `==`) is unreachable. Reflection, serialization, and whole-struct copies
@@ -603,6 +639,32 @@ timeout, `ulimit`, or a container.
 - `limitations` is counted per run (omitted external imports/references,
   `reflect` use, unresolved `//go:linkname`, packages without type info) — absent
   means nothing to report, not a boilerplate warning.
+- Pattern errors are counted, not dropped. A typo'd `--pattern`
+  (`./interal/...`), a missing directory, an import path no module provides,
+  a `--dir` outside any module, a missing `replace` target, or an unreadable
+  subdirectory makes go list return an error entry for the pattern, alongside
+  any packages the pattern did match. The graph document and the text and
+  JSON reports of every harvesting command carry `N package patterns reported
+  errors from go list (first: …)`, followed by `no packages were loaded, so
+  nothing was harvested — check --pattern and --dir` when nothing else was
+  loaded, or `packages they could not resolve were not analyzed` when other
+  packages were. A harvest whose patterns matched no package at all (a
+  directory without Go files) reports `no packages matched the patterns (…)`.
+  Exit codes do not change — limitations never count toward `--strict`, so
+  `cycles --strict` and `dead --strict` still pass on an empty graph, now with
+  the reason in `limitations`, and `dead` drops the `(use --retain-public)`
+  hint when there are no vertices. Commands that already refused an empty
+  harvest name the pattern error instead of guessing: `unused-deps` (exit 2;
+  it needs the module's go.mod and imports), `dead --algo rta` (exit 2; no
+  function to start from), `init` (exit 2, with the limitations; on success
+  it prints them to stderr after writing the file), and
+  `query`/`impact`/`path`/`shared` (`vertex not found`, exit 2, with the
+  limitations; the MCP tools add the same hint). isthmus documents keep their
+  prefixes: `schema` counts the error in `unparsed-sources:`, `routes` in
+  `route-coverage:` and `route-call-coverage:` (a `routes` run that scans no
+  package of the module says so under the same prefixes); `reach` and `impact
+  --format language-traversal` carry the graph limitation. With `--deps`, the
+  error no longer becomes a vertex without a name.
 - No delete verdicts. `unreachable` is a graph fact ("not reachable from
   retention roots"), never "safe to delete".
 - Methods implementing interfaces declared outside the module (`error`,
@@ -632,6 +694,15 @@ timeout, `ulimit`, or a container.
   `::` after any whitespace (NBSP included) becomes `\x3a:`, and every `##[`
   becomes `\x23#[`. Other strings print unchanged; JSON and SARIF keep the
   original strings, JSON-escaped.
+- Error messages on stderr follow the same rule, line by line: the first line
+  is `error: …` and every further line of the message (a YAML error list, the
+  go command's `errors parsing go.mod:` lines, or a newline inside an
+  argument) is indented by two spaces. Each line is escaped like text output,
+  and the indent does not shield a `::` from neutralization, so a path, ID,
+  flag name, or value from a saved document or the go command cannot forge a
+  workflow command or an `error:` line (`error: reading nope` then
+  `  \x3a:error::x: …`). Flag parse errors (`flag provided but not defined:
+  -…`) use the same rule; the flag list printed after them is unchanged.
 
 ## Graph document
 
@@ -860,7 +931,7 @@ document over the same dependency edges as `impact`:
 - Ids that are not vertices are listed in `roots` without `symbol`, with a
   `root-not-found:` limitation and truncation reason; the document is written
   and the command exits 64. Usage errors (no roots, control characters,
-  out-of-range numbers, a bad `--revision`/`--generated-at`, `--since`/`--files`
+  out-of-range numbers, a bad `--revision`/`--generated-at` (including the zero time), `--since`/`--files`
   or a non-symbol `--level` with the traversal format) exit 64 with empty
   stdout.
 
@@ -980,7 +1051,9 @@ module (static file servers, `promhttp.Handler()`) and excluded packages carry
 no symbol and are counted in `missing-route-usrs:`. Imports of routers
 gartograph does not harvest (gorilla/mux, httprouter, fiber, chi v1–v4 paths,
 echo v3/v5, grpc-gateway, …) add an unscoped `route-coverage:` limitation, so
-a zero-fact document never reads as "scanned, none". The document is
+a zero-fact document never reads as "scanned, none"; so does a run that scans
+no package of the module (`--pattern ./docs/...` on a directory without Go
+files) without a load error to explain it. The document is
 self-checked against the contract (templates, methods, catch-all prefix
 originals) before it is written, and a `limitationScopes` entry the consumer
 would reject is dropped (the limitation then stays document-wide, the broader
@@ -1081,7 +1154,7 @@ expression could hold credentials); userinfo, query and fragment are stripped,
 and high-entropy or webhook segments are masked (`maskedSegments`). `baseRef`
 is the vertex id of the field or package variable holding an unresolved base,
 for workspace `match.baseRefs`. Client-side limitations are counted, not
-guessed: `route-call-coverage:` (load errors, imports of unmodelled clients —
+guessed: `route-call-coverage:` (load errors, no package of the module scanned, imports of unmodelled clients —
 resty v1/v3, fasthttp, req, retryablehttp, … — and requests built without a URL
 argument: `http.Request` literals, resty `Send`), `unresolved-base-url:`,
 `ambiguous-base-join:`, `url-rewrite-interceptors:` (assignments to a built

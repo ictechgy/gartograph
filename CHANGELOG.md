@@ -4,7 +4,46 @@
 
 ## [Unreleased]
 
+### Added
+
+- `bridges`·`schema --generated-at TS`: bridge-facts 문서의 `generatedAt`(계약상 추출 시각, 기본 지금)을 고정한다.
+  `routes`·`reach`와 같은 문법(RFC 3339, 문서에는 UTC 밀리초 `2026-09-30T00:00:00.000Z`)이고, 틀린 값은 스캔과
+  `--out` 쓰기 전에 같은 문구(`--generated-at must be an RFC 3339 timestamp such as …`)의 종료 2다. 같은 입력과 같은
+  값이면 같은 바이트가 된다 — 전에는 두 명령만 실행마다 `generatedAt`이 달라 문서 비교·캐시에 쓸 수 없었다.
+- `init`: 설정을 쓰고 성공해도 수확 limitation을 stderr에 `limitation: …` 줄로 낸다(거부할 때와 같은 줄). 전에는
+  `--pattern ./lib --pattern ./interal/...`이 lib만 담은 설정을 아무 표시 없이 쓰고 0으로 끝났다. 표준 출력과
+  종료 코드는 그대로다.
+
 ### Fixed
+
+- go list가 오류를 낸 패턴을 버리지 않고 센다. `--pattern` 오타(`./interal/...`), 없는 디렉터리, 어느 모듈도
+  제공하지 않는 import 경로, 모듈 밖 `--dir`, 없는 `replace` 대상, 읽을 수 없는 하위 디렉터리면 go list는 패턴
+  오류만 담은 가짜 패키지를 (그 패턴이 고른 실제 패키지가 있으면 함께) 돌려주는데, 수확이 그것을 주 모듈 밖
+  패키지로 버린 뒤 로드 오류를 세어 limitation이 없었다 — `cycles --strict`·`dead --strict`·`rules --strict`·MCP가
+  아무것도 보지 않고 "0"으로 성공했고, `dead`는 엉뚱한 `(use --retain-public)` 안내를 냈다. 이제 수확하는 모든
+  명령의 문서와 텍스트·JSON 보고에 `N package patterns reported errors from go list (first: …)`가 실리고, 본 사실만
+  덧붙인다: 다른 패키지가 하나도 적재되지 않았으면 `; no packages were loaded, so nothing was harvested — check
+  --pattern and --dir`, 적재됐으면 `; packages they could not resolve were not analyzed`(같은 패턴이 고른 패키지의
+  수확은 그대로다). `first:` 발췌는 go list 문구의 첫 줄이고, 다음 줄을 소개하는 절(`; to add it:`)은 뗀다.
+  오류 없이 패턴이 고른 패키지가 없으면(Go 파일 없는 디렉터리) `no packages matched the patterns (…)`가 실린다.
+  종료 코드와 `--strict` 판정은 그대로다(limitation은 판정에 들어가지 않는다). 정점이 없는 문서에는
+  `(use --retain-public)` 안내를 붙이지 않는다. 원래 빈 수확을 거부하던 명령은 원인을 바로 말한다:
+  `unused-deps`는 패턴 오타에도 "is there a go.mod?"라고 하던 것을 패턴 오류·패턴 불일치·주 모듈 밖 패키지로 가르고
+  (종료 2 그대로, 일부 패턴만 틀리면 판정을 내고 같은 limitation을 싣는다), `dead --algo rta`는 패턴 오류를 "타입·로드
+  오류 패키지"로 세던 것을 따로 센다(종료 2 그대로). `init`은 거부 문구 뒤에 수확 limitation을 싣고,
+  `query`·`impact`·`path`·`shared`의 `vertex not found`는 정점이 없는 그래프면 그 limitation을 덧붙인다(MCP
+  `gartograph_query`·`_impact`·`_path`·`_shared`도 같다). isthmus 문서는 기존 접두사로 센다 — `schema`의
+  `unparsed-sources:`, `routes`의 `route-coverage:`·`route-call-coverage:`(전에는 `--dir`에 go.mod가 없거나
+  `--pattern`이 틀려도 0이었다). `routes`가 주 모듈 패키지를 하나도 스캔하지 못하고 로드 오류로도 설명되지 않으면
+  (Go 파일 없는 디렉터리의 `--pattern ./docs/...`) 같은 접두사로 `route-coverage: no package of the module was
+  scanned for the patterns (…)`·`route-call-coverage: …`를 싣는다 — 전에는 사실도 limitation도 없는 문서가 나가
+  isthmus가 "선언한 라우트 없음"으로 읽고 호출을 `route-call-without-decl`로 냈다. `--deps`에서 가짜 패키지가 이름
+  없는 유령 정점이 되던 것과, module 레벨에서 "packages have no module (builtin)"으로 세던 것도 함께 고쳤다.
+- `bridges`·`schema`·`routes`·`reach`·`impact --format language-traversal`: 영(零) 시각 `--generated-at
+  0001-01-01T00:00:00Z`(같은 순간의 다른 오프셋 포함)를 사용법 오류로 거부한다(bridge-facts 명령 2, 순회 문서 64,
+  문구 `--generated-at must not be the zero time …`). 전에는 bridge-facts 명령이 그 값을 "주지 않음"으로 읽어 지금
+  시각을 조용히 실었고, `reach`는 그대로 실어 같은 값을 두 통로가 다르게 읽었다 — `reach`에서는 받던 값이 거부되는
+  변경이다.
 
 - `dead`(CLI·MCP)·`graph --level symbol`: 패키지 스코프에 이름이 없는 모듈 인터페이스의 메서드 호출을 CHA로
   구현 메서드에 퍼뜨린다 — 선택적 인터페이스 단언(`v, ok := x.(interface{ Validate() error })`), type switch의
@@ -43,9 +82,29 @@
 - `routes`: 소비자가 거부할 `limitationScopes` 항목(비정규 템플릿, 끝 슬래시 접두사, `{**}` 접두사·접미사,
   계약 밖 동사)은 문서에 싣지 않는다 — 스코프 하나가 isthmus에서 문서 전체를 입력 오류로 만들기 때문이다. 그
   한계는 스코프 없이(문서 전체 효과로) 남는다.
+- 개요 도움말(`gartograph help`·`--help`): 각 명령이 받는 플래그를 빠짐없이 싣는다. `dead --algo`, 공통 수확
+  플래그 `--tags`, `mcp --level`·`--config`, `routes --tags`, `reach --format`은 README와 명령별 `-h`에는 있었지만
+  개요에는 없었고, 공통 수확 플래그 목록은 다섯 명령(graph·cycles·dead·rules·query)만 이름으로 들었다(`init`은
+  `[flags]`도 달지 않았다). 이제 목록은 `[flags]`를 단 명령 전부에 적용된다고 밝힌다. 테스트가 명령별 `-h`의
+  플래그 정의와 개요를 대조한다. 명령의 동작과 출력은 그대로다.
+
+### Security
+
+- stderr 오류 문구의 제어 문자를 텍스트 출력과 같은 규칙으로 이스케이프한다(C0·C1·DEL·U+2028/U+2029·잘못된 UTF-8 →
+  `\xNN`·`\uNNNN`, 줄 첫머리 `::`와 `##[` 무력화). 전에는 `error: reading <경로>: open <경로>: …`, `vertex not found:
+  <ID>`, `no .gartograph.yml found in <dir>`, 저장 문서의 `level`, 플래그 파싱 오류(`flag provided but not defined:
+  -<인자>`)가 인자를 그대로 내서, 인자 속 개행 뒤 `::error::`가 GitHub Actions 워크플로 명령으로, ESC가 터미널
+  시퀀스로 읽혔다(CI가 브랜치 이름이나 변경 파일 목록을 인자로 넘기면 분석 대상이 고를 수 있는 값이다). 이제 오류
+  문구는 줄마다 거른다: 첫 줄은 `error: …`, 나머지 줄(yaml unmarshal 오류 목록, go.mod 파싱 오류, 인자 속 개행)은 두
+  칸 들여 쓰고, 들여쓴 줄의 `::`도 무력화한다 — 위조한 줄은 워크플로 명령도 `error:` 줄도 되지 못한다. 정상적인
+  여러 줄 오류는 전과 같은 줄 구조로 읽히고 이어지는 줄만 두 칸 더 들여 쓰인다. go 명령 stderr의 끝 개행은 지운다
+  (전에는 `— check go.mod and build tags`가 홀로 다음 줄로 떨어졌다). 오류 뒤에 찍는 플래그 목록은 그대로다.
 
 ### Changed
 
+- Go API: `source.BridgeFacts(dir, generatedAt, toolVersion)`·`source.SchemaFacts(opts, generatedAt, toolVersion)`에
+  `generatedAt time.Time` 인자가 생겼다(공개 함수 시그니처 변경 — 이 저장소에서는 `cli`만 부른다). 영 시각이면
+  예전처럼 지금 시각을 싣는다. 마이그레이션: 기존 호출에 `time.Time{}`를 둘째 인자로 넣는다.
 - isthmus 적합성 벡터를 `c76e105`로 다시 벤더링하고 `http-limitation-scope`·`sql-relations`를 더했다. 생산자
   사례는 114건에서 155건이다(`scope.validate` 9, `scope.applies` 18, `relations.*` 14). 분류 테스트는 이 생산자
   대상이 아닌 사례(consumer 전용, 다른 생산자 전용)를 실행하지 않고, 생산자 대상인데 모르는 ruleId만 실패로

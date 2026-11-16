@@ -71,8 +71,9 @@ type BridgeLocation struct {
 // SchemaFacts는 opts.Dir 아래 Go 소스를 스캔해 persistence target의
 // bridge-facts v1 문서를 만든다. go 문서가 사실을 담는 유일한 target이다.
 // opts의 Dir·Exclude만 쓴다 — 레벨은 늘 symbol이다. Exclude는 스캔 범위가 아니라
-// usr 확인용 그래프(impact가 .gartograph.yml exclude로 만드는 그래프)에만 적용된다.
-func SchemaFacts(opts Options, toolVersion string) (*BridgeFactsDocument, error) {
+// usr 확인용 그래프(impact가 .gartograph.yml exclude로 만드는 그래프)에만 적용된다. generatedAt이 영이면 지금
+// 시각이다(factsTimestamp).
+func SchemaFacts(opts Options, generatedAt time.Time, toolVersion string) (*BridgeFactsDocument, error) {
 	root, err := realPath(opts.Dir)
 	if err != nil {
 		return nil, err
@@ -91,6 +92,10 @@ func SchemaFacts(opts Options, toolVersion string) (*BridgeFactsDocument, error)
 	scan := &schemaScan{root: root, ids: newSymbolIDs(symbolDoc)}
 	for _, p := range pkgs {
 		if !keep(p, false) {
+			// 패턴 오류(go.mod 없는 --dir 등)는 아무것도 스캔하지 못한 로드 오류다 — 버리면 빈 문서가 "관계 없음"으로 읽힌다.
+			if isPatternError(p) {
+				scan.unparsed += len(p.Errors)
+			}
 			continue
 		}
 		scan.unparsed += len(p.Errors)
@@ -107,7 +112,7 @@ func SchemaFacts(opts Options, toolVersion string) (*BridgeFactsDocument, error)
 		Format:      "bridge-facts",
 		Version:     1,
 		Tool:        BridgeFactsTool{Name: "gartograph", Version: toolVersion},
-		GeneratedAt: bridgeTimestamp(time.Now()),
+		GeneratedAt: factsTimestamp(generatedAt),
 		Platform:    "go",
 		Target:      target,
 		Project:     root,

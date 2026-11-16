@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ictechgy/gartograph/internal/testutil"
@@ -432,7 +433,7 @@ type Orphan struct {
 }
 `,
 	})
-	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, time.Time{}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -482,7 +483,7 @@ func main() {
 }
 `,
 	})
-	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, time.Time{}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -524,7 +525,7 @@ func TestSchemaFactsEmpty(t *testing.T) {
 	dir := testutil.WriteModule(t, map[string]string{
 		"main.go": "package main\n\nfunc main() { println(\"hi\") }\n",
 	})
-	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, time.Time{}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -538,7 +539,7 @@ func TestSchemaFactsEmpty(t *testing.T) {
 
 // TestSchemaFactsBadDir는 존재하지 않는 디렉터리가 오류를 돌려주는지 본다.
 func TestSchemaFactsBadDir(t *testing.T) {
-	if _, err := SchemaFacts(Options{Dir: "/no/such/dir/gartograph-test"}, "test"); err == nil {
+	if _, err := SchemaFacts(Options{Dir: "/no/such/dir/gartograph-test"}, time.Time{}, "test"); err == nil {
 		t.Fatal("missing dir must return an error")
 	}
 }
@@ -605,7 +606,7 @@ func compute() any { return nil }
 var other string
 `,
 	})
-	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, time.Time{}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -680,7 +681,7 @@ func main() { run("SELECT 1") }
 		// 별도 패키지에 두어 main의 타입 정보가 깨지지 않게 한다.
 		"broken/broken.go": "package broken\n\nfunc broken( {\n",
 	})
-	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, time.Time{}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -764,7 +765,7 @@ func TestSchemaFactsTableValuedOperandIsDynamic(t *testing.T) {
 			"\tdb.Query(\"SELECT * FROM get_active_orders($1)\")\n" +
 			"\tdb.Query(`\n\t\tSELECT o.id\n\t\tFROM pragma_table_info('t') AS p, orders o\n\t`)\n}\n",
 	})
-	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, time.Time{}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -838,7 +839,7 @@ func TestSchemaFactsPlaceholderOperandIsDynamic(t *testing.T) {
 			"\tdb.Exec(\"REVOKE SELECT ON orders FROM bob\")\n" +
 			"\tdb.Query(\"SELECT * FROM events WHERE kind IS DISTINCT FROM $1\")\n}\n",
 	})
-	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, time.Time{}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -884,7 +885,7 @@ func TestSchemaFactsMultilineNonLiteralChannel(t *testing.T) {
 			"\tdb.Query(table + \" LIMIT 1\")\n" +
 			"\tdb.Query(" + long + ")\n}\n\nfunc main() { run(\"t\") }\n",
 	})
-	doc, err := SchemaFacts(Options{Dir: dir}, "test")
+	doc, err := SchemaFacts(Options{Dir: dir}, time.Time{}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}

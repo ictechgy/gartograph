@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"go/types"
 	"sort"
+	"strings"
 
 	"github.com/ictechgy/gartograph/graph"
 	"golang.org/x/tools/go/callgraph"
@@ -212,17 +213,31 @@ func analyzeRTA(pkgs []*packages.Package, namer rtaNamer) (*rta.Result, error) {
 	return res, nil
 }
 
-// noRTARootsError는 RTA를 실행할 루트가 없다는 분석 오류다. 원인(타입·로드 오류 패키지 수)과
-// 해결 방향(빌드 오류를 고치거나 CHA로 돌리기)을 함께 담는다 — CLI가 exit 2로 옮긴다. 패키지는
-// PkgPath로 센다 — --tests의 테스트 변형은 원 패키지와 같은 패키지다.
+// noRTARootsError는 RTA를 실행할 루트가 없다는 분석 오류다. 원인과 해결 방향을 함께 담는다 — CLI가 exit 2로
+// 옮긴다. 원인은 실제로 센 것만 쓴다: 타입·로드 오류 패키지 수(PkgPath로 센다 — --tests의 테스트 변형은 원
+// 패키지와 같은 패키지다), 패키지를 하나도 적재하지 못한 패턴 오류 수(수확 문서의 limitation과 같은 문구),
+// 둘 다 없으면 패턴이 고른 패키지가 없다는 사실. 예전에는 패턴 오류 가짜 패키지를 "타입·로드 오류 패키지"로
+// 세었다.
 func noRTARootsError(pkgs []*packages.Package) error {
+	pkgs, patternErrs := splitPatternErrors(pkgs)
 	broken := map[string]bool{}
 	for _, p := range pkgs {
 		if p.IllTyped || len(p.Errors) > 0 {
 			broken[p.PkgPath] = true
 		}
 	}
-	return fmt.Errorf("rta: no well-typed packages to analyze (%d loaded packages have type or load errors, or the pattern matched nothing) — fix the build errors or run dead without --algo rta", len(broken))
+	var causes []string
+	if len(broken) > 0 {
+		causes = append(causes, fmt.Sprintf("%d loaded packages have type or load errors", len(broken)))
+	}
+	if len(patternErrs) > 0 {
+		causes = append(causes, patternErrorSummary(patternErrs))
+	}
+	if len(causes) == 0 {
+		causes = append(causes, "the patterns matched no packages")
+	}
+	return fmt.Errorf("rta: no well-typed packages to analyze: %s — fix the build errors, --pattern, or --dir, "+
+		"or run dead without --algo rta", strings.Join(causes, "; "))
 }
 
 // packageRootFns는 SSA 패키지에서 루트 정점에 해당하는 함수와 합성 init을 고른다.

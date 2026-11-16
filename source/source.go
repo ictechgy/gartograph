@@ -96,6 +96,9 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 	if err != nil {
 		return nil, fmt.Errorf("resolving --dir %s: %w", opts.Dir, err)
 	}
+	// 패턴 오류 가짜 패키지는 정점 후보가 아니다 — 떼어 내 limitation으로 센다(harvestScopeLimitation).
+	pkgs, patternErrs := splitPatternErrors(pkgs)
+	scopeNote := harvestScopeLimitation(len(pkgs), patternErrs, opts.Patterns)
 	loaded := walkImports(pkgs)
 	// exclude는 정점을 만드는 단계 전에 걸러야 두 레벨 모두에서
 	// 같은 범위가 된다 — 패키지와 모듈 문서가 다른 저장소를 보는 걸 막는다.
@@ -109,6 +112,9 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 		}
 		if opts.GOOS != "" || opts.GOARCH != "" {
 			mod.Limitation(platformNote(opts))
+		}
+		if scopeNote != "" {
+			mod.Limitation(scopeNote)
 		}
 		mod.Sort()
 		return mod, nil
@@ -132,8 +138,24 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 	if opts.GOOS != "" || opts.GOARCH != "" {
 		doc.Limitation(platformNote(opts))
 	}
+	if scopeNote != "" {
+		doc.Limitation(scopeNote)
+	}
 	doc.Sort()
 	return doc, nil
+}
+
+// harvestScopeLimitation은 패턴이 수확하지 못한 몫을 센다 — 패턴 오류가 있으면 그 수(다른 패키지의 수확은
+// 그대로다), 오류 없이 패키지가 하나도 없으면 패턴이 고른 것이 없다는 사실이다. 둘 다 없으면 조용하다.
+// 종료 코드와 --strict 판정은 바꾸지 않는다 — limitation은 판정에 들어가지 않는다.
+func harvestScopeLimitation(roots int, patternErrs []*packages.Package, patterns []string) string {
+	switch {
+	case len(patternErrs) > 0:
+		return patternErrorLimitation(patternErrs, roots)
+	case roots == 0:
+		return noMatchLimitation(patterns)
+	}
+	return ""
 }
 
 // dropExcluded는 exclude 패턴에 맞는 패키지를 도달 집합에서 뺀다.
@@ -189,10 +211,7 @@ func LoadPackageGraph(opts Options) (*graph.Document, error) {
 // load는 go/packages를 감싸는 유일한 호출점이다.
 // 수확 모드를 한 곳에 두면 레벨 확장 때 reader 정책이 갈라지지 않는다.
 func load(opts Options) ([]*packages.Package, error) {
-	patterns := opts.Patterns
-	if len(patterns) == 0 {
-		patterns = []string{"./..."}
-	}
+	patterns := defaultPatterns(opts.Patterns)
 	// NeedFiles는 파일 목록(GoFiles·IgnoredFiles)을 채운다 — 빌드 제약으로
 	// 빠진 파일 수와 생성 파일 표시에 둘 다 필요하다.
 	mode := packages.NeedName | packages.NeedImports | packages.NeedDeps |
@@ -258,8 +277,19 @@ func loaderError(what string, err error, advice string) error {
 	if toolchainRefused(err) {
 		advice = toolchainAdvice
 	}
-	return fmt.Errorf("%s: %w — %s", what, err, advice)
+	return fmt.Errorf("%s: %w — %s", what, trimmedError{err}, advice)
 }
+
+// trimmedError는 go 명령의 stderr를 그대로 담은 go/packages 오류에서 끝 개행을 지운다 — 원인과 해결 방향이 한
+// 줄로 이어진다. CLI는 오류 문구의 개행을 \x0a로 적으므로(textLine) 끝 개행이 남으면 "…\x0a — check go.mod"가
+// 된다. 가운데 줄바꿈(여러 줄 go 오류)은 그대로 둔다.
+type trimmedError struct{ error }
+
+// Error는 안의 오류 문구에서 끝 개행을 뗀다.
+func (e trimmedError) Error() string { return strings.TrimRight(e.error.Error(), "\n") }
+
+// Unwrap은 errors.Is·As가 원래 오류를 찾게 한다.
+func (e trimmedError) Unwrap() error { return e.error }
 
 // toolchainRefused는 go 명령이 GOTOOLCHAIN=local이라 툴체인을 바꾸지 않고 더 새 Go 요구를 거부했는지 오류
 // 문구로 본다. 문구는 cmd/go gover.TooNewError의 "X requires go >= V (running go L; GOTOOLCHAIN=local)"이다

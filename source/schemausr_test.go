@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ictechgy/gartograph/graph"
 	"github.com/ictechgy/gartograph/internal/testutil"
@@ -114,7 +115,7 @@ func channelUsrs(t *testing.T, doc *BridgeFactsDocument) map[string]string {
 // TestSchemaUsrAttribution은 선언 종류별 귀속과 빠진 신원의 계수를 확인한다.
 func TestSchemaUsrAttribution(t *testing.T) {
 	dir := usrFixture(t)
-	doc, err := SchemaFacts(Options{Dir: dir, Exclude: []string{"excl"}}, "test")
+	doc, err := SchemaFacts(Options{Dir: dir, Exclude: []string{"excl"}}, time.Time{}, "test")
 	if err != nil {
 		t.Fatalf("SchemaFacts: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestSchemaUsrAttribution(t *testing.T) {
 func TestSchemaUsrsAreGraphVertices(t *testing.T) {
 	dir := usrFixture(t)
 	for _, exclude := range [][]string{nil, {"excl"}} {
-		doc, err := SchemaFacts(Options{Dir: dir, Exclude: exclude}, "test")
+		doc, err := SchemaFacts(Options{Dir: dir, Exclude: exclude}, time.Time{}, "test")
 		if err != nil {
 			t.Fatalf("SchemaFacts: %v", err)
 		}

@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,7 +26,7 @@ type routesFlags struct {
 func cmdRoutes(args []string, stdout, stderr io.Writer) int {
 	var f routesFlags
 	fs := flag.NewFlagSet("routes", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	fs.StringVar(&f.role, "role", "server", "document role: server (route declarations) or client (route calls)")
 	fs.StringVar(&f.harvest.Dir, "dir", ".", "module root to scan")
 	fs.Var((*patterns)(&f.harvest.Patterns), "pattern", "package pattern (repeatable)")
@@ -39,8 +40,7 @@ func cmdRoutes(args []string, stdout, stderr io.Writer) int {
 	}
 	generated, err := validateRoutesFlags(f)
 	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 2
+		return fail(stderr, err)
 	}
 	// usr 확인용 그래프는 impact와 같은 exclude로 만든다(schema와 같은 이유).
 	if err := applyConfigExclude(&f.harvest); err != nil {
@@ -62,8 +62,7 @@ func clientRoutes(f routesFlags, generated time.Time, stdout, stderr io.Writer) 
 	if f.wrappers != "" {
 		file, err := source.LoadWrapperFile(f.wrappers)
 		if err != nil {
-			fmt.Fprintln(stderr, "error:", err)
-			return 2
+			return fail(stderr, err)
 		}
 		opts.Wrappers = file
 	}
@@ -82,12 +81,36 @@ func validateRoutesFlags(f routesFlags) (time.Time, error) {
 	if f.wrappers != "" && f.role != "client" {
 		return time.Time{}, fmt.Errorf("--wrappers declares client HTTP wrappers; it needs --role client")
 	}
-	if f.generatedAt == "" {
+	return parseFactsGeneratedAt(f.generatedAt)
+}
+
+// generatedAtUsage는 --generated-at 값이 틀렸을 때의 문구다 — routes·bridges·schema(종료 2)와 reach·impact
+// 순회 문서(종료 64)가 같은 문법과 같은 문구를 쓴다.
+const generatedAtUsage = "--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z"
+
+// generatedAtZeroUsage는 --generated-at이 영(零) 시각(0001-01-01T00:00:00Z와 같은 순간)일 때의 문구다.
+const generatedAtZeroUsage = "--generated-at must not be the zero time 0001-01-01T00:00:00Z, which stands for " +
+	"\"not set\"; pass the timestamp to record"
+
+// parseFactsGeneratedAt은 bridge-facts 문서(routes·bridges·schema)의 --generated-at을 읽는다. 빈 값은 영(零)
+// 시각이고 문서는 추출 시각(지금)을 싣는다. 정규화(UTC 밀리초)는 문서를 만드는 source가 한다.
+func parseFactsGeneratedAt(value string) (time.Time, error) {
+	if value == "" {
 		return time.Time{}, nil
 	}
-	t, err := time.Parse(time.RFC3339Nano, f.generatedAt)
+	return parseTimestamp(value)
+}
+
+// parseTimestamp는 비어 있지 않은 --generated-at 값 하나를 읽는다(RFC 3339). 영 시각은 거부한다 — source가 영
+// 시각을 "주지 않음"(지금)으로 읽어, 그 값을 준 bridges·schema·routes는 조용히 지금 시각을 실었고 reach는 그대로
+// 실었다. 두 통로가 같은 값을 다르게 읽지 않게 둘 다 사용법 오류로 막는다.
+func parseTimestamp(value string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z")
+		return time.Time{}, errors.New(generatedAtUsage)
+	}
+	if t.IsZero() {
+		return time.Time{}, errors.New(generatedAtZeroUsage)
 	}
 	return t, nil
 }

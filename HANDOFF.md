@@ -4,7 +4,7 @@
 [AGENTS.md](AGENTS.md), 이전 세션 원문(v0.2~v0.11 준비 기록·결정의 경위)은 [HANDOFF-HISTORY.md](HANDOFF-HISTORY.md)에
 있다. 이력의 "진행 중"·"다음 할 일"·수치는 당시 기록이며 현재 지시가 아니다.
 
-## 현재 상태 (2026-11-09)
+## 현재 상태 (2026-11-15)
 
 - 최신 발행본은 **v0.11.0**(태그 = main `aa69cc7`, GitHub Release 자산 6개). Homebrew tap은 `HOMEBREW_TAP_TOKEN`이
   없어 수동으로 0.11.0에 맞췄다 — 절차는 [RELEASING.md](RELEASING.md)의 "Homebrew tap 수동 갱신".
@@ -20,6 +20,29 @@
   - isthmus 적합성 벡터 재벤더링(`c76e105`, `http-limitation-scope`·`sql-relations` 추가, 생산자 사례 155건).
     소비자가 거부할 limitationScopes는 문서에 싣지 않는다.
   - CI: gofmt, CLI 계약, Windows·macOS 테스트. Release: tap 미갱신 경고·실행 요약.
+- PR #57(2026-11-15, main `1eb292b` 기준, 머지 전 — squash 머지되면 브랜치 커밋 해시는 사라지므로 PR 번호로 찾는다):
+  - `--retain-public` 기본 꺼짐이 의도임을 이력으로 확인하고 README·README.ko "출력 계약"(라이브러리 모듈 사용법),
+    AGENTS의 dead 절, 아래 결정 기록에 남겼다. 동작은 그대로다.
+  - 개요 도움말(`gartograph help`)이 명령이 받는 플래그를 빠짐없이 싣게 고쳤다 — `dead --algo`, 공통 `--tags`,
+    `mcp --level/--config`, `routes --tags`, `reach --format`이 빠져 있었다. 회귀 테스트 `TestUsageListsEveryFlag`가
+    명령별 `-h`와 개요를 대조한다(CHANGELOG Fixed).
+  - 패턴 오류를 센다: `--pattern` 오타·없는 디렉터리·`go.mod` 없는 `--dir`·없는 replace 대상·읽을 수 없는 하위
+    디렉터리면 go list가 돌려주는 패턴 오류 가짜 패키지를 `keep`이 버려 `cycles --strict`·`dead --strict`·MCP가
+    limitation 없이 "0"으로 성공했다. 이제 모든 수확 문서가 `N package patterns reported errors from go list (first: …)`
+    뒤에 본 것만 붙인다 — 다른 패키지가 하나도 없으면 `no packages were loaded, so nothing was harvested`, 있으면
+    `packages they could not resolve were not analyzed`(같은 패턴이 실제 패키지도 고를 수 있다: replace 대상이 없는
+    `example.com/...`, permission denied 하위 디렉터리가 있는 `./...`). 패턴이 고른 패키지가 없으면 `no packages
+    matched the patterns (…)`. 종료 코드와 `--strict` 판정은 그대로다. `unused-deps`·`dead --algo rta`·`init`·ID
+    명령(CLI·MCP)은 원인을 바로 말하고, `schema`·`routes`는 기존 isthmus 접두사로 센다(`routes`가 주 모듈 패키지를
+    하나도 스캔하지 못하면 `route-coverage:`·`route-call-coverage: no package of the module was scanned …`).
+    `init`은 성공해도 limitation을 stderr에 낸다.
+  - `bridges`·`schema --generated-at`: routes·reach와 같은 문법·문구·종료 2. 영 시각은 모든 통로(reach 포함)에서
+    사용법 오류다 — source가 영 시각을 "주지 않음"으로 읽기 때문이다.
+  - stderr 오류 문구를 줄마다 textLine 규칙으로 거른다: 첫 줄 `error: …`, 나머지 줄은 두 칸 들여쓰기(yaml 오류 목록·
+    go.mod 파싱 오류가 읽히는 모양으로 남고, 인자 속 개행 뒤 `::error::`는 들여쓴 줄에서도 무력화된다).
+  - 독립 리뷰(r2) 지적 1–4·6–8·10–13을 반영했다. 5의 `; to add it:` 꼬리는 뗐고, 5의 경로 상대화와 9는 아래
+    "남은 일"에 이유와 함께 남겼다.
+  - 남은 설계 후보는 아래 "남은 일"에 있다. 두 번 돌린 출력은 이제 `bridges`·`schema`도 `--generated-at`을 주면 같다.
 
 ## 검증 방법
 
@@ -37,8 +60,9 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
 - `go.mod`가 Go 1.27.1을 요구한다. 오래된 go가 PATH에 있으면 `GOTOOLCHAIN=auto`가 받아 오지만,
   `verify-cli-contract.sh`가 띄우는 바이너리는 PATH의 go로 `go list`를 부르므로 1.27.1을 PATH 앞에 둔다
   (`PATH="$(go env GOROOT)/bin:$PATH"`).
-- 자기 분석 `dead`는 `--strict` 없이 근거만 본다(CI도 같다). 2026-11-03 기준 12건 — 테스트에서만 쓰는 공개
-  함수(`analysis.DependencyReachable` 등), `internal/testutil`, 직렬화 태그 필드다. 지우라는 뜻이 아니다.
+- 자기 분석 `dead`는 `--strict` 없이 근거만 본다(CI도 같다). 2026-11-15 기준 12건(11-03과 같다) — 테스트에서만
+  쓰는 공개 함수(`analysis.DependencyReachable` 등), `internal/testutil`, 직렬화 태그 필드다. 지우라는 뜻이 아니다.
+  전부 exported라 `--retain-public`이면 0건이 된다(결정 기록).
   수가 늘면 테스트 전용 코드가 제품 파일에 들어온 것인지 먼저 본다(스코프 적용 오라클은 그래서
   `source/routescope_applies_test.go`에 있다). `rules --strict`·`cycles --level type/symbol --strict`는 0이다.
 
@@ -49,7 +73,26 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
 
 ## 남은 일 (사용자가 고른다)
 
-- 공개 API 보존 기본값(`--retain-public` 기본 꺼짐)이 dartograph(기본 보존)와 다르다 — 의도라면 문서로 남긴다.
+- PR #57 리뷰에서 미룬 것 둘(작지 않거나 보존 범위를 바꾼다):
+  - 패턴 오류 `first:` 발췌의 기계별 경로(`--dir` 절대 경로, GOROOT): 그래프 문서가 이미 절대 `root`와 위치를 싣고
+    있어 발췌만 상대화해도 문서가 기계 사이에서 같아지지 않고, go 명령 문구를 고쳐 쓰면 잘못 인용할 수 있다.
+    바꾸려면 문서 전체의 경로 표기(root·positions)와 함께 정한다.
+  - `--deps`에서 루트가 import하는 풀리지 않은 경로는 이름 없는 정점이 되고 "packages reported load errors"로도
+    세인다 — 그 경로를 `--pattern`으로도 주면 패턴 오류와 두 번 세인다. 이름 없는 정점은 main에서도 같은 기존
+    동작이라(`--deps` + 없는 import) 이 PR의 회귀가 아니고, 없애면 `--deps` 그래프의 정점 집합이 바뀌므로 반대
+    코퍼스 증거와 함께 별도로 다룬다. 두 계수는 같은 풀리지 않은 패키지를 두 번 센 것이다(패턴 오류, 그리고 그 패키지 자신이 이름 없는 정점으로
+    들어와 세인 로드 오류 — `--deps` 없이는 로드 오류 한계가 나오지 않는다).
+
+- 빈 수확을 종료 2로 거부할지: 지금은 limitation으로 세고 종료 코드는 그대로다(`cycles --strict`·`dead --strict`는
+  빈 그래프에서도 0). CI가 패턴 오타를 실패로 잡게 하려면 "주 모듈 패키지가 하나도 없으면 2"를 더할 수 있다 —
+  종료 코드 계약 변경이다.
+- 루트 부재 안내 기준: 지금은 정점은 있는데 심볼 루트가 하나도 없을 때만 나와, `init`·함수를 부르는 초기화식·keep·지시문 루트가
+  있거나 `--tests`인 라이브러리는 공개 API 전체가 안내 없이 보고된다(README에 적었다). rustograph처럼 루트 없는
+  패키지의 공개 심볼 수를 세는 limitation으로 바꿀지 고른다 — 보고가 늘어나는 변경이다.
+- `--retain-public`은 `internal/`·`main` 패키지의 공개 심볼도 루트로 삼는다. 중첩 모듈은 `internal/`을 import할 수
+  있고 플러그인 호스트는 `main` 심볼을 이름으로 찾으므로 좁히려면 반대 코퍼스 증거가 먼저다(지금은 바꿀 근거 없음).
+- graph 문서의 빈 `vertices`/`edges`가 `null`이다(단일 패키지 모듈의 package 레벨이 흔한 경우). #27이 보고서는
+  `[]`로 바꾸면서 `export`(graph 문서)는 범위 밖으로 뒀다. 바꾸면 그런 문서와 순회 `graphRevision`이 달라진다.
 - `http-limitation-scope`의 `scope.dynamic-*`: gartograph가 `dynamicScope`를 내지 않아 건너뛴다.
 - 릴리스(0.12.0)와 tap 갱신은 승인된 별도 작업이다. 새 자격 증명은 만들지 않는다.
 
@@ -59,3 +102,24 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
   선언에서 멈추기 때문). 좁히려면 RTA에 linkname 간선 전파를 넣어야 한다.
 - 모듈 안 이름 없는 인터페이스 팬아웃은 단언한 메서드 집합을 만족하는 **모든** 모듈 구체 타입으로 퍼진다(CHA).
   RTA는 인터페이스로 변환된 타입의 메서드를 따로 살리므로 대조군 결과가 CHA와 다를 수 있다.
+
+## 결정 기록
+
+이전 결정(이름, CHA 팬아웃, deps 허용 목록, MCP 배치 등)은 [HANDOFF-HISTORY.md](HANDOFF-HISTORY.md)의 "결정 기록"에
+있다.
+
+- **`dead --retain-public`은 기본 꺼짐이 의도다**(2026-11-15 확인, 동작 변경 없음). dartograph(기본 보존)와 다른 점을
+  실수로 볼 근거는 없었다.
+  - 처음부터 옵트인이었다: 초기 스캐폴드 `49b8e0c`의 로드맵이 "exported API behind `retain_public`", 첫 `dead` 구현
+    `8daa730`이 기본 false·도움말 "use for libraries without main"·루트 없는 보고의 `(use --retain-public)`
+    limitation을 함께 넣었다. `2a6964f`는 공개 심볼을 루트로 삼는 대신 finding에 `exported` 사실을 실어 분류를
+    소비자에게 맡겼고, #49(`fd3a336`)는 MCP 안내를 CLI와 같은 바이트로, #55(`dcc4189`)는 안내 판정을 고쳤다. #53 본문은
+    태그 필드 보존을 "`--retain-public`처럼 옵트인 루트로" 붙일 수 있다고 적었다. 기본값을 바꾸자는 커밋·PR은 없다
+    (GitHub에는 이슈가 없고, PR 본문은 플래그·안내만 언급한다).
+  - Go는 패키지 사이 호출에 공개 이름이 필요해, 응용 모듈의 공개 심볼 대부분이 같은 모듈의 다른 패키지용이다. 이
+    저장소(`1eb292b`) 자기 분석: 기본 12건(전부 exported, 루트 3) → `--retain-public` 0건(루트 663). 기본 보존이었다면
+    이 저장소의 보고는 하나도 남지 않는다.
+  - Go에는 Dart의 `lib/<package>.dart` 같은 공개 API 선언 파일이 없어 dartograph의 기본 보존 근거가 성립하지 않는다.
+    cartograph(`retain_public: false # turn on for libraries`)·rustograph(`--retain-public`)도 기본 꺼짐이다.
+  - 라이브러리 사용자 안내는 README "Output contract"·README.ko "출력 계약"에 있다. 바꾸려면 모든 사용자의 보고가
+    바뀌므로 CONTRIBUTING의 증거(영향받는 소비자, 오탐·누락 양쪽)가 필요하다.

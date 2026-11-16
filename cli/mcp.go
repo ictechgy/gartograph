@@ -139,7 +139,7 @@ func (s *mcpServer) serve(in io.Reader, out, errOut io.Writer) int {
 		}
 		data, err := json.Marshal(resp)
 		if err != nil {
-			fmt.Fprintf(errOut, "mcp: encoding response: %v\n", err)
+			textLine(errOut, "mcp: encoding response: %v", err)
 			continue
 		}
 		w.Write(data)
@@ -147,7 +147,7 @@ func (s *mcpServer) serve(in io.Reader, out, errOut io.Writer) int {
 		w.Flush()
 	}
 	if err := sc.Err(); err != nil {
-		fmt.Fprintf(errOut, "mcp: reading stdin: %v\n", err)
+		textLine(errOut, "mcp: reading stdin: %v", err)
 		return 2
 	}
 	return 0
@@ -204,6 +204,8 @@ func (s *mcpServer) handle(line []byte) *rpcResponse {
 // 성립했으므로 클라이언트에게 결과물로 돌려준다.
 func (s *mcpServer) callTool(p toolCallParams) map[string]any {
 	text, err := s.runTool(p.Name, p.Arguments)
+	// 빈 그래프의 vertex not found에는 CLI와 같은 이유(그 문서의 limitation)를 붙인다.
+	err = emptyGraphHint(s.doc, err)
 	result := map[string]any{
 		"content": []map[string]any{{"type": "text", "text": text}},
 	}

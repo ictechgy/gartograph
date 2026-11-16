@@ -166,7 +166,7 @@ func runTraversal(in traversalRun, stdout, stderr io.Writer) int {
 func reportTraversalError(stderr io.Writer, err error) int {
 	var ue *usageError
 	if errors.As(err, &ue) {
-		fmt.Fprintln(stderr, "error:", ue.msg)
+		writeErrorLines(stderr, "error: ", ue.msg)
 		return exitUsage
 	}
 	return fail(stderr, err)
@@ -294,14 +294,15 @@ func parseRootsJSON(data []byte) ([]string, error) {
 	return out, nil
 }
 
-// parseGeneratedAt은 --generated-at을 계약의 UTC 밀리초 형식으로 정규화한다(없으면 지금).
+// parseGeneratedAt은 --generated-at을 계약의 UTC 밀리초 형식으로 정규화한다(없으면 지금). 문법과 영(零) 시각
+// 거부는 bridge-facts 문서 명령과 같다(parseTimestamp) — 틀린 값은 사용법 오류(64)다.
 func parseGeneratedAt(value string) (string, error) {
 	if value == "" {
 		return time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), nil
 	}
-	t, err := time.Parse(time.RFC3339Nano, value)
+	t, err := parseTimestamp(value)
 	if err != nil {
-		return "", &usageError{"--generated-at must be an RFC 3339 timestamp such as 2026-09-30T00:00:00.000Z"}
+		return "", &usageError{err.Error()}
 	}
 	return t.UTC().Format("2006-01-02T15:04:05.000Z"), nil
 }

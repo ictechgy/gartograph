@@ -95,7 +95,7 @@ Usage:
   gartograph graph  [--level package|type|symbol] [--format json|mermaid|dot] [--out FILE] [flags]
   gartograph cycles [--level package|type|symbol] [--strict] [--format text|json|sarif]
                     [--baseline FILE | --write-baseline FILE] [flags]
-  gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--strict]
+  gartograph dead   [--retain-public] [--root ID]... [--explain ID] [--algo cha|rta] [--strict]
                     [--format text|json|sarif]
                     [--baseline FILE | --write-baseline FILE] [flags]
   gartograph rules  [--config FILE] [--strict] [--format text|json|sarif]
@@ -108,27 +108,31 @@ Usage:
                     [--type-edges members|all] [--revision REV] [--generated-at TS] [flags]
                     isthmus dependents traversal
   gartograph reach  <id>... [--roots-from FILE|-] [--depth N] [--max N] [--type-edges members|all]
-                    [--revision REV] [--generated-at TS] [flags]   isthmus dependencies traversal
+                    [--revision REV] [--generated-at TS] [--format language-traversal] [flags]
+                    isthmus dependencies traversal
   gartograph path   <from-id> <to-id> [--level L] [flags]
   gartograph shared <id> <id> [more ids...] [--level L] [flags]
   gartograph diff   <old.json> <new.json> [--strict] [--format text|json]
   gartograph metrics [--config FILE] [--format text|json] [flags]
   gartograph mapping [--config FILE] [--format text|json] [flags]
-  gartograph init   [--dir PATH]  scaffold .gartograph.yml from observed imports
-  gartograph bridges [--dir PATH] [--out FILE]  isthmus bridge-facts (platform "go")
-  gartograph schema  [--dir PATH] [--out FILE]  isthmus persistence relation-uses (platform "go")
-  gartograph routes  [--role server|client] [--dir PATH] [--pattern P]... [--service NAME]
+  gartograph init   [--dir PATH] [flags]  scaffold .gartograph.yml from observed imports
+  gartograph bridges [--dir PATH] [--generated-at TS] [--out FILE]  isthmus bridge-facts (platform "go")
+  gartograph schema  [--dir PATH] [--generated-at TS] [--out FILE]
+                     isthmus persistence relation-uses (platform "go")
+  gartograph routes  [--role server|client] [--dir PATH] [--pattern P]... [--tags T] [--service NAME]
                      [--wrappers FILE] [--generated-at TS] [--out FILE]
                      isthmus http route declarations or route calls (platform "go")
   gartograph unused-deps [--strict] [--format text|json] [flags]
-  gartograph mcp    serve the graph over MCP stdio [flags]
+  gartograph mcp    [--level package|type|symbol] [--config FILE] [flags]
+                    serve the graph over MCP stdio
   gartograph version | --version
 
-Harvest flags (graph, cycles, dead, rules, query):
+Harvest flags (commands marked [flags]):
   --dir PATH    module root to analyze (default ".")
   --pattern P   package pattern, repeatable (default "./...")
   --tests       include test variant packages
   --deps        include dependencies outside the main module
+  --tags T      build tags for the loader (comma-separated)
   --goos/--goarch  harvest for a different target platform (conditional files)
   --graph FILE  read a saved graph document instead of harvesting
 
@@ -142,7 +146,7 @@ func flagSet(name string, stderr io.Writer) (*flag.FlagSet, *source.Options, *st
 	var opts source.Options
 	var graphPath string
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	fs.StringVar(&opts.Dir, "dir", ".", "module root to analyze")
 	fs.Var((*patterns)(&opts.Patterns), "pattern", "package pattern (repeatable)")
 	fs.BoolVar(&opts.Tests, "tests", false, "include test variant packages")
@@ -309,7 +313,13 @@ func loadIDDoc(opts *source.Options, graphPath, level string) (*graph.Document, 
 // 존재하는 코드를 없다고 믿는다. 저장 문서(--graph)에는 --level이 듣지 않으므로
 // 다시 저장하는 길을 알린다 — 무시되는 플래그를 권하면 같은 오류가 되풀이된다.
 func levelHint(doc *graph.Document, graphPath string, err error) error {
-	if !errors.Is(err, analysis.ErrNotFound) || doc.Level.Rank() >= graph.LevelSymbol.Rank() {
+	if !errors.Is(err, analysis.ErrNotFound) {
+		return err
+	}
+	if len(doc.Vertices) == 0 {
+		return emptyGraphHint(doc, err)
+	}
+	if doc.Level.Rank() >= graph.LevelSymbol.Rank() {
 		return err
 	}
 	remedy := "re-run with --level symbol"
@@ -320,10 +330,62 @@ func levelHint(doc *graph.Document, graphPath string, err error) error {
 		err, doc.Level, remedy)
 }
 
+// emptyGraphHint는 정점이 하나도 없는 문서에서 정점을 못 찾은 오류에 그 문서의 limitation을 덧붙인다 — 레벨이
+// 아니라 수확 범위(패턴 오류·패턴 불일치)가 원인이다. CLI의 ID 명령(levelHint)과 MCP 도구가 같은 문구를 쓴다.
+// 다른 오류나 정점이 있는 문서면 err를 그대로 돌려준다.
+func emptyGraphHint(doc *graph.Document, err error) error {
+	if doc == nil || !errors.Is(err, analysis.ErrNotFound) || len(doc.Vertices) > 0 {
+		return err
+	}
+	if len(doc.Limitations) == 0 {
+		return fmt.Errorf("%w (the graph has no vertices)", err)
+	}
+	return fmt.Errorf("%w (the graph has no vertices: %s)", err, strings.Join(doc.Limitations, "; "))
+}
+
 // fail은 에러를 출력하고 종료 코드 2를 돌려준다.
 func fail(stderr io.Writer, err error) int {
-	fmt.Fprintln(stderr, "error:", err)
+	writeErrorLines(stderr, "error: ", err.Error())
 	return 2
+}
+
+// writeErrorLines는 오류 문구를 줄 단위로 쓴다 — 첫 줄에 prefix를 붙이고 이어지는 줄은 두 칸 들여 쓴다. yaml
+// unmarshal 오류·go.mod 파싱 오류처럼 원래 여러 줄인 오류가 한 줄의 `\x0a`로 뭉개지지 않고 읽히는 모양으로 남는다.
+// 줄마다 textLine으로 거른다(제어 문자 이스케이프, 앞 공백류 뒤 `::`와 모든 `##[` 무력화) — 인자 속 개행 뒤의
+// `::error::`는 들여쓴 이어지는 줄이 되고, neutralizeWorkflowCommand가 앞 공백류를 지우고 보므로 워크플로 명령이
+// 되지 않으며, 들여쓰기 때문에 오류의 첫 줄(`error: …`)로 위장하지도 못한다. 끝 개행은 지운다.
+func writeErrorLines(w io.Writer, prefix, msg string) {
+	lines := strings.Split(strings.TrimRight(msg, "\n"), "\n")
+	textLine(w, "%s%s", prefix, lines[0])
+	for _, line := range lines[1:] {
+		textLine(w, "  %s", line)
+	}
+}
+
+// setFlagOutput은 flag 패키지의 출력을 정한다. flag는 사용법 오류를 출력에 `fmt.Fprintln(Output(), err)`로 쓰는데,
+// 그 문구는 정의되지 않은 플래그 이름(`flag provided but not defined: -<인자>`)과 문법이 틀린 인자를 그대로 담는다 —
+// 인자 속 개행·ESC가 stderr에 워크플로 명령 줄·터미널 시퀀스를 만든다. 그래서 출력은 오류 줄을 textLine처럼 거르는
+// flagErrorWriter이고, 사용법(-h와 오류 뒤의 플래그 목록)은 이 도구가 쓴 설명이라 Usage가 원래 stderr에 그대로
+// 쓴다(flag의 기본 사용법과 같은 바이트 — 설명의 탭이 \x09가 되지 않는다).
+func setFlagOutput(fs *flag.FlagSet, stderr io.Writer) {
+	errOut := flagErrorWriter{stderr}
+	fs.SetOutput(errOut)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "Usage of %s:\n", fs.Name())
+		fs.SetOutput(stderr)
+		fs.PrintDefaults()
+		fs.SetOutput(errOut)
+	}
+}
+
+// flagErrorWriter는 flag가 쓰는 오류 한 줄(Fprintln 한 번 = Write 한 번)을 fail과 같은 줄 규칙으로 거른다.
+type flagErrorWriter struct{ w io.Writer }
+
+// Write는 io.Writer 계약이다. 끝 개행을 떼고 줄마다 거른 뒤(writeErrorLines) textLine이 다시 붙인다 — 인자 속
+// 개행은 들여쓴 이어지는 줄이 된다.
+func (f flagErrorWriter) Write(p []byte) (int, error) {
+	writeErrorLines(f.w, "", string(p))
+	return len(p), nil
 }
 
 // checkFormat은 --format 값이 allowed 중 하나인지 본다. 아니면 사용법 오류를 알리고 false다.
@@ -852,8 +914,12 @@ func generatedFindings(findings []analysis.Finding) int {
 // missingRootLimitations는 프로그램 진입점이 없는 dead 보고의 --retain-public 안내다. main 패키지는
 // 패키지 레벨에서도 루트 목록에 오르므로 목록 길이가 아니라 심볼 루트로 판정한다 — 그렇지 않으면 func
 // main 없는 package main(plugin·c-shared 빌드)에서 안내가 사라진다. 다른 패키지에 진입점이 있으면
-// func main 없는 main 패키지 수를 따로 센다(그 패키지의 공개 API는 호스트가 부른다).
+// func main 없는 main 패키지 수를 따로 센다(그 패키지의 공개 API는 호스트가 부른다). 정점이 하나도 없는 문서
+// (패턴 오류·패턴이 고른 패키지 없음 — 수확이 그 사실을 limitation으로 센다)에는 공개 API도 없어 안내하지 않는다.
 func missingRootLimitations(doc *graph.Document) []string {
+	if len(doc.Vertices) == 0 {
+		return nil
+	}
 	if !hasSymbolRoot(doc) {
 		return []string{"no main or init roots found; exported API may appear unreachable (use --retain-public)"}
 	}
@@ -1084,8 +1150,7 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 	if cfgPath == "" {
 		found, ok := config.Find(opts.Dir)
 		if !ok {
-			fmt.Fprintf(stderr, "error: no .gartograph.yml found in %s\n", opts.Dir)
-			return 2
+			return fail(stderr, fmt.Errorf("no .gartograph.yml found in %s", opts.Dir))
 		}
 		cfgPath = found
 	}
@@ -1342,7 +1407,7 @@ func impactTraversal(fs *flag.FlagSet, positional []string, opts *source.Options
 		}
 	})
 	if conflict != "" {
-		fmt.Fprintln(stderr, "error:", conflict)
+		textLine(stderr, "error: %v", conflict)
 		return exitUsage
 	}
 	return runTraversal(traversalRun{direction: analysis.DirectionDependents, positional: positional,
@@ -1411,7 +1476,7 @@ func cmdShared(args []string, stdout, stderr io.Writer) int {
 // 공개 시그니처의 타입 참조 제거)가 있을 때 1을 돌려준다.
 func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	format := fs.String("format", "text", "output format: text|json")
 	strict := fs.Bool("strict", false, "exit 1 on breaking changes")
 	positional, err := parseInterspersed(fs, args)
@@ -1534,9 +1599,7 @@ func cmdMetrics(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if doc.Level.Rank() < graph.LevelPackage.Rank() {
-		fmt.Fprintf(stderr,
-			"error: metrics needs package-level data; document is %s level\n", doc.Level)
-		return 2
+		return fail(stderr, fmt.Errorf("metrics needs package-level data; document is %s level", doc.Level))
 	}
 	rep := analysis.Metrics(doc, cfg)
 	limitations := metricsLimitations(doc, configNotes)
@@ -1630,8 +1693,7 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 	if cfgPath == "" {
 		found, ok := config.Find(opts.Dir)
 		if !ok {
-			fmt.Fprintf(stderr, "error: no .gartograph.yml found in %s\n", opts.Dir)
-			return 2
+			return fail(stderr, fmt.Errorf("no .gartograph.yml found in %s", opts.Dir))
 		}
 		cfgPath = found
 	}
@@ -1645,9 +1707,7 @@ func cmdMapping(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if doc.Level.Rank() < graph.LevelPackage.Rank() {
-		fmt.Fprintf(stderr,
-			"error: mapping needs package-level data; document is %s level\n", doc.Level)
-		return 2
+		return fail(stderr, fmt.Errorf("mapping needs package-level data; document is %s level", doc.Level))
 	}
 	m := analysis.MapComponents(doc, cfg)
 	switch *format {
@@ -1699,10 +1759,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if _, ok := config.Find(opts.Dir); ok {
-		fmt.Fprintf(stderr,
-			"error: .gartograph.yml already exists in %s — remove it to regenerate\n",
-			opts.Dir)
-		return 2
+		return fail(stderr, fmt.Errorf(".gartograph.yml already exists in %s — remove it to regenerate", opts.Dir))
 	}
 	opts.Level = graph.LevelPackage
 	doc, err := loadDoc(opts, *graphPath)
@@ -1711,9 +1768,10 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	}
 	cfg := analysis.ScaffoldConfig(doc)
 	if len(cfg.Components) == 0 {
-		fmt.Fprintf(stderr,
-			"error: no internal packages found in %s — nothing to scaffold\n", opts.Dir)
-		return 2
+		code := fail(stderr, fmt.Errorf("no internal packages found in %s — nothing to scaffold", opts.Dir))
+		// 패턴 오류처럼 수확이 센 이유를 함께 낸다 — 디렉터리만 말하면 --pattern 오타가 "패키지 없음"으로 보인다.
+		writeLimitationLines(stderr, doc.Limitations)
+		return code
 	}
 	data, err := config.Render(cfg)
 	if err != nil {
@@ -1734,7 +1792,18 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("closing %s: %w", path, err))
 	}
 	fmt.Fprintf(stdout, "wrote %s (%d components)\n", path, len(cfg.Components))
+	// 성공해도 수확이 센 공백을 알린다 — init은 문서를 내지 않아, --pattern 하나가 틀리면 나머지 패턴의 컴포넌트만
+	// 담긴 설정이 아무 표시 없이 생겼다. 표준 출력과 종료 코드는 그대로다.
+	writeLimitationLines(stderr, doc.Limitations)
 	return 0
+}
+
+// writeLimitationLines는 수확 limitation을 `limitation: …` 한 줄씩 쓴다(textLine 규칙). 문서를 내지 않는 init이
+// 수확이 보지 못한 몫을 알리는 통로다.
+func writeLimitationLines(w io.Writer, limitations []string) {
+	for _, l := range limitations {
+		textLine(w, "limitation: %s", l)
+	}
 }
 
 // cmdUnusedDeps는 go.mod의 require 중 어느 패키지도 import하지 않는
@@ -1791,13 +1860,19 @@ func cmdUnusedDeps(args []string, stdout, stderr io.Writer) int {
 // 받지 않는다.
 func cmdBridges(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bridges", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	dir := fs.String("dir", ".", "module root to scan")
 	out := fs.String("out", "", "write the document to FILE instead of stdout")
+	generatedAt := fs.String("generated-at", "", "fixed generatedAt timestamp (RFC 3339, UTC)")
 	if fs.Parse(args) != nil {
 		return 2
 	}
-	doc, err := source.BridgeFacts(*dir, Version)
+	// 시각 검증은 스캔과 --out 쓰기보다 먼저다(routes와 같다).
+	generated, err := parseFactsGeneratedAt(*generatedAt)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	doc, err := source.BridgeFacts(*dir, generated, Version)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -1821,11 +1896,16 @@ func cmdBridges(args []string, stdout, stderr io.Writer) int {
 // 코드가 SQL 관계를 이름으로 참조하는 경계를 relation-use 사실로 수확한다.
 func cmdSchema(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("schema", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	setFlagOutput(fs, stderr)
 	dir := fs.String("dir", ".", "module root to scan")
 	out := fs.String("out", "", "write the document to FILE instead of stdout")
+	generatedAt := fs.String("generated-at", "", "fixed generatedAt timestamp (RFC 3339, UTC)")
 	if fs.Parse(args) != nil {
 		return 2
+	}
+	generated, err := parseFactsGeneratedAt(*generatedAt)
+	if err != nil {
+		return fail(stderr, err)
 	}
 	// usr 확인용 그래프는 impact와 같은 exclude로 만든다 — 기본 impact 그래프에
 	// 없는 정점 ID를 usr로 실으면 trace가 순회에서 찾지 못하는 유령 신원이 된다.
@@ -1833,7 +1913,7 @@ func cmdSchema(args []string, stdout, stderr io.Writer) int {
 	if err := applyConfigExclude(&opts); err != nil {
 		return fail(stderr, err)
 	}
-	doc, err := source.SchemaFacts(opts, Version)
+	doc, err := source.SchemaFacts(opts, generated, Version)
 	if err != nil {
 		return fail(stderr, err)
 	}
