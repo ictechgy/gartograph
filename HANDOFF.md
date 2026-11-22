@@ -53,12 +53,23 @@
   unused-deps·metrics·init·mcp)에 크래시는 없었다.
   - 패턴 오류로 센 풀리지 않은 import를 `--deps`·심볼 레벨·unused-deps가 로드 오류로 다시 세던 것(아래 "남은 일"에
     있던 이중 계수). 정점 집합은 그대로다.
-  - module 레벨이 로드 오류를 하나도 세지 않고 풀리지 않은 import를 `(builtin)`으로 세던 것. 오류 없는 문서는
-    바이트가 같다(이 저장소와 실제 모듈 14개의 module·package 문서 전후 동일).
+  - module 레벨이 로드 오류를 하나도 세지 않고 풀리지 않은 import를 `(builtin)`으로 세던 것. 이제 정점 모듈 패키지의
+    오류와 풀리지 않은 import(`--deps` 없이도)를 센다 — 패키지 레벨과 기준이 같지는 않다(패키지 레벨은 `--deps` 없이
+    풀리지 않은 import를 "주 모듈 밖 import 생략"으로 센다). 오류를 낸 std(`syscall/js`)는 builtin 그대로다. 오류 없는
+    문서는 바이트가 같다(이 저장소와 실제 모듈 14개의 module·package 문서 전후 동일).
   - unused-deps가 의존 패키지의 빌드 제약 제외 파일 import를 보지 않아 tidy가 지키는 require를 미사용 indirect로
     오보하던 것(x/tools의 x/sys, modernc sqlite의 go-isatty·go-strftime — `go mod tidy -diff` 차이 없음). 같은
     코퍼스에서 판정이 바뀐 것 셋(모두 사용 쪽), limitation 수만 바뀐 것 넷, 나머지 여덟은 같다.
   - MCP `tools/list`의 일곱 도구가 `"required": null`(무효 JSON Schema)을 싣던 것 — ajv 6.15가 거부했다.
+  - PR #58 독립 리뷰 후속(같은 브랜치): 앞 항목의 "tidy는 의존 패키지 테스트 import를 세지 않는다"는 의존 모듈의
+    go.mod가 그 모듈을 제공할 때만 맞았다. tidy는 테스트만의 의존 모듈을, "all"의 모듈과 그 go.mod require로 만든
+    그래프가 고른 버전 이상으로 제공하지 못하면 남긴다(go1.27.1 modload `tidyPrunedRoots`). unused-deps가 그 규칙으로
+    의존 패키지 테스트를 판정한다(`source/unusedtests.go`) — 리뷰 fixture f7·f7b·f7c(tidy가 지킴)는 미사용 → 사용,
+    f7d·f1·f2·f4(tidy가 지움)는 미사용 그대로, pgx의 `gopkg.in/check.v1`은 사용(tidy가 지킴). 이번에 적재하지 않은
+    테스트 의존의 import(pgx `kr/pretty`는 check.v1이 import한다)는 못 봐서, 미사용이 남을 때 그 테스트 파일 수를
+    limitation으로 센다(pgx 22, go-ora 62). 코퍼스의 나머지 열셋은 PR 머리(`3eeb840`) 대비 unused-deps 출력이 같다. 함께: module 레벨 std 오류는 builtin,
+    cgo 제외 파일 안내에 `CGO_ENABLED=1`, 제외·테스트 파일은 import 선언까지만 읽기(sqlite 의존 제외 파일 767개
+    약 47 MB → 첫 16 KiB 안, 상한 약 6 MB).
   - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.8%(기준 90%), `Scripts/verify-cli-contract.sh` OK, 자기 분석
     dead 12건(main과 같은 목록)·rules/cycles type·symbol `--strict` 0, conformance drift current. Windows·macOS 테스트는
     CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
@@ -123,11 +134,12 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
   3 SQL placeholder …` limitation). tsograph는 게이트 없는 리터럴에 대문자 동사만 받고 나머지를 skipped로 센다. 같은
   규칙을 쓰면 소문자 SQL 리터럴(Go에서 흔하다)의 참 사실도 빠지므로 반대 코퍼스와 isthmus dead-schema 영향 증거와
   함께 사용자가 고른다.
-- unused-deps: pgx v5.11.0에서 `github.com/kr/pretty`·`gopkg.in/check.v1`을 미사용 indirect로 내지만 `go mod tidy
-  -diff`는 둘을 지킨다(`go mod why -m`이 `gopkg.in/yaml.v3.test` 경로를 보인다). 의존 패키지 테스트만의 import는
-  아니다 — 의존 모듈(go 1.27·go 1.12)의 테스트 파일만 import하는 require는 fixture에서 tidy가 지웠다. go 지시문이
-  없는 yaml.v3 go.mod(가지치기 안 된 그래프)와 관련 있어 보이나 원인을 확정하지 못했다. 판정은 indirect라 `--strict`에
-  들지 않는다.
+- unused-deps의 테스트 의존 판정은 한 단계뿐이다. 의존 패키지 테스트가 import한 패키지가 이번 로드에 없으면(테스트만의
+  의존) 그 패키지의 import와, tidy가 그 모듈을 루트로 더하며 늘어나는 그래프를 보지 못한다 — pgx v5.11.0의
+  `github.com/kr/pretty`(yaml.v3 테스트 → check.v1 → kr/pretty, tidy는 지킨다)가 미사용 indirect로 남고 limitation이
+  붙는다. 메우려면 그 패키지 소스(모듈 캐시에 없을 수 있다)를 읽어 tidy의 단계별 루프를 따라가야 한다. 그래프 근사도
+  가지치기 안 된(go 1.17 미만) 모듈의 전이 require를 담지 않는다(판정이 사용 쪽으로 기운다). 둘 다 indirect 판정이라
+  `--strict`에 들지 않는다.
 - SARIF: cycles의 논리 위치 kind가 type·symbol 레벨 멤버에도 `module`이고, dead는 `func`·`var`처럼 SARIF 권장
   어휘(function·variable·member·type) 밖의 kind를 싣는다(권장 사항이라 무효는 아니다). 바꾸면 SARIF 소비자 출력이
   바뀐다.
