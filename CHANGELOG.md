@@ -27,8 +27,10 @@
   어느 모듈도 제공하지 않는 import 경로다. 둘째는 `--deps` 없이도 센다(패키지 레벨은 그 import를 "주 모듈 밖 import
   생략"으로 세지만 module 문서에는 그 수치가 없다). 예전에는 module 레벨이 로드 오류를 하나도 세지 않아 주 모듈
   패키지의 import 블록을 읽지 못해도 limitation이 없었고, 풀리지 않은 import는 std가 아닌데 `N packages have no
-  module (builtin)`으로 세였다. std 패키지는 오류가 있어도(이 플랫폼 파일이 없는 `syscall/js`) 지금처럼 builtin으로
-  센다 — std는 모듈 간선과 무관하다. 패턴 오류 limitation이 이미 센 경로는 다시 세지 않는다. 로드 오류가 없는
+  module (builtin)`으로 세였다(점 없는 `fmtt`·`myapp/missing`은 main에서도 그랬다). std 패키지는 오류가 있어도(이
+  플랫폼 파일이 없는 `syscall/js` — go list가 GOROOT 디렉터리를 싣는다) 지금처럼 builtin으로 센다 — std는 모듈
+  간선과 무관하다. 점 없는 경로라도 go list가 디렉터리를 찾지 못한 것(std 오타 `fmtt`, `module myapp`의
+  `myapp/missing`)은 풀리지 않은 import로 센다. 패턴 오류 limitation이 이미 센 경로는 다시 세지 않는다. 로드 오류가 없는
   문서는 바이트가 같다.
 - `unused-deps`: 의존 패키지의 빌드 제약 제외 파일이 import하는 모듈도 사용으로 센다. go mod tidy는 주 모듈이
   import하는 패키지 전체의 모든 태그·플랫폼 파일을 보고 그 require를 go.mod에 남기는데, 예전에는 주 모듈 파일만

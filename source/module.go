@@ -121,9 +121,14 @@ func moduleVertex(doc *graph.Document, m *packages.Module) {
 }
 
 // unresolvedPackage는 모듈이 없고 오류를 낸 std 밖 패키지 — 어느 모듈도 제공하지 않는 import 경로 — 인지 본다.
-// std는 첫 경로 요소에 점이 없다(standardLibraryPath).
+// std는 경로 모양(standardLibraryPath)만으로 가르지 않는다 — go list는 GOROOT에서 찾은 std 패키지에만 Dir을 싣는다
+// (이 플랫폼 파일이 없는 syscall/js). 점 없는 오타(`fmtt` — "is not in std")와 점 없는 주 모듈 경로의 없는 패키지
+// (`module myapp`의 `myapp/missing`)는 Dir이 없어 풀리지 않은 import로 센다.
 func unresolvedPackage(p *packages.Package) bool {
-	return p.Module == nil && len(p.Errors) > 0 && !standardLibraryPath(p.PkgPath)
+	if p.Module != nil || len(p.Errors) == 0 {
+		return false
+	}
+	return p.Dir == "" || !standardLibraryPath(p.PkgPath)
 }
 
 // standardLibraryPath는 import 경로가 표준 라이브러리 모양인지 본다 — go 명령의 규칙대로 첫 경로 요소에 점이 없다.

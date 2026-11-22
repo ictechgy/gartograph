@@ -248,7 +248,7 @@ func TestPatternErrorImportedCountedOnce(t *testing.T) {
 // 풀리지 않은 import — 를 세는지 본다. 예전에는 module 레벨이 로드 오류를 하나도 세지 않았다 — 풀리지 않은 import는
 // "1 packages have no module (builtin)"으로 세였고(std가 아니다), 주 모듈 패키지의 import 블록을 읽지 못해도
 // limitation이 없었다. 패턴 오류가 이미 센 경로는 다시 세지 않는다. 이 플랫폼 파일이 없어 오류를 낸 std
-// (syscall/js)는 모듈 간선과 무관해 지금처럼 builtin으로 센다.
+// (syscall/js — go list가 GOROOT의 디렉터리를 싣는다)는 모듈 간선과 무관해 지금처럼 builtin으로 센다.
 func TestModuleLevelCountsLoadErrors(t *testing.T) {
 	const moduleNote = "1 " + loadErrorNote + "; module edges through them may be incomplete"
 	dir := unresolvedImportModule(t)
@@ -273,6 +273,19 @@ func TestModuleLevelCountsLoadErrors(t *testing.T) {
 	if _, lims := harvestLimitations(t, "graph", "--level", "module", "--dir", broken); countWith(lims, moduleNote) != 1 {
 		t.Errorf("module: a main-module package whose imports could not be read must be counted:\n%s",
 			strings.Join(lims, "\n"))
+	}
+
+	// 점 없는 경로도 std가 아닐 수 있다 — std 오타(`fmtt`, "is not in std")와 점 없는 주 모듈 경로의 없는 패키지는 go
+	// list가 디렉터리를 찾지 못한 풀리지 않은 import다(예전에는 경로 모양만 보고 builtin으로 셌다).
+	for name, files := range map[string]map[string]string{
+		"std typo": {"main.go": "package main\n\nimport _ \"fmtt\"\n\nfunc main() {}\n"},
+		"dotless module path": {"go.mod": "module myapp\n\ngo 1.27\n",
+			"main.go": "package main\n\nimport _ \"myapp/missing\"\n\nfunc main() {}\n"},
+	} {
+		_, lims := harvestLimitations(t, "graph", "--level", "module", "--dir", testutil.WriteModule(t, files))
+		if countWith(lims, moduleNote) != 1 || countWith(lims, "(builtin)") != 0 {
+			t.Errorf("%s: an unresolved dotless import is a load error, not builtin:\n%s", name, strings.Join(lims, "\n"))
+		}
 	}
 
 	if runtime.GOOS == "js" {
