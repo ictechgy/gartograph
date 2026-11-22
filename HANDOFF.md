@@ -78,6 +78,21 @@
     재료가 없다). module 레벨은 go list가 디렉터리를 찾지 못한 점 없는 경로(`fmtt`, `myapp/missing`)를 builtin이
     아니라 로드 오류로 센다(fx/modlvl·fx/modlvl2 — main에서도 builtin이었다). 이 저장소와 실제 모듈 14개의 unused-deps·
     module 출력은 PR 머리(`e49b034`) 대비 같다. fx/other·fx/ign·fx/eq·fx/lower·fx/xtest·fx/cgo도 tidy와 같다.
+  - PR #58 세 번째 델타 리뷰 후속(리뷰 하네스 `cmp2.sh` — 로컬 파일 프록시·전용 모듈 캐시로 go1.27.1 tidy와 대조):
+    - 차단 문제: 같은 입력의 판정이 실행마다 달랐다(fx2/nd: a230a8f로 30번 중 14번 사용·16번 미사용, tidy는 z를
+      지움). 루트 읽기와 가지치기 없는 걸음이 방문 집합 하나를 함께 써서, 가지치기된 루트 xm을 루트로 먼저 읽으면
+      go 1.16 루트 a의 걸음이 xm에서 멈췄다 — 순서는 walkImports의 import 맵 순회였다. go1.27.1 `readModGraph`는
+      (모듈, 가지치기)로 중복을 거른다(dedupKey). 이제 두 읽기를 따로 세고 루트·테스트 파일을 정렬한다 — fx2/nd
+      20번(그리고 30번) 모두 tidy와 같다.
+    - go.work의 replace가 바꾼 루트의 go.mod·go 지시문을 읽어(Module.GoMod·GoVersion) tidy가 지키는 require를
+      미사용으로 냈다(fx2/wsrep). 이제 루트 go.mod도 주 go.mod의 replace로만 골라 읽고(go 지시문도 그 파일에서), go.work
+      replace로 바뀐 모듈은 테스트 파일을 바뀐 쪽에서 읽으므로 미사용이 남을 때 limitation으로 센다.
+    - 모듈 캐시 루트를 정확한 꼬리로 떼어 얻는다(캐시 경로에 cache/download가 든 fx2/base: 사용 → 미사용, tidy가
+      지움). 그런 모듈이 없으면 `go env GOMODCACHE`(임시 디렉터리에서, GOTOOLCHAIN=local)로 묻는다 — `go env -w` 값.
+    - go 지시문 `1.17rc1`은 1.17 앞이라 가지치기 안 됨(go/version.Compare, fx2/g117rc: 사용 → 미사용, tidy가 지움).
+    - 남은 변이(한 단계만 걷기, 걸음의 방문 검사 제거)를 잡는 두 단계 사슬·c1⇄c2 순환 단위 테스트를 더했다.
+    - fx2 20개 전부와 앞 리뷰 fixture가 tidy와 같다(fx/ws·fx/stale 제외 — 아래·로드 실패). 이 저장소와 실제 모듈 14개의 unused-deps
+      출력은 a230a8f 대비 같고 두 번 돌려도 같다.
   - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.8%(기준 90%), `Scripts/verify-cli-contract.sh` OK, 자기 분석
     dead 12건(main과 같은 목록)·rules/cycles type·symbol `--strict` 0, conformance drift current. Windows·macOS 테스트는
     CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
@@ -151,7 +166,10 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
   수는 limitation)도 남는다.
 - unused-deps(main부터의 기존 동작): go.work가 `./dep`를 `use`하면 example.com/dep을 미사용 직접 require로 낸다(리뷰
   fx/ws) — tidy는 지킨다. 워크스페이스 모듈의 패키지는 Module.Main이라 "사용한 비주 모듈"에 들지 않기 때문이다.
-  `--strict`가 1로 끝나는 거짓 판정이라 다음 작업 후보다(워크스페이스 모듈을 require 사용으로 세는 변경).
+  `--strict`가 1로 끝나는 거짓 판정이라 다음 작업 후보다(워크스페이스 모듈을 require 사용으로 세는 변경). go.work의
+  replace도 같은 계열이다 — 도달 패키지는 replace 대상에서 적재되므로(테스트 파일·Module 정보) unused-deps 전체가 tidy가
+  보지 않는 go.work를 반영한다. 테스트 의존의 그래프는 주 go.mod 기준으로 고쳤고(리뷰 fx2/wsrep), 테스트 파일은 limitation만
+  센다. 워크스페이스 모드에서 GOWORK=off로 다시 적재하는 방법이 있다.
 - SARIF: cycles의 논리 위치 kind가 type·symbol 레벨 멤버에도 `module`이고, dead는 `func`·`var`처럼 SARIF 권장
   어휘(function·variable·member·type) 밖의 kind를 싣는다(권장 사항이라 무효는 아니다). 바꾸면 SARIF 소비자 출력이
   바뀐다.
