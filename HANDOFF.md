@@ -85,14 +85,22 @@
       (모듈, 가지치기)로 중복을 거른다(dedupKey). 이제 두 읽기를 따로 세고 루트·테스트 파일을 정렬한다 — fx2/nd
       20번(그리고 30번) 모두 tidy와 같다.
     - go.work의 replace가 바꾼 루트의 go.mod·go 지시문을 읽어(Module.GoMod·GoVersion) tidy가 지키는 require를
-      미사용으로 냈다(fx2/wsrep). 이제 루트 go.mod도 주 go.mod의 replace로만 골라 읽고(go 지시문도 그 파일에서), go.work
-      replace로 바뀐 모듈은 테스트 파일을 바뀐 쪽에서 읽으므로 미사용이 남을 때 limitation으로 센다.
+      미사용으로 냈다(fx2/wsrep). 이제 루트 go.mod도 주 go.mod의 replace로만 골라 읽는다(go 지시문도 그 파일에서).
     - 모듈 캐시 루트를 정확한 꼬리로 떼어 얻는다(캐시 경로에 cache/download가 든 fx2/base: 사용 → 미사용, tidy가
       지움). 그런 모듈이 없으면 `go env GOMODCACHE`(임시 디렉터리에서, GOTOOLCHAIN=local)로 묻는다 — `go env -w` 값.
     - go 지시문 `1.17rc1`은 1.17 앞이라 가지치기 안 됨(go/version.Compare, fx2/g117rc: 사용 → 미사용, tidy가 지움).
     - 남은 변이(한 단계만 걷기, 걸음의 방문 검사 제거)를 잡는 두 단계 사슬·c1⇄c2 순환 단위 테스트를 더했다.
     - fx2 20개 전부와 앞 리뷰 fixture가 tidy와 같다(fx/ws·fx/stale 제외 — 아래·로드 실패). 이 저장소와 실제 모듈 14개의 unused-deps
       출력은 a230a8f 대비 같고 두 번 돌려도 같다.
+  - PR #58 마지막 리뷰 후속: go.work가 적용된 적재(`go env GOWORK`를 go list와 같은 디렉터리·환경으로 묻는다)에서 미사용이
+    남으면 `N requires reported unused were judged with a go.work file in effect, which go mod tidy ignores; …`를 단다.
+    앞 커밋의 go.work replace 전용 계수는 원래 모듈의 go.mod가 캐시에 있을 때만 나와서(리뷰 wsdir) 이것으로 대신했다.
+    리뷰 사례를 로컬 파일 프록시로 다시 만들어 대조했다(tidy는 GOWORK=off): wsuse(dep2를 `use` — tidy는 dep2·z를
+    지키는데 dep2 미사용 직접·z 미사용 indirect)·wsver(`use ./other`가 t를 v1.1.0으로 올림 — tidy는 z를 지키는데 미사용)·
+    wsdir(go.work replace, 빈 캐시와 데운 캐시)·fx/ws 모두 판정은 그대로이고 이제 limitation이 붙는다. `GOWORK=off`로 돌리면
+    wsuse·wsver·wsdir·dbl·fx2/wsrep 모두 tidy와 같다. 같은 모듈 버전의 go.mod는 한 번만 읽어(go의 loadCache처럼) 못 읽은
+    파일을 두 번 세지 않는다(dbl, 빈 캐시: `2 … could not be read` → `1`). 캐시가 파일 시스템 루트(`/`, `D:\`)면 루트를
+    그대로 둔다(끝 구분자를 떼면 빈 문자열·드라이브 상대 경로가 됐다).
   - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.8%(기준 90%), `Scripts/verify-cli-contract.sh` OK, 자기 분석
     dead 12건(main과 같은 목록)·rules/cycles type·symbol `--strict` 0, conformance drift current. Windows·macOS 테스트는
     CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
@@ -165,11 +173,11 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
   그래프 근사가 고른 버전을 주 go.mod의 require 버전으로 대신하는 점, 읽지 못한 go.mod는 사용 쪽으로 기우는 점(그
   수는 limitation)도 남는다.
 - unused-deps(main부터의 기존 동작): go.work가 `./dep`를 `use`하면 example.com/dep을 미사용 직접 require로 낸다(리뷰
-  fx/ws) — tidy는 지킨다. 워크스페이스 모듈의 패키지는 Module.Main이라 "사용한 비주 모듈"에 들지 않기 때문이다.
-  `--strict`가 1로 끝나는 거짓 판정이라 다음 작업 후보다(워크스페이스 모듈을 require 사용으로 세는 변경). go.work의
-  replace도 같은 계열이다 — 도달 패키지는 replace 대상에서 적재되므로(테스트 파일·Module 정보) unused-deps 전체가 tidy가
-  보지 않는 go.work를 반영한다. 테스트 의존의 그래프는 주 go.mod 기준으로 고쳤고(리뷰 fx2/wsrep), 테스트 파일은 limitation만
-  센다. 워크스페이스 모드에서 GOWORK=off로 다시 적재하는 방법이 있다.
+  fx/ws, wsuse) — tidy는 지킨다. 워크스페이스 모듈의 패키지는 Module.Main이라 "사용한 비주 모듈"에 들지 않기 때문이다.
+  go.work의 `use`(버전 상향, wsver)·`replace`(wsdir)도 같은 계열이다 — 적재 자체가 tidy가 보지 않는 go.work를 따른다.
+  이제 그런 미사용 판정에는 go.work limitation이 붙지만 판정은 그대로라 fx/ws·wsuse에서 `--strict`는 여전히 1로 끝난다.
+  판정까지 tidy에 맞추려면 unused-deps가 GOWORK=off로 다시 적재하는 변경이 후보다(워크스페이스가 내려받지 못하는 모듈을
+  로컬 디렉터리로만 제공하면 그 적재가 실패할 수 있어, 바꿀지 사용자가 고른다).
 - SARIF: cycles의 논리 위치 kind가 type·symbol 레벨 멤버에도 `module`이고, dead는 `func`·`var`처럼 SARIF 권장
   어휘(function·variable·member·type) 밖의 kind를 싣는다(권장 사항이라 무효는 아니다). 바꾸면 SARIF 소비자 출력이
   바뀐다.

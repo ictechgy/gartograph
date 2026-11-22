@@ -309,6 +309,19 @@ func TestTidyGraphFollowsUnprunedRequirements(t *testing.T) {
 	}
 }
 
+// TestTidyGraphCountsAMissingGoModOnce는 같은 모듈 버전의 go.mod를 루트 읽기와 가지치기 없는 걸음이 모두 찾다가 못 찾아도
+// 한 번만 세는지 본다 — go 명령의 loadCache처럼 결과(실패 포함)를 모듈 버전별로 기억한다. 예전에는 두 읽기를 따로 세어
+// 파일 하나가 없는데 "2 … could not be read"가 됐다(PR #58 리뷰 dbl).
+func TestTidyGraphCountsAMissingGoModOnce(t *testing.T) {
+	c := modCache{t: t, root: t.TempDir()}
+	u := c.rootPackage("example.com/u", c.write("example.com/u", "v1.0.0", "1.16", "example.com/gone v1.0.0"))
+	gone := &packages.Package{PkgPath: "example.com/gone", Module: &packages.Module{Path: "example.com/gone",
+		Version: "v1.0.0", GoMod: filepath.Join(t.TempDir(), "fork", "go.mod")}}
+	if g := graphWithin(t, []*packages.Package{gone, u}, goModFacts{}); g.unreadable != 1 {
+		t.Fatalf("the missing go.mod of gone@v1.0.0 must be counted once, got %d", g.unreadable)
+	}
+}
+
 // TestTidyGraphIsOrderIndependent는 가지치기된 루트가 가지치기 안 된 루트에서도 닿을 때 결과가 루트 순서와 무관한지
 // 본다. tidy는 (모듈, 가지치기)로 중복을 거른다(readModGraph dedupKey) — 루트 b를 루트로 읽었어도 u(go 1.16)에서 닿는
 // b는 가지치기 없이 다시 걸어 b → y → z를 더한다. 예전에는 한 방문 집합을 함께 써서 b를 먼저 처리하면 걸음이 b에서
@@ -336,6 +349,22 @@ func TestModuleCacheRoot(t *testing.T) {
 	dep := c.rootPackage("example.com/dep", c.write("example.com/dep", "v1.0.0", "1.27"))
 	if got := moduleCacheRoot([]*packages.Package{dep}); got != nested {
 		t.Fatalf("moduleCacheRoot = %q, want %q", got, nested)
+	}
+	rel, err := cachedGoModPath(module.Version{Path: "example.com/dep", Version: "v1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 캐시가 파일 시스템 루트면 루트를 그대로 둔다 — 끝 구분자를 떼면 빈 문자열이 되어 캐시를 모른다고 답했다.
+	atRoot := &packages.Package{PkgPath: "example.com/dep", Module: &packages.Module{Path: "example.com/dep",
+		Version: "v1.0.0", GoMod: string(filepath.Separator) + rel}}
+	if got := moduleCacheRoot([]*packages.Package{atRoot}); got != string(filepath.Separator) {
+		t.Fatalf("moduleCacheRoot at the filesystem root = %q, want %q", got, string(filepath.Separator))
+	}
+	if runtime.GOOS == "windows" {
+		atRoot.Module.GoMod = `D:\` + rel
+		if got := moduleCacheRoot([]*packages.Package{atRoot}); got != `D:\` {
+			t.Fatalf("moduleCacheRoot at a drive root = %q, want D:\\ (D: alone is drive-relative)", got)
+		}
 	}
 	forked := c.rootPackage("example.com/orig", c.write("example.com/fork", "v0.1.0", "1.27"))
 	forked.Module.Replace = &packages.Module{Path: "example.com/fork", Version: "v0.1.0"}

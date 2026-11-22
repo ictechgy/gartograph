@@ -4403,7 +4403,7 @@ func TestUnusedDepsDependencyTestVerdictIsStable(t *testing.T) {
 // tidy처럼 주 go.mod의 replace로 고른 go.mod로 만드는지 본다. go mod tidy는 go.work를 보지 않아 dep2(go 1.21, require
 // 없음)를 읽고, dep2의 테스트만 import하는 z를 지킨다(tidyKeeps). 예전에는 적재된 go.work 대상(go 1.16 → e → z)의 go.mod로
 // 그래프를 만들어 z를 미사용으로 냈다(PR #58 리뷰 fx2/wsrep). 테스트 파일은 적재된 대상에서 읽으므로, 미사용이 남으면
-// 그 모듈 수를 limitation으로 센다 — 이 fixture는 미사용이 남지 않아 조용하다.
+// go.work 아래의 판정이라는 limitation을 단다 — 이 fixture는 미사용이 남지 않아 조용하다.
 func TestUnusedDepsIgnoresGoWorkReplaceForTheGraph(t *testing.T) {
 	testFile := "package dep2\n\nimport _ \"example.com/z\"\n"
 	dir := testutil.WriteModule(t, map[string]string{
@@ -4430,7 +4430,7 @@ func TestUnusedDepsIgnoresGoWorkReplaceForTheGraph(t *testing.T) {
 	if code != 0 || strings.Contains(out, "unusedIndirect\": [\n") || !strings.Contains(out, `"usedRequires": 2`) {
 		t.Fatalf("z is kept by tidy and must be used: exit %d\n%s%s", code, out, errb)
 	}
-	// 미사용 require(w)가 남으면 테스트 파일을 go.work 대상에서 읽었다는 공백을 센다.
+	// 미사용 require(w)가 남으면 go.work 아래에서 낸 판정이라는 공백을 센다.
 	files := map[string]string{
 		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep2 v0.0.0\n\n" +
 			"require (\n\texample.com/w v0.0.0 // indirect\n\texample.com/z v1.1.0 // indirect\n)\n\n" +
@@ -4450,9 +4450,50 @@ func TestUnusedDepsIgnoresGoWorkReplaceForTheGraph(t *testing.T) {
 	withUnused := testutil.WriteModule(t, files)
 	rep := runUnusedDepsJSON(t, withUnused)
 	if !slices.ContainsFunc(rep.Limitations, func(l string) bool {
-		return strings.HasPrefix(l, "1 dependency modules were loaded through a go.work replace, which go mod tidy ignores;")
+		return strings.HasPrefix(l, "1 requires reported unused were judged with a go.work file in effect, which go mod tidy ignores;")
 	}) {
-		t.Fatalf("with an unused require left, the go.work-replaced module must be counted: %v", rep.Limitations)
+		t.Fatalf("with an unused require left under go.work, the verdict must be qualified: %v", rep.Limitations)
+	}
+	// GOWORK=off면 go.work가 적용되지 않는다 — w는 여전히 미사용이지만 그 limitation은 없다(go env GOWORK는 "off"를 낸다).
+	t.Setenv("GOWORK", "off")
+	rep = runUnusedDepsJSON(t, withUnused)
+	if slices.ContainsFunc(rep.Limitations, func(l string) bool { return strings.Contains(l, "go.work") }) {
+		t.Fatalf("GOWORK=off disables the workspace, so its limitation must not appear: %v", rep.Limitations)
+	}
+}
+
+// TestUnusedDepsWorkspaceLimitation은 go.work가 적용된 적재에서 미사용 판정이 남으면 tidy와 다를 수 있다는 사실을 세는지
+// 본다. go.work가 dep2를 워크스페이스 모듈로 `use`하면 dep2는 Module.Main이라 사용한 의존이 되지 못하고 그 테스트도
+// 읽히지 않는다 — dep2(직접)와 dep2의 테스트만 import하는 z(indirect)가 미사용으로 남는데 tidy는 go.work를 보지 않아
+// 둘 다 지킨다(tidyKeeps). 예전에는 limitation 없이 냈다(PR #58 리뷰 wsuse, 리뷰 2 fx/ws). 판정과 --strict 1은
+// 그대로다(바꾸지 않는다). GOWORK=off로 다시 돌리면 tidy와 같아지고 limitation도 없다.
+func TestUnusedDepsWorkspaceLimitation(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep2 v0.0.0\n\n" +
+			"require example.com/z v1.1.0 // indirect\n\nreplace (\n\texample.com/dep2 => ./dep2\n\texample.com/z => ./z\n)\n",
+		"go.work":           "go 1.27\n\nuse (\n\t.\n\t./dep2\n)\n",
+		"main.go":           "package main\n\nimport _ \"example.com/dep2\"\n\nfunc main() {}\n",
+		"dep2/go.mod":       "module example.com/dep2\n\ngo 1.21\n",
+		"dep2/dep2.go":      "package dep2\n",
+		"dep2/dep2_test.go": "package dep2\n\nimport _ \"example.com/z\"\n",
+		"z/go.mod":          "module example.com/z\n\ngo 1.21\n",
+		"z/z.go":            "package z\n",
+	})
+	if !tidyKeeps(t, dir, "example.com/dep2") || !tidyKeeps(t, dir, "example.com/z") {
+		t.Fatal("fixture drifted from go mod tidy: tidy must keep dep2 and z")
+	}
+	rep := runUnusedDepsJSON(t, dir)
+	if !slices.Equal(rep.Unused, []string{"example.com/dep2"}) || !slices.ContainsFunc(rep.Limitations, func(l string) bool {
+		return strings.HasPrefix(l, "2 requires reported unused were judged with a go.work file in effect, which go mod tidy ignores;")
+	}) {
+		t.Fatalf("the workspace verdict must carry the go.work limitation: %+v", rep)
+	}
+	if code, _, _ := run(t, "unused-deps", "--dir", dir, "--strict"); code != 1 {
+		t.Fatalf("the verdict is unchanged, so --strict still exits 1 on the workspace module: %d", code)
+	}
+	t.Setenv("GOWORK", "off")
+	if rep := runUnusedDepsJSON(t, dir); len(rep.Unused) != 0 || len(rep.Limitations) != 0 || rep.UsedRequires != 2 {
+		t.Fatalf("with GOWORK=off the verdict must match tidy and stay quiet: %+v", rep)
 	}
 }
 

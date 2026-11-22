@@ -7,6 +7,7 @@
 package source
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -17,6 +18,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -111,7 +113,51 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 	}
 	sort.Strings(rep.Unused)
 	sort.Strings(rep.UnusedIndirect)
+	if note, err := workspaceLimitation(opts, len(rep.Unused)+len(rep.UnusedIndirect)); err != nil {
+		return nil, err
+	} else if note != "" {
+		rep.Limitations = append(rep.Limitations, note)
+	}
 	return rep, nil
+}
+
+// workspaceLimitation은 go.work가 적용된 적재에서 미사용 판정이 남을 때의 limitation이다. go mod tidy는 go.work를 보지
+// 않는다 — 워크스페이스 모듈은 Module.Main이라 그 테스트도 루트도 되지 않고(주 모듈이 require하는 워크스페이스 모듈은
+// 미사용 직접 require로 남는다), go.work의 use·replace는 고른 버전과 적재한 파일을 바꾼다. 그래서 그 판정은 tidy가 남기는
+// 것과 다를 수 있다. 미사용이 없으면 거짓 미사용이 생길 수 없어 묻지도 않는다(빈 문자열).
+func workspaceLimitation(opts Options, unused int) (string, error) {
+	if unused == 0 {
+		return "", nil
+	}
+	goWork, err := activeGoWork(opts)
+	if err != nil || goWork == "" {
+		return "", err
+	}
+	return fmt.Sprintf("%d requires reported unused were judged with a go.work file in effect, which go mod tidy ignores; "+
+		"workspace modules and go.work use or replace directives can make them differ from what tidy keeps "+
+		"(rerun with GOWORK=off to match tidy)", unused), nil
+}
+
+// activeGoWork는 이 적재에 쓰인 go.work 경로다(없으면 빈 문자열). go list와 같은 디렉터리·환경(loaderEnv — GOWORK=off,
+// 캡처의 go.work 포함)으로 `go env GOWORK`에 묻는다 — go 명령이 하는 go.work 탐색을 다시 구현하지 않는다.
+func activeGoWork(opts Options) (string, error) {
+	cmd := exec.Command("go", "env", "GOWORK")
+	cmd.Dir = opts.Dir
+	cmd.Env = loaderEnv(opts)
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			err = fmt.Errorf("%w: %s", err, bytes.TrimSpace(exit.Stderr))
+		}
+		return "", fmt.Errorf("checking for an active go.work with go env GOWORK: %w — check that the go command runs in %s",
+			err, opts.Dir)
+	}
+	goWork := strings.TrimSpace(string(out))
+	if goWork == "off" {
+		return "", nil
+	}
+	return goWork, nil
 }
 
 // dependencyTestVerdicts는 의존 패키지 테스트가 import하는 require 중 tidy가 남기는 것을 in.used에 더하고, 그
@@ -310,11 +356,6 @@ func (s dependencyTestScan) limitations() []string {
 		out = append(out, fmt.Sprintf(
 			"%d dependency modules were loaded from vendor/, which keeps neither their go.mod nor their test files; requires that go mod tidy keeps only for dependency tests may be reported as unused",
 			s.vendored))
-	}
-	if s.workspaceReplaced > 0 {
-		out = append(out, fmt.Sprintf(
-			"%d dependency modules were loaded through a go.work replace, which go mod tidy ignores; their test files were read from the replacement, so requires needed only by dependency tests may be misjudged",
-			s.workspaceReplaced))
 	}
 	return out
 }

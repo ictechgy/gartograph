@@ -33,9 +33,6 @@ type dependencyTestScan struct {
 	// vendored는 go.mod 없이 적재된 의존 모듈 수다(vendor/ — go mod vendor는 의존 모듈의 go.mod와 테스트 파일을
 	// 옮기지 않는다). tidy는 vendor/를 보지 않고 모듈 캐시를 읽으므로, 그 테스트 의존은 판정하지 못한다.
 	vendored int
-	// workspaceReplaced는 go.work의 replace로 바뀐 의존 모듈 수다 — tidy는 go.work를 보지 않아 원래 모듈의 테스트
-	// 파일을 읽지만, 여기서는 적재된(바뀐) 디렉터리의 테스트 파일을 읽는다.
-	workspaceReplaced int
 }
 
 // tidyTestInput은 scanDependencyTests가 받는 주 모듈 쪽 사실이다.
@@ -58,7 +55,6 @@ func scanDependencyTests(reachable []*packages.Package, in tidyTestInput) depend
 	graph := tg.versions
 	scan.unreadable += tg.unreadable
 	scan.vendored = len(tg.vendored)
-	scan.workspaceReplaced = len(tg.workspaceReplaced)
 	versions := requireVersions(in.requires)
 	for _, file := range dependencyTestFiles(reachable, &scan) {
 		f, err := parseImportHeader(file)

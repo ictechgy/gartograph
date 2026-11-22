@@ -38,10 +38,9 @@ type tidyGraph struct {
 	unreadable int
 	// vendored는 go.mod 없이 적재된 의존 모듈 경로다(vendor/).
 	vendored map[string]bool
-	// workspaceReplaced는 주 go.mod의 replace로 고른 go.mod와 다른 파일로 적재된 의존 모듈 경로다 — go.work의
-	// replace가 바꾼 모듈이다. 그래프는 tidy처럼 주 go.mod 기준 go.mod로 만들지만, 테스트 파일은 적재된(바뀐)
-	// 디렉터리에서 읽는다.
-	workspaceReplaced map[string]bool
+	// read는 모듈 버전별 go.mod 읽기 결과다 — 루트 읽기와 가지치기 없는 걸음이 같은 파일을 다시 읽거나, 읽지 못한
+	// 파일을 두 번 세지 않게 한다(go 명령의 loadCache와 같다). 실패는 nil이다.
+	read map[module.Version]*modfile.File
 }
 
 // buildTidyGraph는 도달한 패키지의 의존 모듈(루트)과 그 go.mod로 tidyGraph를 만든다. 루트는 경로·버전순으로
@@ -49,7 +48,7 @@ type tidyGraph struct {
 func buildTidyGraph(reachable []*packages.Package, main goModFacts, modDir string) *tidyGraph {
 	g := &tidyGraph{main: main, modDir: modDir, modCache: moduleCacheRoot(reachable),
 		versions: map[string]string{}, walked: map[string]bool{}, vendored: map[string]bool{},
-		workspaceReplaced: map[string]bool{}}
+		read: map[module.Version]*modfile.File{}}
 	for _, root := range dependencyRoots(reachable, g) {
 		g.addRoot(root)
 	}
@@ -57,8 +56,7 @@ func buildTidyGraph(reachable []*packages.Package, main goModFacts, modDir strin
 }
 
 // dependencyRoots는 도달한 패키지가 속한 의존 모듈 버전을 정렬해 돌려준다. 모든 루트 버전을 버전표에 올리고, go.mod
-// 없이 적재된(vendor/) 모듈은 루트로 읽지 않고 g.vendored에, 주 go.mod 기준과 다른 go.mod로 적재된 모듈은
-// g.workspaceReplaced에 센다.
+// 없이 적재된(vendor/) 모듈은 루트로 읽지 않고 g.vendored에 센다.
 func dependencyRoots(reachable []*packages.Package, g *tidyGraph) []module.Version {
 	seen := map[module.Version]bool{}
 	var roots []module.Version
@@ -76,9 +74,6 @@ func dependencyRoots(reachable []*packages.Package, g *tidyGraph) []module.Versi
 		if !seen[v] {
 			seen[v] = true
 			roots = append(roots, v)
-			if resolved, err := g.goModFile(v); err == nil && differentFiles(m.GoMod, resolved) {
-				g.workspaceReplaced[m.Path] = true
-			}
 		}
 	}
 	sort.Slice(roots, func(i, j int) bool { return roots[i].String() < roots[j].String() })
@@ -88,9 +83,8 @@ func dependencyRoots(reachable []*packages.Package, g *tidyGraph) []module.Versi
 // addRoot는 루트 go.mod의 require를 그래프에 더한다. 루트가 가지치기 안 된 모듈이면(go.mod의 go 지시문으로 판정)
 // 그 require의 go.mod를 따라가 전이 require도 더한다(followUnpruned).
 func (g *tidyGraph) addRoot(root module.Version) {
-	f, err := g.readGoMod(root)
-	if err != nil {
-		g.unreadable++
+	f := g.readGoMod(root)
+	if f == nil {
 		return
 	}
 	next := g.addRequires(f.Require)
@@ -123,17 +117,31 @@ func (g *tidyGraph) followUnpruned(queue []module.Version) {
 			continue
 		}
 		g.walked[m.String()] = true
-		f, err := g.readGoMod(m)
-		if err != nil {
-			g.unreadable++
+		f := g.readGoMod(m)
+		if f == nil {
 			continue
 		}
 		queue = append(queue, g.addRequires(f.Require)...)
 	}
 }
 
-// readGoMod는 모듈 버전 m의 go.mod를 읽는다(goModFile).
-func (g *tidyGraph) readGoMod(m module.Version) (*modfile.File, error) {
+// readGoMod는 모듈 버전 m의 go.mod를 읽는다(goModFile). 읽지 못하면 nil이고 처음 실패할 때만 unreadable로 센다 — 같은
+// 모듈 버전은 한 번만 읽는다(g.read).
+func (g *tidyGraph) readGoMod(m module.Version) *modfile.File {
+	if f, done := g.read[m]; done {
+		return f
+	}
+	f, err := g.loadGoMod(m)
+	if err != nil {
+		g.unreadable++
+		f = nil
+	}
+	g.read[m] = f
+	return f
+}
+
+// loadGoMod는 모듈 버전 m의 go.mod 파일을 찾아 파싱한다.
+func (g *tidyGraph) loadGoMod(m module.Version) (*modfile.File, error) {
 	path, err := g.goModFile(m)
 	if err != nil {
 		return nil, err
@@ -163,17 +171,6 @@ func (g *tidyGraph) goModFile(m module.Version) (string, error) {
 		return "", err
 	}
 	return filepath.Join(g.modCache, rel), nil
-}
-
-// differentFiles는 두 경로가 모두 있고 서로 다른 파일인지 본다 — 심링크·경로 표기가 달라도(macOS의 /var와
-// /private/var) 같은 파일이면 같다. 어느 쪽이든 없으면 판단하지 않는다(false) — 읽지 못한 go.mod는 unreadable이 센다.
-func differentFiles(a, b string) bool {
-	fa, err := os.Stat(a)
-	if err != nil {
-		return false
-	}
-	fb, err := os.Stat(b)
-	return err == nil && !os.SameFile(fa, fb)
 }
 
 // cachedGoModPath는 모듈 캐시 루트 아래 m의 go.mod 상대 경로(cache/download/<escape 경로>/@v/<escape 버전>.mod)다.
@@ -226,12 +223,22 @@ func moduleCacheRoot(reachable []*packages.Package) string {
 			if err != nil {
 				continue
 			}
-			if root, ok := strings.CutSuffix(p.Module.GoMod, string(filepath.Separator)+rel); ok {
-				return root
+			if prefix, ok := strings.CutSuffix(p.Module.GoMod, rel); ok && strings.HasSuffix(prefix, string(filepath.Separator)) {
+				return trimCacheRoot(prefix)
 			}
 		}
 	}
 	return goEnvModCache()
+}
+
+// trimCacheRoot는 구분자로 끝나는 캐시 루트 앞부분에서 끝 구분자를 뗀다. 파일 시스템 루트(`/`, `D:\`)면 그대로 둔다 —
+// 떼면 빈 문자열이나 드라이브 상대 경로(`D:`)가 되어 filepath.Join이 다른 위치를 가리킨다.
+func trimCacheRoot(prefix string) string {
+	trimmed := strings.TrimSuffix(prefix, string(filepath.Separator))
+	if trimmed == "" || trimmed == filepath.VolumeName(prefix) {
+		return prefix
+	}
+	return trimmed
 }
 
 // goEnvModCache는 `go env GOMODCACHE`의 값이다 — `go env -w`로 저장한 값도 읽는다. 분석 대상 디렉터리가 아니라 임시

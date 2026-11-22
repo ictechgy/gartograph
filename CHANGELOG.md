@@ -57,10 +57,16 @@
   unused`로 센다 — pgx의 `github.com/kr/pretty`(check.v1이 import한다)는 그 limitation과 함께 미사용으로 남는다.
   읽지 못한 테스트 파일·디렉터리·go.mod는 `N dependency test files, package directories, or go.mod files could not be
   read; …`로, vendor/로 적재해 go.mod도 테스트 파일도 없는 의존 모듈은 `N dependency modules were loaded from vendor/,
-  …`로, go.work의 replace로 바뀐 의존 모듈(테스트 파일은 바뀐 쪽에서 읽는다)은 `N dependency modules were loaded
-  through a go.work replace, which go mod tidy ignores; …`로 센다. 모듈 캐시 위치는 의존 모듈 go.mod 경로에서 정확한
-  꼬리를 떼어 얻고, 그런 모듈이 없으면 `go env GOMODCACHE`(`go env -w` 값 포함)로 묻는다. 다른 근거로 모든
-  require가 이미 사용이면 테스트 파일을 읽지 않는다(그 공백은 미사용 판정만 거짓으로 만들 수 있다).
+  …`로 센다. 같은 모듈 버전의 go.mod는 한 번만 읽는다(못 읽은 파일도 한 번만 센다). 모듈 캐시 위치는 의존 모듈 go.mod
+  경로에서 정확한 꼬리를 떼어 얻고(캐시가 파일 시스템 루트여도 맞다), 그런 모듈이 없으면 `go env GOMODCACHE`(`go env
+  -w` 값 포함)로 묻는다. 다른 근거로 모든 require가 이미 사용이면 테스트 파일을 읽지 않는다(그 공백은 미사용 판정만
+  거짓으로 만들 수 있다).
+- `unused-deps`: go.work가 적용된 적재에서 미사용 판정이 남으면 `N requires reported unused were judged with a go.work
+  file in effect, which go mod tidy ignores; … (rerun with GOWORK=off to match tidy)`를 싣는다. tidy는 go.work를 보지
+  않는데, 워크스페이스 모듈은 주 모듈로 적재돼 사용한 의존도 테스트 의존 루트도 되지 않고(주 모듈이 require하는
+  워크스페이스 모듈은 미사용 직접 require로 남는다 — `--strict`는 여전히 1이다), go.work의 `use`·`replace`는 고른 버전과
+  적재한 파일을 바꾼다. 예전에는 그런 판정이 limitation 없이 나갔다. go.work 적용 여부는 go list와 같은 디렉터리·환경으로
+  `go env GOWORK`에 묻는다(`GOWORK=off`면 적용되지 않는다). 판정은 바꾸지 않는다 — `GOWORK=off`로 다시 돌리면 tidy와 같다.
 - `unused-deps`: 빌드 제약 제외 파일 limitation이 cgo 파일(`import "C"` — `CGO_ENABLED=0`이면 플랫폼·태그와 무관하게
   빠진다)을 셀 때 안내에 `or CGO_ENABLED=1 for cgo files`를 더한다. cgo 파일이 없으면 문구는 그대로다.
 - `mcp`: `tools/list` 입력 스키마에 `"required": null`을 싣지 않는다. 필수 인자가 없는 도구 일곱(summary·impact·

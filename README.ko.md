@@ -173,9 +173,13 @@ gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 
                                                #  exclude 제외, go.mod는 tidy처럼 go.work 없이 주 go.mod의
                                                #  replace로만 고름)가 해당 모듈을 고른 버전 이상으로 제공하지
                                                #  못할 때만 셈 — 미사용이 남으면 이번에 로드하지 않은 패키지를
-                                               #  import하는 그 테스트 파일 수, vendor/로 로드한 의존 모듈
-                                               #  수(go.mod·테스트 파일이 없다), go.work replace로 바뀐 의존
-                                               #  모듈 수(테스트는 바뀐 쪽에서 읽음)를 limitations로 셈.
+                                               #  import하는 그 테스트 파일 수와 vendor/로 로드한 의존 모듈
+                                               #  수(go.mod·테스트 파일이 없다)를 limitations로 셈. go.work가
+                                               #  적용되면 미사용 판정에 limitation이 붙음 — tidy는 go.work를
+                                               #  보지 않는데 워크스페이스 모듈은 주 모듈로 로드되고(require한
+                                               #  워크스페이스 모듈은 미사용 직접 require로 남아 --strict는
+                                               #  여전히 실패) use·replace가 버전·파일을 바꿈. tidy와 맞추려면
+                                               #  GOWORK=off로 다시 실행.
                                                #  //go:build ignore 제외 — limitations는 로드 오류와,
                                                #  이번에 로드하지 않은 패키지를 import하는 제외 파일을 셈.
                                                #  std만 쓰는 제외 파일은 조용하다.
