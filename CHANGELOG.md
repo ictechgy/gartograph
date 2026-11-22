@@ -35,10 +35,22 @@
   읽어 미사용 indirect로 오보했다 — `golang.org/x/tools` v0.50.0의 `golang.org/x/sys`(x/telemetry의 windows 파일),
   `modernc.org/sqlite` v1.59.0의 `github.com/mattn/go-isatty`·`github.com/ncruces/go-strftime`(두 모듈 모두
   `go mod tidy -diff`가 차이를 내지 않는다), `sijms/go-ora` v2.9.0의 `goccy/go-json`·`json-iterator/go`(xorm의
-  `//go:build gojson`·`jsoniter` 파일). 의존 패키지의 `_test.go` 제외 파일은 tidy처럼 세지 않는다. 그런 파일이
-  이번에 적재하지 않은 패키지를 import하면 기존 limitation(`N source files excluded by build constraints import
-  packages that were not loaded; …`)으로 센다. 이 저장소와 실제 모듈 14개에서 판정이 바뀐 것은 위 셋(모두 사용
+  `//go:build gojson`·`jsoniter` 파일). 의존 패키지의 `_test.go` 파일은 여기서 무조건 세지 않고 아래 테스트 의존
+  규칙으로 판정한다. 제외 파일이 이번에 적재하지 않은 패키지를 import하면 기존 limitation(`N source files excluded
+  by build constraints import packages that were not loaded; …`)으로 센다. 이 저장소와 실제 모듈 14개에서 판정이 바뀐 것은 위 셋(모두 사용
   쪽)이고, 그 limitation 수만 바뀐 것이 넷이다(go-mssqldb 5→6, x/crypto 0→2, x/net 3→5, modernc.org/libc 9→10).
+- `unused-deps`: 의존 패키지 테스트만 import하는 require를 tidy처럼 판정한다. tidy는 "all"의 테스트도 적재하고,
+  테스트만의 의존 모듈은 "all"의 모듈과 그 go.mod require로 만든 그래프가 그 모듈을 고른 버전 이상으로 제공하지
+  못할 때 go.mod에 남긴다(go1.27.1 modload `tidyPrunedRoots`). 의존 모듈의 go.mod가 같은 버전 이상으로 require하면
+  지우고, require하지 않거나 낮은 버전이면 남긴다. 예전에는 의존 패키지 테스트를 보지 않아 남는 경우도 미사용
+  indirect로 냈다 — pgx v5.11.0의 `gopkg.in/check.v1`(yaml.v3 v3.0.1의 go.mod는 2016년 판을 require하고 pgx는
+  2020년 판을 고른다; `go mod tidy -diff`가 지킨다). 테스트 파일은 tidy처럼 모든 태그·플랫폼 파일을 읽는다
+  (`//go:build ignore` 제외). 테스트가 이번에 적재하지 않은 패키지를 import하면 그 패키지의 import(와 tidy가 그 모듈을
+  루트로 더하며 늘어나는 그래프)는 보지 못하므로, 미사용 판정이 남을 때 `N test files of dependency packages import
+  packages that were not loaded; requires that go mod tidy keeps only for those packages' imports may be reported as
+  unused`로 센다 — pgx의 `github.com/kr/pretty`(check.v1이 import한다)는 그 limitation과 함께 미사용으로 남는다.
+  그래프 근사는 가지치기 안 된(go 1.17 미만) 모듈의 전이 require를 담지 않아 판정을 사용 쪽으로만 기울인다. 다른
+  근거로 모든 require가 이미 사용이면 테스트 파일을 읽지 않는다(그 공백은 미사용 판정만 거짓으로 만들 수 있다).
 - `mcp`: `tools/list` 입력 스키마에 `"required": null`을 싣지 않는다. 필수 인자가 없는 도구 일곱(summary·impact·
   cycles·dead·rules·metrics·mapping)이 그렇게 실어, 스키마를 검증하는 클라이언트(ajv 6.15: `data.required should
   be array`)가 도구 정의를 거부했다. 필수 인자가 없으면 키를 뺀다(cartograph MCP와 같다).
@@ -128,7 +140,7 @@
 
 ### Changed
 
-- `unused-deps`: 빌드 제약 제외 파일을 import 선언이 끝날 때까지만 읽는다(16 KiB부터 두
+- `unused-deps`: 빌드 제약 제외 파일과 의존 패키지 테스트 파일을 import 선언이 끝날 때까지만 읽는다(16 KiB부터 두
   배씩, 상한 1 MiB는 그대로). 예전에는 모든 제외 파일을 1 MiB까지 읽었다 — modernc.org/sqlite v1.59.0은 의존 제외
   파일 767개에서 약 47 MB를 읽었고, 이제 첫 16 KiB 안에서 끝난다(상한 약 6 MB). 판정은 같다.
 - Go API: `source.BridgeFacts(dir, generatedAt, toolVersion)`·`source.SchemaFacts(opts, generatedAt, toolVersion)`에

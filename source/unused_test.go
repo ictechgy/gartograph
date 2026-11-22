@@ -79,7 +79,7 @@ func TestScanExcludedFilesReadsOnlyRegularFiles(t *testing.T) {
 	if scan.unseenFiles != 1 || scan.unreadable != 1 || len(scan.imports) != 1 || scan.imports[0] != "example.com/dep" {
 		t.Fatalf("want the regular file read and the FIFO counted unreadable: %+v", scan)
 	}
-	lims := unusedLimitations(0, scan, unloadedScan{})
+	lims := unusedLimitations(0, scan, unloadedScan{}, dependencyTestScan{})
 	if len(lims) != 2 {
 		t.Fatalf("both the read and the unreadable excluded files must be counted: %v", lims)
 	}
@@ -173,6 +173,42 @@ func TestParseHeaderFromChunkBoundaries(t *testing.T) {
 		}
 		if got, want := headerImports(t, f), headerImports(t, whole); !slices.Equal(got, want) || len(want) != 2 {
 			t.Errorf("source %d: imports = %v, want %v", i, got, want)
+		}
+	}
+}
+
+// TestScanDependencyTestsCountsUnreadable는 읽지 못한 의존 패키지 디렉터리와 go.mod를 판정 공백으로 세는지 본다 —
+// 디렉터리를 못 읽으면 그 테스트 import를, go.mod를 못 읽으면 그 루트의 require를 모른다. 둘 다 조용히 넘기면
+// limitation 없이 판정이 기운다.
+func TestScanDependencyTestsCountsUnreadable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	dep := &packages.Package{PkgPath: "example.com/dep", Dir: missing,
+		Module: &packages.Module{Path: "example.com/dep", Version: "v1.0.0", GoMod: filepath.Join(missing, "go.mod")}}
+	scan := scanDependencyTests([]*packages.Package{dep}, tidyTestInput{used: map[string]bool{},
+		unseen: func(string) bool { return true }})
+	if scan.unreadable != 2 || scan.unseenFiles != 0 || len(scan.used) != 0 {
+		t.Fatalf("want the unreadable directory and go.mod counted, got %+v", scan)
+	}
+	if lims := scan.limitations(); len(lims) != 1 || !strings.HasPrefix(lims[0], "2 dependency test files, package directories, or go.mod files could not be read;") {
+		t.Fatalf("limitations = %v", lims)
+	}
+}
+
+// TestSemverLess는 "없음"(빈 문자열)이 모든 버전보다 낮고 의사 버전도 semver 순서로 비교하는지 본다 — tidy가 그래프에
+// 없는 모듈을 "none"으로 비교하는 것과 같다.
+func TestSemverLess(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"", "v0.0.0", true},
+		{"", "", false},
+		{"v0.0.0-20161208181325-20d25e280405", "v1.0.0-20201130134442-10cb98267c6c", true},
+		{"v0.2.0", "v0.1.0", false},
+		{"v0.2.0", "v0.2.0", false},
+	} {
+		if got := semverLess(c.a, c.b); got != c.want {
+			t.Errorf("semverLess(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
 		}
 	}
 }
@@ -552,7 +588,7 @@ func TestScanUnloadedDirsStopsAtUnreadableDirectory(t *testing.T) {
 	if scan := scanTree(t, dir, []string{"./m/inner/..."}, nil, "."); len(scan.dirs) != 0 || scan.unreadable != 1 {
 		t.Fatalf("a pattern whose root cannot be reached must be counted: %+v", scan)
 	}
-	lims := unusedLimitations(0, excludedScan{}, unloadedScan{dirs: []string{"a"}, unreadable: 1})
+	lims := unusedLimitations(0, excludedScan{}, unloadedScan{dirs: []string{"a"}, unreadable: 1}, dependencyTestScan{})
 	if !slices.Equal(lims, []string{platformGapNote(1), "1 directories could not be read, so the directories " +
 		"under and after them were not checked for Go files of other platforms; requires imported only there " +
 		"may be reported as unused"}) {

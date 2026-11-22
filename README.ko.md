@@ -167,8 +167,10 @@ gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트�
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
                                                # (tidy처럼 빌드 제약 제외 파일·로드 실패 import도 셈 —
                                                #  제외 파일은 모듈 패키지와 그 패키지가 import하는 의존
-                                               #  패키지 것을 읽고, 의존 패키지의 테스트 파일은 tidy처럼
-                                               #  세지 않음.
+                                               #  패키지 것을 읽음. 의존 패키지의 테스트 파일은 tidy 규칙대로
+                                               #  그 의존 모듈의 go.mod가 해당 모듈을 고른 버전 이상으로
+                                               #  require하지 않을 때만 셈 — 미사용이 남으면 이번에 로드하지
+                                               #  않은 패키지를 import하는 그 테스트 파일 수를 limitations로 셈.
                                                #  //go:build ignore 제외 — limitations는 로드 오류와,
                                                #  이번에 로드하지 않은 패키지를 import하는 제외 파일을 셈.
                                                #  std만 쓰는 제외 파일은 조용하다.

@@ -217,10 +217,13 @@ gartograph shared example.com/a example.com/b
 
 # go.mod hygiene: requirements no package imports (test imports count)
 # like go mod tidy, imports in files excluded by build constraints (not //go:build ignore)
-# — in the module's packages and in the dependency packages they import, whose test files
-# tidy does not count — and imports that failed to load count too; limitations count the
-# load errors and the excluded files importing packages this run did not load (std-only
-# files are silent).
+# — in the module's packages and in the dependency packages they import — and imports
+# that failed to load count too; limitations count the load errors and the excluded files
+# importing packages this run did not load (std-only files are silent). Dependency
+# packages' test files follow tidy's rule: their imports count when the dependency's own
+# go.mod does not require that module at the selected version or higher; when unused
+# requires remain, limitations count those test files that import packages this run did
+# not load.
 # A directory with no file for this platform or tags (say, a windows-only package) loads
 # no package, so its imports are not read and requires used only there stay in unused:
 # limitations count such directories under patterns ending in /... (./..., ./x/...,
