@@ -12,6 +12,7 @@ import (
 	"go/ast"
 	"go/build/constraint"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"io"
 	"io/fs"
@@ -336,6 +337,10 @@ func unseenImport(path string, loaded map[string]bool, modPath string, requires 
 // 파일에서 메모리를 지키는 방어다. import만 파싱하므로 상한 뒤가 잘려도 판정에 쓰이지 않는다.
 const maxImportHeader = 1 << 20
 
+// importHeaderChunk는 parseImportHeader가 처음 읽는 바이트 수다. 빌드 제약과 import 선언은 파일 머리에 있어 보통
+// 이 안에서 끝난다 — 끝나지 않았으면 두 배씩 늘려 maxImportHeader까지 읽는다.
+const importHeaderChunk = 16 << 10
+
 // parseImportHeader는 파일 머리를 막히지 않게 읽어 빌드 제약 주석과 import 선언만 파싱한다.
 // 제외 파일은 go list가 내용을 열지 않았을 수 있다(이름의 GOOS 접미사로 거른 파일) — 그래서
 // FIFO·장치일 수 있어 isGeneratedFile과 같은 규칙(readFlags로 열고 fstat가 정규 파일일 때만
@@ -353,11 +358,67 @@ func parseImportHeader(path string) (*ast.File, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	src, err := io.ReadAll(io.LimitReader(f, maxImportHeader))
-	if err != nil {
-		return nil, err
+	return parseHeaderFrom(path, f)
+}
+
+// parseHeaderFrom은 r에서 import 선언이 끝날 때까지만 읽어 파싱한다. importHeaderChunk부터 두 배씩 늘려 읽고, 읽은
+// 앞부분이 파싱되며 패키지 절·import 선언 뒤에 다른 토큰이 보이면 멈춘다 — ImportsOnly 파싱은 그 뒤를 보지 않는다.
+// 파일 끝이나 maxImportHeader에 닿으면 그때까지 읽은 것으로 판정한다(상한까지 한 번에 읽던 예전과 같은 결과다).
+// 예전에는 모든 제외 파일을 상한(1 MiB)까지 읽었다 — 의존 패키지의 큰 생성 파일(modernc.org/libc의 플랫폼별 파일)을
+// 읽게 되며 그 비용이 커졌다.
+func parseHeaderFrom(path string, r io.Reader) (*ast.File, error) {
+	var src []byte
+	for limit := importHeaderChunk; ; limit *= 2 {
+		limit = min(limit, maxImportHeader)
+		more, eof, err := readUpTo(r, src, limit)
+		if err != nil {
+			return nil, err
+		}
+		src = more
+		fset := token.NewFileSet()
+		file, perr := parser.ParseFile(fset, path, src, parser.ImportsOnly|parser.ParseComments)
+		if eof || limit == maxImportHeader {
+			return file, perr
+		}
+		if perr == nil && headerEnded(fset, file, src) {
+			return file, nil
+		}
 	}
-	return parser.ParseFile(token.NewFileSet(), path, src, parser.ImportsOnly|parser.ParseComments)
+}
+
+// readUpTo는 buf 뒤에 r을 이어 읽어 길이가 limit가 되게 한다. 둘째 값은 r이 그 전에 끝났는지다.
+func readUpTo(r io.Reader, buf []byte, limit int) ([]byte, bool, error) {
+	chunk := make([]byte, limit-len(buf))
+	n, err := io.ReadFull(r, chunk)
+	buf = append(buf, chunk[:n]...)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return buf, true, nil
+	}
+	return buf, false, err
+}
+
+// headerEnded는 읽은 앞부분 src에서 패키지 절·import 선언 뒤에 다음 토큰이 온전히 보이는지 본다. 보이지 않으면
+// (주석·공백·세미콜론뿐이거나, 다음 토큰이 끝에 붙어 `import` 키워드가 잘렸을 수 있으면) 다음 import 선언이 읽은
+// 끝 너머에 있을 수 있어 더 읽어야 한다.
+func headerEnded(fset *token.FileSet, file *ast.File, src []byte) bool {
+	end := file.Name.End()
+	if n := len(file.Decls); n > 0 {
+		end = file.Decls[n-1].End()
+	}
+	rest := src[fset.File(end).Offset(end):]
+	tf := token.NewFileSet().AddFile("", -1, len(rest))
+	var sc scanner.Scanner
+	sc.Init(tf, rest, nil, 0)
+	for {
+		pos, tok, _ := sc.Scan()
+		switch tok {
+		case token.SEMICOLON:
+			continue
+		case token.EOF:
+			return false
+		}
+		return len(rest)-tf.Offset(pos) > len("import")
+	}
 }
 
 // tidyBuildsFile은 go mod tidy가 이 파일의 import를 세는지 본다. go 명령과 같은 우선순위로

@@ -2,12 +2,16 @@ package source
 
 import (
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -95,6 +99,81 @@ func TestParseImportHeaderLimit(t *testing.T) {
 	}
 	if f, err := parseImportHeader(deep); err == nil && len(f.Imports) > 0 {
 		t.Fatalf("imports after the first %d bytes must not be read: %v", maxImportHeader, f.Imports)
+	}
+}
+
+// countingReader는 읽힌 바이트 수를 센다 — parseHeaderFrom이 import 선언 뒤를 읽지 않는지 보는 재료다.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+// Read는 안의 reader를 읽고 읽은 수를 더한다.
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}
+
+// headerImports는 파싱한 파일의 import 경로 목록이다.
+func headerImports(t *testing.T, f *ast.File) []string {
+	t.Helper()
+	var out []string
+	for _, spec := range f.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, path)
+	}
+	return out
+}
+
+// TestParseHeaderFromStopsAfterImports는 import 선언이 첫 덩어리 안에서 끝나면 그 뒤를 읽지 않는지 본다. 예전에는
+// 모든 제외 파일을 상한(1 MiB)까지 읽어, 의존 패키지의 큰 생성 파일(modernc.org/libc의 플랫폼별 파일)까지 읽게 되며
+// unused-deps가 느려졌다.
+func TestParseHeaderFromStopsAfterImports(t *testing.T) {
+	header := "//go:build windows\n\npackage p\n\nimport (\n\t\"example.com/a\"\n\t\"os\"\n)\n\n"
+	r := &countingReader{r: strings.NewReader(header + strings.Repeat("var x = 1\n", 100_000))}
+	f, err := parseHeaderFrom("p.go", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := headerImports(t, f); !slices.Equal(got, []string{"example.com/a", "os"}) {
+		t.Fatalf("imports = %v", got)
+	}
+	if r.n > importHeaderChunk {
+		t.Fatalf("read %d bytes of a file whose imports end in the first %d", r.n, importHeaderChunk)
+	}
+}
+
+// TestParseHeaderFromChunkBoundaries는 읽은 끝이 import 선언 사이, 두 번째 `import` 키워드 가운데, 세미콜론 뒤에
+// 떨어져도 import를 빠짐없이 읽는지 본다 — 앞 주석 길이로 두 번째 선언의 시작을 첫 덩어리 끝 앞뒤로 민다. 머리가
+// 덩어리 여러 개에 걸치는 긴 주석도 본다. 기대값은 파일 전체를 파싱한 결과다.
+func TestParseHeaderFromChunkBoundaries(t *testing.T) {
+	body := "\nvar x = 1\n" + strings.Repeat("// filler\n", 10_000)
+	var sources []string
+	for _, sep := range []string{"\n", ";"} {
+		for shift := -12; shift <= 12; shift++ {
+			tail := "\npackage p\nimport \"example.com/a\"" + sep
+			pad := importHeaderChunk + shift - len("// ") - len(tail)
+			sources = append(sources, "// "+strings.Repeat("x", pad)+tail+"import \"example.com/b\""+body)
+		}
+	}
+	sources = append(sources, "/*"+strings.Repeat("license\n", 5_000)+"*/\npackage p\nimport \"example.com/a\"\n"+
+		"import \"example.com/b\""+body)
+	for i, src := range sources {
+		f, err := parseHeaderFrom("p.go", strings.NewReader(src))
+		if err != nil {
+			t.Fatalf("source %d: %v", i, err)
+		}
+		whole, err := parser.ParseFile(token.NewFileSet(), "p.go", src, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := headerImports(t, f), headerImports(t, whole); !slices.Equal(got, want) || len(want) != 2 {
+			t.Errorf("source %d: imports = %v, want %v", i, got, want)
+		}
 	}
 }
 

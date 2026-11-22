@@ -125,6 +125,9 @@
 
 ### Changed
 
+- `unused-deps`: 빌드 제약 제외 파일을 import 선언이 끝날 때까지만 읽는다(16 KiB부터 두
+  배씩, 상한 1 MiB는 그대로). 예전에는 모든 제외 파일을 1 MiB까지 읽었다 — modernc.org/sqlite v1.59.0은 의존 제외
+  파일 767개에서 약 47 MB를 읽었고, 이제 첫 16 KiB 안에서 끝난다(상한 약 6 MB). 판정은 같다.
 - Go API: `source.BridgeFacts(dir, generatedAt, toolVersion)`·`source.SchemaFacts(opts, generatedAt, toolVersion)`에
   `generatedAt time.Time` 인자가 생겼다(공개 함수 시그니처 변경 — 이 저장소에서는 `cli`만 부른다). 영 시각이면
   예전처럼 지금 시각을 싣는다. 마이그레이션: 기존 호출에 `time.Time{}`를 둘째 인자로 넣는다.
