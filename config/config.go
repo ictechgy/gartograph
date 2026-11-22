@@ -159,14 +159,26 @@ func Find(dir string) (string, bool) {
 
 // Load는 규칙 파일을 읽어 검증한다.
 // 컴포넌트가 하나도 없으면 규칙 검사 자체가 무의미하므로 에러다.
+// 모르는 키와 둘째 YAML 문서도 에러다(keys.go) — 조용히 버리면 오타 하나가 규칙 섹션을 끈다.
+// 키 검사는 디코딩 뒤에 한다: 디코딩이 형식 오류를 줄 번호와 함께 먼저 알리고, 별칭 남용
+// (excessive aliasing) 상한도 디코딩이 지킨 뒤라 병합 키를 펼치는 검사가 부풀지 않는다.
 func Load(path string) (*File, error) {
 	data, err := readRulesFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var f File
-	if err := yaml.Unmarshal(data, &f); err != nil {
+	doc, err := parseRules(data)
+	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	var f File
+	if doc != nil {
+		if err := doc.Decode(&f); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+		if err := checkKnownKeys(doc); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	if len(f.Components) == 0 {
 		return nil, fmt.Errorf("%s: no components defined — rules need at least one", path)
