@@ -27,6 +27,15 @@
   패키지의 import 블록을 읽지 못해도 limitation이 없었고, 어느 모듈도 제공하지 않는 import 경로는 std가 아닌데
   `N packages have no module (builtin)`으로 세였다. builtin 계수는 이제 오류 없는 모듈 없는 패키지(std)만 세고,
   패턴 오류 limitation이 이미 센 경로는 다시 세지 않는다. 로드 오류가 없는 문서는 바이트가 같다.
+- `unused-deps`: 의존 패키지의 빌드 제약 제외 파일이 import하는 모듈도 사용으로 센다. go mod tidy는 주 모듈이
+  import하는 패키지 전체의 모든 태그·플랫폼 파일을 보고 그 require를 go.mod에 남기는데, 예전에는 주 모듈 파일만
+  읽어 미사용 indirect로 오보했다 — `golang.org/x/tools` v0.50.0의 `golang.org/x/sys`(x/telemetry의 windows 파일),
+  `modernc.org/sqlite` v1.59.0의 `github.com/mattn/go-isatty`·`github.com/ncruces/go-strftime`(두 모듈 모두
+  `go mod tidy -diff`가 차이를 내지 않는다), `sijms/go-ora` v2.9.0의 `goccy/go-json`·`json-iterator/go`(xorm의
+  `//go:build gojson`·`jsoniter` 파일). 의존 패키지의 `_test.go` 제외 파일은 tidy처럼 세지 않는다. 그런 파일이
+  이번에 적재하지 않은 패키지를 import하면 기존 limitation(`N source files excluded by build constraints import
+  packages that were not loaded; …`)으로 센다. 이 저장소와 실제 모듈 14개에서 판정이 바뀐 것은 위 셋(모두 사용
+  쪽)이고, 그 limitation 수만 바뀐 것이 넷이다(go-mssqldb 5→6, x/crypto 0→2, x/net 3→5, modernc.org/libc 9→10).
 - go list가 오류를 낸 패턴을 버리지 않고 센다. `--pattern` 오타(`./interal/...`), 없는 디렉터리, 어느 모듈도
   제공하지 않는 import 경로, 모듈 밖 `--dir`, 없는 `replace` 대상, 읽을 수 없는 하위 디렉터리면 go list는 패턴
   오류만 담은 가짜 패키지를 (그 패턴이 고른 실제 패키지가 있으면 함께) 돌려주는데, 수확이 그것을 주 모듈 밖

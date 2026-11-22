@@ -45,8 +45,8 @@ type UnusedReport struct {
 // "사용"은 도달 가능한 패키지들이 속한 비주 모듈 집합이다 — 테스트 변형까지
 // 포함해 로드한다. go mod tidy는 테스트 파일의 import도 의존으로 세므로,
 // --tests 없이 세면 tidy가 지키는 require를 미사용으로 오보한다.
-// 같은 이유로 빌드 제약으로 빠진 파일(다른 OS·태그)의 import와 로드에 실패한 import도
-// 사용으로 센다 — tidy는 ignore 외의 모든 태그·플랫폼을 보고, 받지 못한 모듈의 패키지도
+// 같은 이유로 빌드 제약으로 빠진 파일(다른 OS·태그 — 주 모듈과 의존 패키지 둘 다)의 import와 로드에
+// 실패한 import도 사용으로 센다 — tidy는 ignore 외의 모든 태그·플랫폼을 보고, 받지 못한 모듈의 패키지도
 // import된 사실은 그대로다. 이 플랫폼 파일이 하나도 없는 디렉터리는 go list가 패키지로 내지 않아
 // import를 읽을 길이 없다 — 그 수를 limitation으로 센다(scanUnloadedDirs).
 func UnusedRequires(opts Options) (*UnusedReport, error) {
@@ -248,18 +248,22 @@ type excludedScan struct {
 	unreadable  int // 정규 파일이 아니거나 읽기·파싱에 실패해 import를 모르는 파일 수
 }
 
-// scanExcludedFiles는 주 모듈 패키지(테스트 변형 포함)의 IgnoredFiles 중 Go 파일의 import를
-// 모은다. 변형은 원 패키지와 같은 디렉터리라 같은 파일을 다시 싣는다 — 경로로 한 번만 읽는다.
-// unseen은 import 하나가 이번 로드가 보지 못한 패키지인지다(unseenImport).
+// scanExcludedFiles는 도달한 모듈 패키지의 IgnoredFiles 중 Go 파일의 import를 모은다 — 주 모듈 패키지(테스트 변형
+// 포함)와 의존 모듈 패키지 둘 다다. go mod tidy는 주 모듈이 import하는 패키지 전체의 모든 태그·플랫폼 파일을 보므로,
+// 의존 패키지가 다른 OS 파일에서만 import하는 모듈도 go.mod에 남긴다(golang.org/x/tools의 x/telemetry → windows
+// 파일 → golang.org/x/sys). 예전에는 주 모듈 파일만 읽어 그런 require를 미사용 indirect로 오보했다. 변형은 원 패키지와
+// 같은 디렉터리라 같은 파일을 다시 싣는다 — 경로로 한 번만 읽는다. unseen은 import 하나가 이번 로드가 보지 못한
+// 패키지인지다(unseenImport). 모듈이 없는 std 패키지는 require에 기대지 않아, 의존 패키지의 테스트 파일은 tidy가
+// 세지 않아(dependencyTestFile) 건너뛴다.
 func scanExcludedFiles(reachable []*packages.Package, unseen func(string) bool) excludedScan {
 	var scan excludedScan
 	seen := map[string]bool{}
 	for _, p := range reachable {
-		if p.Module == nil || !p.Module.Main {
+		if p.Module == nil {
 			continue
 		}
 		for _, file := range p.IgnoredFiles {
-			if seen[file] || !strings.HasSuffix(file, ".go") {
+			if seen[file] || !strings.HasSuffix(file, ".go") || dependencyTestFile(p, file) {
 				continue
 			}
 			seen[file] = true
@@ -267,6 +271,14 @@ func scanExcludedFiles(reachable []*packages.Package, unseen func(string) bool) 
 		}
 	}
 	return scan
+}
+
+// dependencyTestFile은 의존 모듈 패키지의 _test.go 제외 파일인지 본다 — 읽지 않는다. go 1.17 이상 모듈의 tidy는
+// 의존 패키지의 테스트 import를 go.mod에 남기지 않는다(go1.27.1 `go mod tidy -diff`로 의존 패키지의 다른 OS 테스트
+// 파일만 import하는 require가 지워짐을 확인했다). 주 모듈의 테스트 파일은 tidy가 세고 이 질의도 테스트 변형으로
+// 적재하므로 읽는다.
+func dependencyTestFile(p *packages.Package, file string) bool {
+	return !p.Module.Main && strings.HasSuffix(file, "_test.go")
 }
 
 // read는 제외 파일 하나의 import를 모은다. tidy가 세지 않는 ignore 태그 파일은 건너뛴다.

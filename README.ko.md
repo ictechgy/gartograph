@@ -165,7 +165,10 @@ gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
 gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트별 고유분
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
-                                               # (tidy처럼 빌드 제약 제외 파일·로드 실패 import도 셈,
+                                               # (tidy처럼 빌드 제약 제외 파일·로드 실패 import도 셈 —
+                                               #  제외 파일은 모듈 패키지와 그 패키지가 import하는 의존
+                                               #  패키지 것을 읽고, 의존 패키지의 테스트 파일은 tidy처럼
+                                               #  세지 않음.
                                                #  //go:build ignore 제외 — limitations는 로드 오류와,
                                                #  이번에 로드하지 않은 패키지를 import하는 제외 파일을 셈.
                                                #  std만 쓰는 제외 파일은 조용하다.

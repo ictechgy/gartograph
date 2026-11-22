@@ -4169,6 +4169,66 @@ func TestUnusedDepsExcludedFileLimitationCountsUnseenImports(t *testing.T) {
 	}
 }
 
+// TestUnusedDepsCountsDependencyExcludedFiles는 의존 패키지의 빌드 제약 제외 파일이 import하는 모듈도 "사용"으로
+// 세는지 확인한다. go mod tidy는 주 모듈이 import하는 패키지 전체의 모든 태그·플랫폼 파일을 보므로, dep의 다른 OS
+// 파일만 import하는 example.com/sys를 go.mod에 남긴다 — 이 fixture로 go1.27.1 `go mod tidy -diff`를 돌리면 차이가
+// 없다. 예전에는 주 모듈 파일만 읽어 sys를 미사용 indirect로 오보했다(golang.org/x/tools v0.50.0의 golang.org/x/sys,
+// modernc.org/sqlite v1.59.0의 go-isatty·go-strftime이 같은 모양이다). sys 패키지는 이 플랫폼에서 적재되지 않아
+// 그 import는 보지 못했으므로 제외 파일 limitation으로 센다. 의존 패키지의 _test.go 제외 파일은 읽지 않는다 —
+// tidy도 그 파일만 import하는 sys를 지운다(같은 fixture의 `go mod tidy -diff`가 require 줄을 뺀다).
+func TestUnusedDepsCountsDependencyExcludedFiles(t *testing.T) {
+	otherOS := "windows"
+	if runtime.GOOS == "windows" {
+		otherOS = "linux"
+	}
+	files := map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\n" +
+			"require example.com/sys v0.0.0 // indirect\n\n" +
+			"replace (\n\texample.com/dep => ./dep\n\texample.com/sys => ./sys\n)\n",
+		"main.go":                    "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
+		"dep/go.mod":                 "module example.com/dep\n\ngo 1.27\n\nrequire example.com/sys v0.0.0\n",
+		"dep/dep.go":                 "package dep\n\nfunc F() {}\n",
+		"dep/dep_" + otherOS + ".go": "package dep\n\nimport \"example.com/sys\"\n\nfunc init() { sys.Call() }\n",
+		"sys/go.mod":                 "module example.com/sys\n\ngo 1.27\n",
+		"sys/sys.go":                 "package sys\n\nfunc Call() {}\n",
+	}
+	code, out, errb := run(t, "unused-deps", "--dir", testutil.WriteModule(t, files), "--format", "json")
+	var rep struct {
+		UnusedIndirect []string `json:"unusedIndirect"`
+		UsedRequires   int      `json:"usedRequires"`
+		Limitations    []string `json:"limitations"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &rep) != nil {
+		t.Fatalf("unused-deps: exit %d\n%s%s", code, out, errb)
+	}
+	if len(rep.UnusedIndirect) != 0 || rep.UsedRequires != 2 {
+		t.Fatalf("a require imported by a dependency's excluded file is kept by tidy and must count as used: %s", out)
+	}
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
+		"1 source files excluded by build constraints import packages that were not loaded;") {
+		t.Fatalf("the dependency file importing the unloaded sys package must be counted: %v", rep.Limitations)
+	}
+	// 대조군: 그 파일이 없거나 의존 패키지의 테스트 파일이면 tidy가 sys를 지운다 — 판정도 미사용 indirect로 남아야
+	// 한다(과대 보존이 아니다).
+	depFile := files["dep/dep_"+otherOS+".go"]
+	delete(files, "dep/dep_"+otherOS+".go")
+	testFile := strings.Replace(depFile, "import \"example.com/sys\"\n\nfunc init() { sys.Call() }",
+		"import (\n\t\"testing\"\n\n\t\"example.com/sys\"\n)\n\nfunc TestCall(t *testing.T) { sys.Call() }", 1)
+	for name, variant := range map[string]map[string]string{
+		"no dependency file":            {},
+		"dependency excluded test file": {"dep/dep_" + otherOS + "_test.go": testFile},
+	} {
+		for k, v := range files {
+			variant[k] = v
+		}
+		code, out, errb = run(t, "unused-deps", "--dir", testutil.WriteModule(t, variant), "--format", "json")
+		rep.UnusedIndirect = nil
+		if code != 0 || json.Unmarshal([]byte(out), &rep) != nil || !slices.Equal(rep.UnusedIndirect, []string{"example.com/sys"}) {
+			t.Errorf("%s: sys is unused, as tidy says: exit %d\n%s%s", name, code, out, errb)
+		}
+	}
+}
+
 // TestUnusedDepsLoadErrors는 받을 수 없는 require(오프라인·인증 실패)를 import하는 패키지가 로드에
 // 실패해도 그 require를 미사용으로 오보하지 않는지 확인한다 — 실패한 import 경로를 require 목록의
 // 가장 긴 모듈에 귀속하고, 로드 오류 수를 limitation으로 남긴다. 판정 근거가 빈 사실을 숨기면
