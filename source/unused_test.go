@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
@@ -203,12 +205,9 @@ func TestScanDependencyTestsCountsUnparsableTestFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "broken_test.go"), []byte("package dep\n\nimport (\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	goMod := filepath.Join(dir, "go.mod")
-	if err := os.WriteFile(goMod, []byte("module example.com/dep\n\ngo 1.27\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dep := &packages.Package{PkgPath: "example.com/dep", Dir: dir,
-		Module: &packages.Module{Path: "example.com/dep", Version: "v1.0.0", GoMod: goMod, GoVersion: "1.27"}}
+	c := modCache{t: t, root: t.TempDir()}
+	dep := c.rootPackage("example.com/dep", c.write("example.com/dep", "v1.0.0", "1.27"))
+	dep.Dir = dir
 	scan := scanDependencyTests([]*packages.Package{dep}, tidyTestInput{used: map[string]bool{},
 		unseen: func(string) bool { return true }})
 	if scan.unreadable != 1 || scan.unseenFiles != 0 {
@@ -227,36 +226,138 @@ func writeModFile(t *testing.T, path, content string) {
 	}
 }
 
-// TestTidyGraphFollowsUnprunedRequirements는 go 1.17 미만 루트에서 모듈 캐시의 go.mod를 따라 전이 require를 더하고,
-// go 1.17 이상 루트에서는 루트 go.mod의 require만 더하며, 주 go.mod의 exclude에 걸린 require는 빼는지 본다 —
-// tidy의 readModGraph와 같다. 캐시 경로는 대문자를 `!`로 바꾼 escape 경로다.
+// modCache는 테스트용 모듈 캐시다 — cache/download/<escape 경로>/@v/<버전>.mod에 go.mod를 쓴다.
+type modCache struct {
+	t    *testing.T
+	root string
+}
+
+// write는 모듈 버전의 캐시 go.mod를 쓰고 경로를 돌려준다. goVersion이 비면 go 지시문이 없다(가지치기 안 됨).
+func (c modCache) write(path, version, goVersion string, requires ...string) string {
+	c.t.Helper()
+	rel, err := cachedGoModPath(module.Version{Path: path, Version: version})
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	content := "module " + path + "\n"
+	if goVersion != "" {
+		content += "\ngo " + goVersion + "\n"
+	}
+	for _, r := range requires {
+		content += "\nrequire " + r + "\n"
+	}
+	file := filepath.Join(c.root, rel)
+	writeModFile(c.t, file, content)
+	return file
+}
+
+// rootPackage는 캐시 go.mod를 쓴 의존 모듈의 패키지다 — buildTidyGraph의 루트가 된다.
+func (c modCache) rootPackage(path, goMod string) *packages.Package {
+	return &packages.Package{PkgPath: path, Module: &packages.Module{Path: path, Version: "v1.0.0", GoMod: goMod}}
+}
+
+// graphWithin은 buildTidyGraph가 기한 안에 끝나는지 본다 — 가지치기 없는 걸음이 순환에서 멈추지 않으면 끝나지 않는다.
+func graphWithin(t *testing.T, reachable []*packages.Package, main goModFacts) *tidyGraph {
+	t.Helper()
+	done := make(chan *tidyGraph, 1)
+	go func() { done <- buildTidyGraph(reachable, main, t.TempDir()) }()
+	select {
+	case g := <-done:
+		return g
+	case <-time.After(10 * time.Second):
+		t.Fatal("buildTidyGraph did not finish; the unpruned walk probably loops on a requirement cycle")
+		return nil
+	}
+}
+
+// TestTidyGraphFollowsUnprunedRequirements는 go 1.17 미만(또는 go 지시문 없는) 루트에서 모듈 캐시의 go.mod를 따라 전이
+// require를 끝까지 더하고(두 단계 이상, 순환에서 멈춤), go 1.17 이상 루트에서는 루트 go.mod의 require만 더하며, 주
+// go.mod의 exclude에 걸린 require와 그것이 데려오는 것은 빼는지 본다 — tidy의 readModGraph와 같다. 루트의 가지치기는
+// 루트 go.mod의 go 지시문으로 정한다. 캐시 경로는 대문자를 `!`로 바꾼 escape 경로다.
 func TestTidyGraphFollowsUnprunedRequirements(t *testing.T) {
-	cache := t.TempDir()
-	download := filepath.Join(cache, "cache", "download")
-	writeModFile(t, filepath.Join(download, "example.com", "!e", "@v", "v1.0.0.mod"),
-		"module example.com/E\n\nrequire example.com/x v1.1.0\n")
-	writeModFile(t, filepath.Join(download, "example.com", "x", "@v", "v1.1.0.mod"), "module example.com/x\n")
-	rootMod := filepath.Join(download, "example.com", "dep", "@v", "v1.0.0.mod")
-	writeModFile(t, rootMod, "module example.com/dep\n\nrequire example.com/E v1.0.0\n")
+	c := modCache{t: t, root: t.TempDir()}
+	c.write("example.com/E", "v1.0.0", "1.27", "example.com/F v1.0.0")
+	c.write("example.com/F", "v1.0.0", "1.27", "example.com/x v1.1.0")
+	c.write("example.com/x", "v1.1.0", "1.27")
 	root := func(goVersion string) []*packages.Package {
-		return []*packages.Package{{PkgPath: "example.com/dep", Module: &packages.Module{
-			Path: "example.com/dep", Version: "v1.0.0", GoMod: rootMod, GoVersion: goVersion}}}
+		return []*packages.Package{c.rootPackage("example.com/dep",
+			c.write("example.com/dep", "v1.0.0", goVersion, "example.com/E v1.0.0"))}
 	}
-	if g := buildTidyGraph(root("1.16"), goModFacts{}, t.TempDir()); g.versions["example.com/x"] != "v1.1.0" ||
-		g.modCache != cache || g.unreadable != 0 {
-		t.Fatalf("an unpruned root must reach x through the cached go.mod of E: %+v", g)
+	for _, goVersion := range []string{"1.16", ""} {
+		if g := graphWithin(t, root(goVersion), goModFacts{}); g.versions["example.com/x"] != "v1.1.0" ||
+			g.modCache != c.root || g.unreadable != 0 {
+			t.Fatalf("go %q root must reach x two hops away (E → F → x): %+v", goVersion, g)
+		}
 	}
-	if g := buildTidyGraph(root(""), goModFacts{}, t.TempDir()); g.versions["example.com/x"] != "v1.1.0" {
-		t.Fatalf("a root without a go directive is unpruned: %+v", g.versions)
-	}
-	if g := buildTidyGraph(root("1.27"), goModFacts{}, t.TempDir()); g.versions["example.com/x"] != "" ||
+	if g := graphWithin(t, root("1.27"), goModFacts{}); g.versions["example.com/F"] != "" ||
 		g.versions["example.com/E"] != "v1.0.0" {
 		t.Fatalf("a pruned root contributes only its own requirements: %+v", g.versions)
 	}
 	excluded := goModFacts{excludes: map[string]bool{"example.com/E@v1.0.0": true}}
-	if g := buildTidyGraph(root("1.16"), excluded, t.TempDir()); g.versions["example.com/E"] != "" ||
-		g.versions["example.com/x"] != "" {
+	if g := graphWithin(t, root("1.16"), excluded); g.versions["example.com/E"] != "" || g.versions["example.com/x"] != "" {
 		t.Fatalf("an excluded requirement and what it brings must be left out: %+v", g.versions)
+	}
+
+	// c1 ⇄ c2 순환: 걸음은 멈추고 순환 너머의 z도 더한다.
+	c.write("example.com/c1", "v1.0.0", "1.27", "example.com/c2 v1.0.0", "example.com/z v1.1.0")
+	c.write("example.com/c2", "v1.0.0", "1.27", "example.com/c1 v1.0.0")
+	c.write("example.com/z", "v1.1.0", "1.27")
+	cyclic := []*packages.Package{c.rootPackage("example.com/cyc",
+		c.write("example.com/cyc", "v1.0.0", "1.16", "example.com/c2 v1.0.0"))}
+	if g := graphWithin(t, cyclic, goModFacts{}); g.versions["example.com/z"] != "v1.1.0" || g.unreadable != 0 {
+		t.Fatalf("the walk must stop on the c1 ⇄ c2 cycle and still reach z: %+v", g.versions)
+	}
+}
+
+// TestTidyGraphIsOrderIndependent는 가지치기된 루트가 가지치기 안 된 루트에서도 닿을 때 결과가 루트 순서와 무관한지
+// 본다. tidy는 (모듈, 가지치기)로 중복을 거른다(readModGraph dedupKey) — 루트 b를 루트로 읽었어도 u(go 1.16)에서 닿는
+// b는 가지치기 없이 다시 걸어 b → y → z를 더한다. 예전에는 한 방문 집합을 함께 써서 b를 먼저 처리하면 걸음이 b에서
+// 멈춰 z가 빠졌고, 그 순서는 import 맵 순회에 달려 같은 입력의 판정이 실행마다 달랐다(PR #58 리뷰 fx2/nd: 30번 중
+// 14번 사용, 16번 미사용).
+func TestTidyGraphIsOrderIndependent(t *testing.T) {
+	c := modCache{t: t, root: t.TempDir()}
+	b := c.rootPackage("example.com/b", c.write("example.com/b", "v1.0.0", "1.21", "example.com/y v1.0.0"))
+	u := c.rootPackage("example.com/u", c.write("example.com/u", "v1.0.0", "1.16", "example.com/b v1.0.0"))
+	c.write("example.com/y", "v1.0.0", "1.21", "example.com/z v1.1.0")
+	c.write("example.com/z", "v1.1.0", "1.21")
+	first := graphWithin(t, []*packages.Package{b, u}, goModFacts{}).versions
+	second := graphWithin(t, []*packages.Package{u, b}, goModFacts{}).versions
+	if !reflect.DeepEqual(first, second) || first["example.com/z"] != "v1.1.0" {
+		t.Fatalf("the graph must not depend on root order and must reach z through u → b → y:\n%v\n%v", first, second)
+	}
+}
+
+// TestModuleCacheRoot는 모듈 캐시 루트를 의존 모듈 go.mod 경로에서 정확한 꼬리를 떼어 얻는지 본다 — 캐시 경로 자체에
+// cache/download가 들어 있어도(GOMODCACHE=…/x/cache/download/mc) 맞아야 한다. 예전에는 처음 나온 /cache/download/
+// 앞을 잘라 …/x를 골라 모든 go.mod 읽기가 실패했다(PR #58 리뷰 fx2/base). module replace 대상의 캐시 go.mod도 쓴다.
+func TestModuleCacheRoot(t *testing.T) {
+	nested := filepath.Join(t.TempDir(), "x", "cache", "download", "mc")
+	c := modCache{t: t, root: nested}
+	dep := c.rootPackage("example.com/dep", c.write("example.com/dep", "v1.0.0", "1.27"))
+	if got := moduleCacheRoot([]*packages.Package{dep}); got != nested {
+		t.Fatalf("moduleCacheRoot = %q, want %q", got, nested)
+	}
+	forked := c.rootPackage("example.com/orig", c.write("example.com/fork", "v0.1.0", "1.27"))
+	forked.Module.Replace = &packages.Module{Path: "example.com/fork", Version: "v0.1.0"}
+	if got := moduleCacheRoot([]*packages.Package{forked}); got != nested {
+		t.Fatalf("moduleCacheRoot from a module replacement = %q, want %q", got, nested)
+	}
+}
+
+// TestModuleCacheRootAsksGoEnv는 캐시에 있는 의존 모듈이 없을 때(모두 디렉터리 replace) `go env GOMODCACHE`로 묻는지
+// 본다 — `go env -w`로 저장한 값(GOENV 파일)도 읽어야 한다. 예전에는 프로세스 환경 변수와 GOPATH만 봤다.
+func TestModuleCacheRootAsksGoEnv(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "stored-modcache")
+	goenv := filepath.Join(t.TempDir(), "goenv")
+	if err := os.WriteFile(goenv, []byte("GOMODCACHE="+want+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", goenv)
+	t.Setenv("GOMODCACHE", "")
+	local := &packages.Package{PkgPath: "example.com/dep", Module: &packages.Module{
+		Path: "example.com/dep", Version: "v0.0.0", GoMod: filepath.Join(t.TempDir(), "dep", "go.mod")}}
+	if got := moduleCacheRoot([]*packages.Package{local}); got != want {
+		t.Fatalf("moduleCacheRoot = %q, want the go env -w value %q", got, want)
 	}
 }
 
@@ -282,9 +383,13 @@ func TestTidyGraphGoModFile(t *testing.T) {
 	}
 }
 
-// TestPrunedGoVersion은 go 지시문이 모듈 그래프 가지치기를 켜는지(1.17 이상) 본다. 지시문이 없으면 꺼져 있다.
+// TestPrunedGoVersion은 go 지시문이 모듈 그래프 가지치기를 켜는지 go 명령처럼(1.17과 비교, 1.17rc1은 그 앞) 본다.
+// 지시문이 없거나 읽을 수 없으면 꺼져 있다.
 func TestPrunedGoVersion(t *testing.T) {
-	for v, want := range map[string]bool{"": false, "1.16": false, "1.17": true, "1.21rc1": true, "1.27.1": true, "2": true} {
+	for v, want := range map[string]bool{
+		"": false, "garbage": false, "1.16": false, "1.17rc1": false, "1.17beta1": false,
+		"1.17": true, "1.17.0": true, "1.21rc1": true, "1.27.1": true, "2": true,
+	} {
 		if got := prunedGoVersion(v); got != want {
 			t.Errorf("prunedGoVersion(%q) = %v, want %v", v, got, want)
 		}

@@ -311,6 +311,11 @@ func (s dependencyTestScan) limitations() []string {
 			"%d dependency modules were loaded from vendor/, which keeps neither their go.mod nor their test files; requires that go mod tidy keeps only for dependency tests may be reported as unused",
 			s.vendored))
 	}
+	if s.workspaceReplaced > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d dependency modules were loaded through a go.work replace, which go mod tidy ignores; their test files were read from the replacement, so requires needed only by dependency tests may be misjudged",
+			s.workspaceReplaced))
+	}
 	return out
 }
 

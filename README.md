@@ -222,10 +222,12 @@ gartograph shared example.com/a example.com/b
 # importing packages this run did not load (std-only files are silent). Dependency
 # packages' test files follow tidy's rule: their imports count when the module graph tidy
 # builds from the dependency modules (every one's go.mod requirements, followed through
-# go 1.17- modules via the module cache, minus the main go.mod's excludes) does not reach
-# that module at the selected version. When unused requires remain, limitations count
-# those test files that import packages this run did not load, and dependencies loaded
-# from vendor/ (it keeps neither their go.mod nor their tests).
+# go 1.17- modules via the module cache, minus the main go.mod's excludes; go.mod files
+# are chosen with the main go.mod's replaces only, as tidy ignores go.work) does not
+# reach that module at the selected version. When unused requires remain, limitations
+# count those test files that import packages this run did not load, dependencies loaded
+# from vendor/ (it keeps neither their go.mod nor their tests), and dependencies swapped
+# by a go.work replace (their tests are read from the replacement).
 # A directory with no file for this platform or tags (say, a windows-only package) loads
 # no package, so its imports are not read and requires used only there stay in unused:
 # limitations count such directories under patterns ending in /... (./..., ./x/...,
