@@ -7,6 +7,7 @@ package source
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ictechgy/gartograph/graph"
 	"golang.org/x/tools/go/packages"
@@ -30,9 +31,10 @@ func buildModuleDocument(root string, reachable []*packages.Package,
 
 	for _, p := range reachable {
 		if p.Module == nil {
-			// std의 builtin 패키지(unsafe 등)는 모듈이 없다. 풀리지 않은 import(어느 모듈도 제공하지 않는
+			// std의 builtin 패키지(unsafe 등)는 모듈이 없다 — 이 플랫폼 파일이 없어 오류를 낸 std(syscall/js)도
+			// builtin이다(std는 std만 import해 모듈 간선과 무관하다). 풀리지 않은 import(어느 모듈도 제공하지 않는
 			// 경로)도 모듈이 없지만 builtin이 아니다 — 로드 오류로 센다(moduleLoadErrors).
-			if len(p.Errors) == 0 {
+			if !unresolvedPackage(p) {
 				noModule++
 			}
 			continue
@@ -82,11 +84,13 @@ func buildModuleDocument(root string, reachable []*packages.Package,
 	return doc
 }
 
-// moduleLoadErrors는 module 문서가 셀 로드 오류 패키지의 경로 집합이다. 패키지 레벨의 "N packages reported load
-// errors"와 같은 것을 센다 — 정점(모듈)에 들어가는 패키지(주 모듈, --deps면 의존 모듈)와, 모듈이 없어 정점이 될 수
-// 없는 오류 패키지(풀리지 않은 import)다. 예전에는 module 레벨이 로드 오류를 하나도 세지 않아, 주 모듈 패키지의
-// import를 읽지 못해도 조용했고 풀리지 않은 import는 "모듈 없는(builtin) 패키지"로 세였다. 테스트 변형은 원
-// 패키지와 같은 경로라 한 번만 세고, 패턴 오류 limitation이 이미 센 경로(patternErrPaths)는 뺀다.
+// moduleLoadErrors는 module 문서가 셀 로드 오류 패키지의 경로 집합이다. 모듈 간선에 공백을 남기는 두 가지를 센다 —
+// 정점(모듈)에 들어가는 패키지(주 모듈, --deps면 의존 모듈)의 오류(그 import를 다 읽지 못했다)와, 어느 모듈도 제공하지
+// 않아 정점이 될 수 없는 import 경로(그쪽 모듈 간선이 없다)다. 둘째는 --deps 없이도 센다 — 패키지 레벨은 그것을 "주
+// 모듈 밖 import 생략"으로 세지만 module 문서에는 그 수치가 없다. std는 오류가 있어도 세지 않는다(builtin으로 센다).
+// 예전에는 module 레벨이 로드 오류를 하나도 세지 않아, 주 모듈 패키지의 import를 읽지 못해도 조용했고 풀리지 않은
+// import는 "모듈 없는(builtin) 패키지"로 세였다. 테스트 변형은 원 패키지와 같은 경로라 한 번만 세고, 패턴 오류
+// limitation이 이미 센 경로(patternErrPaths)는 뺀다.
 func moduleLoadErrors(reachable []*packages.Package, includeDeps bool,
 	patternErrPaths map[string]bool) map[string]bool {
 	out := map[string]bool{}
@@ -94,7 +98,7 @@ func moduleLoadErrors(reachable []*packages.Package, includeDeps bool,
 		if len(p.Errors) == 0 || patternErrPaths[p.PkgPath] {
 			continue
 		}
-		if p.Module == nil || p.Module.Main || includeDeps {
+		if unresolvedPackage(p) || (p.Module != nil && (p.Module.Main || includeDeps)) {
 			out[p.PkgPath] = true
 		}
 	}
@@ -114,4 +118,17 @@ func moduleVertex(doc *graph.Document, m *packages.Module) {
 		Kind: graph.KindModule,
 		Name: m.Path,
 	})
+}
+
+// unresolvedPackage는 모듈이 없고 오류를 낸 std 밖 패키지 — 어느 모듈도 제공하지 않는 import 경로 — 인지 본다.
+// std는 첫 경로 요소에 점이 없다(standardLibraryPath).
+func unresolvedPackage(p *packages.Package) bool {
+	return p.Module == nil && len(p.Errors) > 0 && !standardLibraryPath(p.PkgPath)
+}
+
+// standardLibraryPath는 import 경로가 표준 라이브러리 모양인지 본다 — go 명령의 규칙대로 첫 경로 요소에 점이 없다.
+// 점 없는 주 모듈 경로(module myapp)도 이 모양이라, 모듈 정보가 있는 패키지에는 쓰지 않는다.
+func standardLibraryPath(path string) bool {
+	first, _, _ := strings.Cut(path, "/")
+	return !strings.Contains(first, ".")
 }

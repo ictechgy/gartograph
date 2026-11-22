@@ -22,11 +22,14 @@
   load errors …`가 함께 나왔다(심볼 레벨은 import한 패키지 자신의 타입 오류와 합쳐 2). 이제 그 패키지는 패턴 오류
   limitation만 센다 — 로드 오류 계수에는 import한 패키지 자신의 오류만 남는다. 정점 집합은 그대로다(`--deps`의
   이름 없는 정점은 main과 같이 남는다). 같은 경로를 패턴으로 주지 않으면 지금처럼 로드 오류로 센다.
-- `graph --level module`(MCP 포함): 로드 오류를 패키지 레벨과 같은 기준으로 센다(`N packages reported load errors;
-  module edges through them may be incomplete`). 예전에는 module 레벨이 로드 오류를 하나도 세지 않아 주 모듈
-  패키지의 import 블록을 읽지 못해도 limitation이 없었고, 어느 모듈도 제공하지 않는 import 경로는 std가 아닌데
-  `N packages have no module (builtin)`으로 세였다. builtin 계수는 이제 오류 없는 모듈 없는 패키지(std)만 세고,
-  패턴 오류 limitation이 이미 센 경로는 다시 세지 않는다. 로드 오류가 없는 문서는 바이트가 같다.
+- `graph --level module`(MCP 포함): 모듈 간선에 공백을 남기는 로드 오류를 센다(`N packages reported load errors;
+  module edges through them may be incomplete`) — 정점이 되는 모듈(주 모듈, `--deps`면 의존 모듈)의 패키지 오류와,
+  어느 모듈도 제공하지 않는 import 경로다. 둘째는 `--deps` 없이도 센다(패키지 레벨은 그 import를 "주 모듈 밖 import
+  생략"으로 세지만 module 문서에는 그 수치가 없다). 예전에는 module 레벨이 로드 오류를 하나도 세지 않아 주 모듈
+  패키지의 import 블록을 읽지 못해도 limitation이 없었고, 풀리지 않은 import는 std가 아닌데 `N packages have no
+  module (builtin)`으로 세였다. std 패키지는 오류가 있어도(이 플랫폼 파일이 없는 `syscall/js`) 지금처럼 builtin으로
+  센다 — std는 모듈 간선과 무관하다. 패턴 오류 limitation이 이미 센 경로는 다시 세지 않는다. 로드 오류가 없는
+  문서는 바이트가 같다.
 - `unused-deps`: 의존 패키지의 빌드 제약 제외 파일이 import하는 모듈도 사용으로 센다. go mod tidy는 주 모듈이
   import하는 패키지 전체의 모든 태그·플랫폼 파일을 보고 그 require를 go.mod에 남기는데, 예전에는 주 모듈 파일만
   읽어 미사용 indirect로 오보했다 — `golang.org/x/tools` v0.50.0의 `golang.org/x/sys`(x/telemetry의 windows 파일),

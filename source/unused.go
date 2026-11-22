@@ -328,8 +328,7 @@ func unseenImport(path string, loaded map[string]bool, modPath string, requires 
 	if _, ok := owningRequire(path, requires); ok {
 		return true
 	}
-	first, _, _ := strings.Cut(path, "/")
-	return strings.Contains(first, ".")
+	return !standardLibraryPath(path)
 }
 
 // maxImportHeader는 제외 파일에서 빌드 제약과 import를 찾으며 읽는 앞부분의 상한(바이트)이다.
