@@ -433,7 +433,14 @@ func decodeArguments(args json.RawMessage, v any) error {
 // mcpTools는 서빙하는 도구 목록과 입력 스키마다.
 func mcpTools() []map[string]any {
 	obj := func(props map[string]any, required []string) map[string]any {
-		return map[string]any{"type": "object", "properties": props, "required": required}
+		schema := map[string]any{"type": "object", "properties": props}
+		// JSON Schema의 required는 배열이어야 한다 — nil을 그대로 실으면 "required": null이 되어 스키마를 검증하는
+		// 클라이언트(ajv 등)가 도구 정의 자체를 거부한다. 필수 인자가 없으면 키를 뺀다(빈 배열은 draft-04에서
+		// 무효라 빼는 쪽이 모든 판에서 유효하다). cartograph MCP도 같은 규칙이다.
+		if len(required) > 0 {
+			schema["required"] = required
+		}
+		return schema
 	}
 	str := func(desc string) map[string]any {
 		return map[string]any{"type": "string", "description": desc}

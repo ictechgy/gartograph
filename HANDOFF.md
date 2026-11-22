@@ -4,7 +4,7 @@
 [AGENTS.md](AGENTS.md), 이전 세션 원문(v0.2~v0.11 준비 기록·결정의 경위)은 [HANDOFF-HISTORY.md](HANDOFF-HISTORY.md)에
 있다. 이력의 "진행 중"·"다음 할 일"·수치는 당시 기록이며 현재 지시가 아니다.
 
-## 현재 상태 (2026-11-15)
+## 현재 상태 (2026-11-22)
 
 - 최신 발행본은 **v0.11.0**(태그 = main `aa69cc7`, GitHub Release 자산 6개). Homebrew tap은 `HOMEBREW_TAP_TOKEN`이
   없어 수동으로 0.11.0에 맞췄다 — 절차는 [RELEASING.md](RELEASING.md)의 "Homebrew tap 수동 갱신".
@@ -20,7 +20,7 @@
   - isthmus 적합성 벡터 재벤더링(`c76e105`, `http-limitation-scope`·`sql-relations` 추가, 생산자 사례 155건).
     소비자가 거부할 limitationScopes는 문서에 싣지 않는다.
   - CI: gofmt, CLI 계약, Windows·macOS 테스트. Release: tap 미갱신 경고·실행 요약.
-- PR #57(2026-11-15, main `1eb292b` 기준, 머지 전 — squash 머지되면 브랜치 커밋 해시는 사라지므로 PR 번호로 찾는다):
+- PR #57(2026-11-15, squash 머지 `b7e771d`):
   - `--retain-public` 기본 꺼짐이 의도임을 이력으로 확인하고 README·README.ko "출력 계약"(라이브러리 모듈 사용법),
     AGENTS의 dead 절, 아래 결정 기록에 남겼다. 동작은 그대로다.
   - 개요 도움말(`gartograph help`)이 명령이 받는 플래그를 빠짐없이 싣게 고쳤다 — `dead --algo`, 공통 `--tags`,
@@ -44,6 +44,67 @@
     "남은 일"에 이유와 함께 남겼다.
   - 남은 설계 후보는 아래 "남은 일"에 있다. 두 번 돌린 출력은 이제 `bridges`·`schema`도 `--generated-at`을 주면 같다.
 
+- 브랜치 `ccr-37904670-hxdjsx`(2026-11-22, main `b7e771d` 기준, 머지 전 — squash 머지되면 브랜치 커밋 해시는
+  사라지므로 PR 번호로 찾는다). 자기 분석·실제 모듈(GOMODCACHE의 x/tools·x/mod·x/sync·x/text·x/crypto·x/net·
+  x/telemetry·pgx·puddle·go-sql-driver/mysql·go-mssqldb·go-ora·modernc sqlite·libc, 스크래치 사본) 실행·두 번 실행
+  비교에서 나온 것 중 사용자 결정이 필요 없는 넷을 고쳤다(CHANGELOG Fixed 첫 네 항목). 두 번 실행한 graph(세 레벨)·
+  dead 출력은 x/mod·x/sync·x/text(dead는 x/tools도)에서 바이트가 같았고, x/mod·x/tools 심볼 문서에 유령 간선·중복
+  정점·중복 간선이 없었으며, 실행한 명령(graph·cycles·dead·rta·query·impact·path·shared·routes·schema·bridges·
+  unused-deps·metrics·init·mcp)에 크래시는 없었다.
+  - 패턴 오류로 센 풀리지 않은 import를 `--deps`·심볼 레벨·unused-deps가 로드 오류로 다시 세던 것(아래 "남은 일"에
+    있던 이중 계수). 정점 집합은 그대로다.
+  - module 레벨이 로드 오류를 하나도 세지 않고 풀리지 않은 import를 `(builtin)`으로 세던 것. 이제 정점 모듈 패키지의
+    오류와 풀리지 않은 import(`--deps` 없이도)를 센다 — 패키지 레벨과 기준이 같지는 않다(패키지 레벨은 `--deps` 없이
+    풀리지 않은 import를 "주 모듈 밖 import 생략"으로 센다). 오류를 낸 std(`syscall/js`)는 builtin 그대로다. 오류 없는
+    문서는 바이트가 같다(이 저장소와 실제 모듈 14개의 module·package 문서 전후 동일).
+  - unused-deps가 의존 패키지의 빌드 제약 제외 파일 import를 보지 않아 tidy가 지키는 require를 미사용 indirect로
+    오보하던 것(x/tools의 x/sys, modernc sqlite의 go-isatty·go-strftime — `go mod tidy -diff` 차이 없음). 같은
+    코퍼스에서 판정이 바뀐 것 셋(모두 사용 쪽), limitation 수만 바뀐 것 넷, 나머지 여덟은 같다.
+  - MCP `tools/list`의 일곱 도구가 `"required": null`(무효 JSON Schema)을 싣던 것 — ajv 6.15가 거부했다.
+  - PR #58 독립 리뷰 후속(같은 브랜치): 앞 항목의 "tidy는 의존 패키지 테스트 import를 세지 않는다"는 의존 모듈의
+    go.mod가 그 모듈을 제공할 때만 맞았다. tidy는 테스트만의 의존 모듈을, "all"의 모듈과 그 go.mod require로 만든
+    그래프가 고른 버전 이상으로 제공하지 못하면 남긴다(go1.27.1 modload `tidyPrunedRoots`). unused-deps가 그 규칙으로
+    의존 패키지 테스트를 판정한다(`source/unusedtests.go`) — 리뷰 fixture f7·f7b·f7c(tidy가 지킴)는 미사용 → 사용,
+    f7d·f1·f2·f4(tidy가 지움)는 미사용 그대로, pgx의 `gopkg.in/check.v1`은 사용(tidy가 지킴). 이번에 적재하지 않은
+    테스트 의존의 import(pgx `kr/pretty`는 check.v1이 import한다)는 못 봐서, 미사용이 남을 때 그 테스트 파일 수를
+    limitation으로 센다(pgx 22, go-ora 62). 코퍼스의 나머지 열셋은 PR 머리(`3eeb840`) 대비 unused-deps 출력이 같다. 함께: module 레벨 std 오류는 builtin,
+    cgo 제외 파일 안내에 `CGO_ENABLED=1`, 제외·테스트 파일은 import 선언까지만 읽기(sqlite 의존 제외 파일 767개
+    약 47 MB → 첫 16 KiB 안, 상한 약 6 MB).
+  - PR #58 델타 리뷰 후속(같은 브랜치, fixture는 리뷰 하네스 `cmp.sh`로 go1.27.1 `go mod tidy -diff`와 대조):
+    그래프 근사(`source/tidygraph.go`)가 주 go.mod의 `exclude`를 따른다(fx/excl: tidy가 지키는데 미사용 → 사용),
+    go 1.17 미만 루트의 전이 require를 모듈 캐시 go.mod(replace 적용)로 따라간다(fx/unpr: tidy가 지우는데 사용 →
+    미사용), go 명령이 무시하는 `_`·`.` 이름의 테스트 파일을 읽지 않는다(fx/under·fx/dot: 사용 → 미사용, tidy가
+    지움), vendor/로 적재한 의존 모듈 수를 limitation으로 센다(fx/vend: tidy는 vendor/를 보지 않고 지키는데 판정
+    재료가 없다). module 레벨은 go list가 디렉터리를 찾지 못한 점 없는 경로(`fmtt`, `myapp/missing`)를 builtin이
+    아니라 로드 오류로 센다(fx/modlvl·fx/modlvl2 — main에서도 builtin이었다). 이 저장소와 실제 모듈 14개의 unused-deps·
+    module 출력은 PR 머리(`e49b034`) 대비 같다. fx/other·fx/ign·fx/eq·fx/lower·fx/xtest·fx/cgo도 tidy와 같다.
+  - PR #58 세 번째 델타 리뷰 후속(리뷰 하네스 `cmp2.sh` — 로컬 파일 프록시·전용 모듈 캐시로 go1.27.1 tidy와 대조):
+    - 차단 문제: 같은 입력의 판정이 실행마다 달랐다(fx2/nd: a230a8f로 30번 중 14번 사용·16번 미사용, tidy는 z를
+      지움). 루트 읽기와 가지치기 없는 걸음이 방문 집합 하나를 함께 써서, 가지치기된 루트 xm을 루트로 먼저 읽으면
+      go 1.16 루트 a의 걸음이 xm에서 멈췄다 — 순서는 walkImports의 import 맵 순회였다. go1.27.1 `readModGraph`는
+      (모듈, 가지치기)로 중복을 거른다(dedupKey). 이제 두 읽기를 따로 세고 루트·테스트 파일을 정렬한다 — fx2/nd
+      20번(그리고 30번) 모두 tidy와 같다.
+    - go.work의 replace가 바꾼 루트의 go.mod·go 지시문을 읽어(Module.GoMod·GoVersion) tidy가 지키는 require를
+      미사용으로 냈다(fx2/wsrep). 이제 루트 go.mod도 주 go.mod의 replace로만 골라 읽는다(go 지시문도 그 파일에서).
+    - 모듈 캐시 루트를 정확한 꼬리로 떼어 얻는다(캐시 경로에 cache/download가 든 fx2/base: 사용 → 미사용, tidy가
+      지움). 그런 모듈이 없으면 `go env GOMODCACHE`(임시 디렉터리에서, GOTOOLCHAIN=local)로 묻는다 — `go env -w` 값.
+    - go 지시문 `1.17rc1`은 1.17 앞이라 가지치기 안 됨(go/version.Compare, fx2/g117rc: 사용 → 미사용, tidy가 지움).
+    - 남은 변이(한 단계만 걷기, 걸음의 방문 검사 제거)를 잡는 두 단계 사슬·c1⇄c2 순환 단위 테스트를 더했다.
+    - fx2 20개 전부와 앞 리뷰 fixture가 tidy와 같다(fx/ws·fx/stale 제외 — 아래·로드 실패). 이 저장소와 실제 모듈 14개의 unused-deps
+      출력은 a230a8f 대비 같고 두 번 돌려도 같다.
+  - PR #58 마지막 리뷰 후속: go.work가 적용된 적재(`go env GOWORK`를 go list와 같은 디렉터리·환경으로 묻는다)에서 미사용이
+    남으면 `N requires reported unused were judged with a go.work file in effect, which go mod tidy ignores; …`를 단다.
+    앞 커밋의 go.work replace 전용 계수는 원래 모듈의 go.mod가 캐시에 있을 때만 나와서(리뷰 wsdir) 이것으로 대신했다.
+    리뷰 사례를 로컬 파일 프록시로 다시 만들어 대조했다(tidy는 GOWORK=off): wsuse(dep2를 `use` — tidy는 dep2·z를
+    지키는데 dep2 미사용 직접·z 미사용 indirect)·wsver(`use ./other`가 t를 v1.1.0으로 올림 — tidy는 z를 지키는데 미사용)·
+    wsdir(go.work replace, 빈 캐시와 데운 캐시)·fx/ws 모두 판정은 그대로이고 이제 limitation이 붙는다. `GOWORK=off`로 돌리면
+    wsuse·wsver·wsdir·dbl·fx2/wsrep 모두 tidy와 같다. 같은 모듈 버전의 go.mod는 한 번만 읽어(go의 loadCache처럼) 못 읽은
+    파일을 두 번 세지 않는다(dbl, 빈 캐시: `2 … could not be read` → `1`). 캐시가 파일 시스템 루트(`/`, `D:\`)면 루트를
+    그대로 둔다(끝 구분자를 떼면 빈 문자열·드라이브 상대 경로가 됐다).
+  - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.8%(기준 90%), `Scripts/verify-cli-contract.sh` OK, 자기 분석
+    dead 12건(main과 같은 목록)·rules/cycles type·symbol `--strict` 0, conformance drift current. Windows·macOS 테스트는
+    CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
+
 ## 검증 방법
 
 ```sh
@@ -60,7 +121,7 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
 - `go.mod`가 Go 1.27.1을 요구한다. 오래된 go가 PATH에 있으면 `GOTOOLCHAIN=auto`가 받아 오지만,
   `verify-cli-contract.sh`가 띄우는 바이너리는 PATH의 go로 `go list`를 부르므로 1.27.1을 PATH 앞에 둔다
   (`PATH="$(go env GOROOT)/bin:$PATH"`).
-- 자기 분석 `dead`는 `--strict` 없이 근거만 본다(CI도 같다). 2026-11-15 기준 12건(11-03과 같다) — 테스트에서만
+- 자기 분석 `dead`는 `--strict` 없이 근거만 본다(CI도 같다). 2026-11-22 기준 12건(11-03·11-15와 같다) — 테스트에서만
   쓰는 공개 함수(`analysis.DependencyReachable` 등), `internal/testutil`, 직렬화 태그 필드다. 지우라는 뜻이 아니다.
   전부 exported라 `--retain-public`이면 0건이 된다(결정 기록).
   수가 늘면 테스트 전용 코드가 제품 파일에 들어온 것인지 먼저 본다(스코프 적용 오라클은 그래서
@@ -77,11 +138,11 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
   - 패턴 오류 `first:` 발췌의 기계별 경로(`--dir` 절대 경로, GOROOT): 그래프 문서가 이미 절대 `root`와 위치를 싣고
     있어 발췌만 상대화해도 문서가 기계 사이에서 같아지지 않고, go 명령 문구를 고쳐 쓰면 잘못 인용할 수 있다.
     바꾸려면 문서 전체의 경로 표기(root·positions)와 함께 정한다.
-  - `--deps`에서 루트가 import하는 풀리지 않은 경로는 이름 없는 정점이 되고 "packages reported load errors"로도
-    세인다 — 그 경로를 `--pattern`으로도 주면 패턴 오류와 두 번 세인다. 이름 없는 정점은 main에서도 같은 기존
-    동작이라(`--deps` + 없는 import) 이 PR의 회귀가 아니고, 없애면 `--deps` 그래프의 정점 집합이 바뀌므로 반대
-    코퍼스 증거와 함께 별도로 다룬다. 두 계수는 같은 풀리지 않은 패키지를 두 번 센 것이다(패턴 오류, 그리고 그 패키지 자신이 이름 없는 정점으로
-    들어와 세인 로드 오류 — `--deps` 없이는 로드 오류 한계가 나오지 않는다).
+  - `--deps`에서 루트가 import하는 풀리지 않은 경로는 이름 없는 정점이 된다(main에서도 같은 기존 동작). 같은
+    경로를 `--pattern`으로도 주면 두 번 세던 계수는 2026-11-22 브랜치에서 하나로 맞췄다(패턴 오류만 센다). 이름
+    없는 정점 자체를 없애면 `--deps` 그래프의 정점 집합이 바뀌므로 반대 코퍼스 증거와 함께 별도로 다룬다. 같은
+    패키지는 심볼 레벨에서 `1 dependency packages had no syntax or type information; …`(익명 인터페이스 limitation)로도
+    세인다 — 다른 사실(그 의존의 익명 인터페이스를 못 봤다)이라 두었다.
 
 - 빈 수확을 종료 2로 거부할지: 지금은 limitation으로 세고 종료 코드는 그대로다(`cycles --strict`·`dead --strict`는
   빈 그래프에서도 0). CI가 패턴 오타를 실패로 잡게 하려면 "주 모듈 패키지가 하나도 없으면 2"를 더할 수 있다 —
@@ -93,7 +154,33 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
   있고 플러그인 호스트는 `main` 심볼을 이름으로 찾으므로 좁히려면 반대 코퍼스 증거가 먼저다(지금은 바꿀 근거 없음).
 - graph 문서의 빈 `vertices`/`edges`가 `null`이다(단일 패키지 모듈의 package 레벨이 흔한 경우). #27이 보고서는
   `[]`로 바꾸면서 `export`(graph 문서)는 범위 밖으로 뒀다. 바꾸면 그런 문서와 순회 `graphRevision`이 달라진다.
-- `http-limitation-scope`의 `scope.dynamic-*`: gartograph가 `dynamicScope`를 내지 않아 건너뛴다.
+- `http-limitation-scope`의 `scope.dynamic-*`: gartograph가 `dynamicScope`를 내지 않아 건너뛴다. GRAPH-EXCHANGE
+  "dynamic 선언의 스코프"상 생산자가 상한을 **증명하면** 싣는 선택 필드이고(없으면 scope 전체 공백 — 하위 호환),
+  생산자 의무는 "실으면 모든 요청을 포함해야 한다"뿐이다. kartograph·pythograph·rustograph도 내지 않는다(kartograph는
+  검증기만 벡터로 고정), tsograph만 낸다. 내려면 프레임워크별 상한 증명(chi `Route` 접두사 등)과 isthmus 쪽 영향
+  (스코프 밖 호출이 error가 된다) 증거가 필요한 기능 추가라 사용자가 고른다.
+- `schema`가 SQL 게이트 없는 모든 문자열 리터럴을 동사 하나(대소문자 무시)로 SQL로 읽어 산문에서 거짓 relation-use를
+  낸다: x/mod v0.41.0 `zip.go`의 `"create zip from directory"` → `directory`·`version`, x/tools v0.50.0은 사실 22개가
+  전부 사용법·오류 문구에서 왔다(`"Mmap of %s for UUID update failed"` → `failed`, 그리고 거짓 `unjoined-dynamic-relations:
+  3 SQL placeholder …` limitation). tsograph는 게이트 없는 리터럴에 대문자 동사만 받고 나머지를 skipped로 센다. 같은
+  규칙을 쓰면 소문자 SQL 리터럴(Go에서 흔하다)의 참 사실도 빠지므로 반대 코퍼스와 isthmus dead-schema 영향 증거와
+  함께 사용자가 고른다.
+- unused-deps의 테스트 의존 판정은 한 단계뿐이다. 의존 패키지 테스트가 import한 패키지가 이번 로드에 없으면(테스트만의
+  의존) 그 패키지의 import와, tidy가 그 모듈을 루트로 더하며 늘어나는 그래프를 보지 못한다 — pgx v5.11.0의
+  `github.com/kr/pretty`(yaml.v3 테스트 → check.v1 → kr/pretty, tidy는 지킨다)가 미사용 indirect로 남고 limitation이
+  붙는다. 메우려면 그 패키지 소스(모듈 캐시에 없을 수 있다)를 읽어 tidy의 단계별 루프를 따라가야 한다. vendor/
+  모드도 같은 공백이다(모듈 캐시를 읽어 메울 수 있으나 vendor는 보통 캐시 없이 쓴다 — 지금은 limitation만 센다).
+  그래프 근사가 고른 버전을 주 go.mod의 require 버전으로 대신하는 점, 읽지 못한 go.mod는 사용 쪽으로 기우는 점(그
+  수는 limitation)도 남는다.
+- unused-deps(main부터의 기존 동작): go.work가 `./dep`를 `use`하면 example.com/dep을 미사용 직접 require로 낸다(리뷰
+  fx/ws, wsuse) — tidy는 지킨다. 워크스페이스 모듈의 패키지는 Module.Main이라 "사용한 비주 모듈"에 들지 않기 때문이다.
+  go.work의 `use`(버전 상향, wsver)·`replace`(wsdir)도 같은 계열이다 — 적재 자체가 tidy가 보지 않는 go.work를 따른다.
+  이제 그런 미사용 판정에는 go.work limitation이 붙지만 판정은 그대로라 fx/ws·wsuse에서 `--strict`는 여전히 1로 끝난다.
+  판정까지 tidy에 맞추려면 unused-deps가 GOWORK=off로 다시 적재하는 변경이 후보다(워크스페이스가 내려받지 못하는 모듈을
+  로컬 디렉터리로만 제공하면 그 적재가 실패할 수 있어, 바꿀지 사용자가 고른다).
+- SARIF: cycles의 논리 위치 kind가 type·symbol 레벨 멤버에도 `module`이고, dead는 `func`·`var`처럼 SARIF 권장
+  어휘(function·variable·member·type) 밖의 kind를 싣는다(권장 사항이라 무효는 아니다). 바꾸면 SARIF 소비자 출력이
+  바뀐다.
 - 릴리스(0.12.0)와 tap 갱신은 승인된 별도 작업이다. 새 자격 증명은 만들지 않는다.
 
 ## 주의

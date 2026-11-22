@@ -16,6 +16,62 @@
 
 ### Fixed
 
+- `graph --deps`·`unused-deps`(심볼 레벨 포함): 풀리지 않은 import 경로를 `--pattern`으로도 주면 같은 패키지를
+  패턴 오류와 로드 오류로 두 번 셌다. go/packages는 그 경로의 가짜 패키지 하나를 패턴 루트와 import 그래프에 함께
+  싣는데, 패턴 오류로 센 뒤 import를 따라 다시 닿아 `1 package patterns reported errors …`와 `1 packages reported
+  load errors …`가 함께 나왔다(심볼 레벨은 import한 패키지 자신의 타입 오류와 합쳐 2). 이제 그 패키지는 패턴 오류
+  limitation만 센다 — 로드 오류 계수에는 import한 패키지 자신의 오류만 남는다. 정점 집합은 그대로다(`--deps`의
+  이름 없는 정점은 main과 같이 남는다). 같은 경로를 패턴으로 주지 않으면 지금처럼 로드 오류로 센다.
+- `graph --level module`(MCP 포함): 모듈 간선에 공백을 남기는 로드 오류를 센다(`N packages reported load errors;
+  module edges through them may be incomplete`) — 정점이 되는 모듈(주 모듈, `--deps`면 의존 모듈)의 패키지 오류와,
+  어느 모듈도 제공하지 않는 import 경로다. 둘째는 `--deps` 없이도 센다(패키지 레벨은 그 import를 "주 모듈 밖 import
+  생략"으로 세지만 module 문서에는 그 수치가 없다). 예전에는 module 레벨이 로드 오류를 하나도 세지 않아 주 모듈
+  패키지의 import 블록을 읽지 못해도 limitation이 없었고, 풀리지 않은 import는 std가 아닌데 `N packages have no
+  module (builtin)`으로 세였다(점 없는 `fmtt`·`myapp/missing`은 main에서도 그랬다). std 패키지는 오류가 있어도(이
+  플랫폼 파일이 없는 `syscall/js` — go list가 GOROOT 디렉터리를 싣는다) 지금처럼 builtin으로 센다 — std는 모듈
+  간선과 무관하다. 점 없는 경로라도 go list가 디렉터리를 찾지 못한 것(std 오타 `fmtt`, `module myapp`의
+  `myapp/missing`)은 풀리지 않은 import로 센다. 패턴 오류 limitation이 이미 센 경로는 다시 세지 않는다. 로드 오류가 없는
+  문서는 바이트가 같다.
+- `unused-deps`: 의존 패키지의 빌드 제약 제외 파일이 import하는 모듈도 사용으로 센다. go mod tidy는 주 모듈이
+  import하는 패키지 전체의 모든 태그·플랫폼 파일을 보고 그 require를 go.mod에 남기는데, 예전에는 주 모듈 파일만
+  읽어 미사용 indirect로 오보했다 — `golang.org/x/tools` v0.50.0의 `golang.org/x/sys`(x/telemetry의 windows 파일),
+  `modernc.org/sqlite` v1.59.0의 `github.com/mattn/go-isatty`·`github.com/ncruces/go-strftime`(두 모듈 모두
+  `go mod tidy -diff`가 차이를 내지 않는다), `sijms/go-ora` v2.9.0의 `goccy/go-json`·`json-iterator/go`(xorm의
+  `//go:build gojson`·`jsoniter` 파일). 의존 패키지의 `_test.go` 파일은 여기서 무조건 세지 않고 아래 테스트 의존
+  규칙으로 판정한다. 제외 파일이 이번에 적재하지 않은 패키지를 import하면 기존 limitation(`N source files excluded
+  by build constraints import packages that were not loaded; …`)으로 센다. 이 저장소와 실제 모듈 14개에서 판정이 바뀐 것은 위 셋(모두 사용
+  쪽)이고, 그 limitation 수만 바뀐 것이 넷이다(go-mssqldb 5→6, x/crypto 0→2, x/net 3→5, modernc.org/libc 9→10).
+- `unused-deps`: 의존 패키지 테스트만 import하는 require를 tidy처럼 판정한다. tidy는 "all"의 테스트도 적재하고,
+  테스트만의 의존 모듈은 "all"의 모듈(루트)에서 만든 모듈 그래프가 그 모듈을 고른 버전 이상으로 제공하지 못할 때
+  go.mod에 남긴다(go1.27.1 modload `tidyPrunedRoots`). 그 그래프를 같은 규칙(`readModGraph`)으로 근사한다 — 모든
+  루트의 go.mod require, go 1.17 미만(go 지시문이 없거나 `1.17rc1`처럼 1.17 앞인) 루트에서는 모듈 캐시의 go.mod를
+  따라간 전이 require(같은 모듈 버전이라도 루트 읽기와 가지치기 없는 걸음은 따로 센다), 주 go.mod의 `exclude`에
+  걸린 require 제외. go.mod는 주 go.mod의 replace만 적용해 고른다 — tidy는 go.work를 보지 않는다. 어느 루트의
+  go.mod든 같은 버전 이상을 제공하면 지우고, 아니면 남긴다. 예전에는 의존 패키지 테스트를 보지 않아 남는 경우도
+  미사용 indirect로 냈다 — pgx v5.11.0의 `gopkg.in/check.v1`(yaml.v3 v3.0.1의 go.mod는 2016년 판을 require하고 pgx는
+  2020년 판을 고른다; `go mod tidy -diff`가 지킨다). 테스트 파일은 tidy처럼 모든 태그·플랫폼 파일을 읽는다
+  (`//go:build ignore`와 go 명령이 무시하는 `_`·`.`로 시작하는 이름 제외). 루트와 파일은 정렬해 처리해 같은 입력의
+  판정이 실행마다 같다. 테스트가 이번에 적재하지 않은 패키지를 import하면 그 패키지의 import(와 tidy가 그 모듈을
+  루트로 더하며 늘어나는 그래프)는 보지 못하므로, 미사용 판정이 남을 때 `N test files of dependency packages import
+  packages that were not loaded; requires that go mod tidy keeps only for those packages' imports may be reported as
+  unused`로 센다 — pgx의 `github.com/kr/pretty`(check.v1이 import한다)는 그 limitation과 함께 미사용으로 남는다.
+  읽지 못한 테스트 파일·디렉터리·go.mod는 `N dependency test files, package directories, or go.mod files could not be
+  read; …`로, vendor/로 적재해 go.mod도 테스트 파일도 없는 의존 모듈은 `N dependency modules were loaded from vendor/,
+  …`로 센다. 같은 모듈 버전의 go.mod는 한 번만 읽는다(못 읽은 파일도 한 번만 센다). 모듈 캐시 위치는 의존 모듈 go.mod
+  경로에서 정확한 꼬리를 떼어 얻고(캐시가 파일 시스템 루트여도 맞다), 그런 모듈이 없으면 `go env GOMODCACHE`(`go env
+  -w` 값 포함)로 묻는다. 다른 근거로 모든 require가 이미 사용이면 테스트 파일을 읽지 않는다(그 공백은 미사용 판정만
+  거짓으로 만들 수 있다).
+- `unused-deps`: go.work가 적용된 적재에서 미사용 판정이 남으면 `N requires reported unused were judged with a go.work
+  file in effect, which go mod tidy ignores; … (rerun with GOWORK=off to match tidy)`를 싣는다. tidy는 go.work를 보지
+  않는데, 워크스페이스 모듈은 주 모듈로 적재돼 사용한 의존도 테스트 의존 루트도 되지 않고(주 모듈이 require하는
+  워크스페이스 모듈은 미사용 직접 require로 남는다 — `--strict`는 여전히 1이다), go.work의 `use`·`replace`는 고른 버전과
+  적재한 파일을 바꾼다. 예전에는 그런 판정이 limitation 없이 나갔다. go.work 적용 여부는 go list와 같은 디렉터리·환경으로
+  `go env GOWORK`에 묻는다(`GOWORK=off`면 적용되지 않는다). 판정은 바꾸지 않는다 — `GOWORK=off`로 다시 돌리면 tidy와 같다.
+- `unused-deps`: 빌드 제약 제외 파일 limitation이 cgo 파일(`import "C"` — `CGO_ENABLED=0`이면 플랫폼·태그와 무관하게
+  빠진다)을 셀 때 안내에 `or CGO_ENABLED=1 for cgo files`를 더한다. cgo 파일이 없으면 문구는 그대로다.
+- `mcp`: `tools/list` 입력 스키마에 `"required": null`을 싣지 않는다. 필수 인자가 없는 도구 일곱(summary·impact·
+  cycles·dead·rules·metrics·mapping)이 그렇게 실어, 스키마를 검증하는 클라이언트(ajv 6.15: `data.required should
+  be array`)가 도구 정의를 거부했다. 필수 인자가 없으면 키를 뺀다(cartograph MCP와 같다).
 - go list가 오류를 낸 패턴을 버리지 않고 센다. `--pattern` 오타(`./interal/...`), 없는 디렉터리, 어느 모듈도
   제공하지 않는 import 경로, 모듈 밖 `--dir`, 없는 `replace` 대상, 읽을 수 없는 하위 디렉터리면 go list는 패턴
   오류만 담은 가짜 패키지를 (그 패턴이 고른 실제 패키지가 있으면 함께) 돌려주는데, 수확이 그것을 주 모듈 밖
@@ -102,6 +158,9 @@
 
 ### Changed
 
+- `unused-deps`: 빌드 제약 제외 파일과 의존 패키지 테스트 파일을 import 선언이 끝날 때까지만 읽는다(16 KiB부터 두
+  배씩, 상한 1 MiB는 그대로). 예전에는 모든 제외 파일을 1 MiB까지 읽었다 — modernc.org/sqlite v1.59.0은 의존 제외
+  파일 767개에서 약 47 MB를 읽었고, 이제 첫 16 KiB 안에서 끝난다(상한 약 6 MB). 판정은 같다.
 - Go API: `source.BridgeFacts(dir, generatedAt, toolVersion)`·`source.SchemaFacts(opts, generatedAt, toolVersion)`에
   `generatedAt time.Time` 인자가 생겼다(공개 함수 시그니처 변경 — 이 저장소에서는 `cli`만 부른다). 영 시각이면
   예전처럼 지금 시각을 싣는다. 마이그레이션: 기존 호출에 `time.Time{}`를 둘째 인자로 넣는다.

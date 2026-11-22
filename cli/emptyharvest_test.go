@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -162,6 +163,146 @@ func TestPatternErrorWithHarvestedPackages(t *testing.T) {
 		!strings.Contains(note, partialLoadNote) || strings.Contains(note, "nothing was harvested") ||
 		strings.Contains(note, "no packages were loaded") {
 		t.Errorf("the limitation must state only what go list reported, not that nothing was loaded:\n%s", note)
+	}
+}
+
+// loadErrorNote는 수확 문서·unused-deps 보고의 로드 오류 limitation 공통 부분이다.
+const loadErrorNote = "packages reported load errors"
+
+// unresolvedImportModule은 주 패키지가 어느 모듈도 제공하지 않는 경로(example.com/missing/pkg)를 import하는
+// fixture다. 그 import는 go list가 오류만 담은 가짜 패키지로 돌려준다 — --deps면 이름 없는 정점이 된다.
+func unresolvedImportModule(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport _ \"example.com/missing/pkg\"\n\nfunc main() {}\n",
+	})
+}
+
+// harvestLimitations는 JSON 그래프 문서의 정점 ID와 limitation을 읽는다.
+func harvestLimitations(t *testing.T, args ...string) (vertices, limitations []string) {
+	t.Helper()
+	code, out, errb := run(t, args...)
+	var doc struct {
+		Vertices []struct {
+			ID string `json:"id"`
+		} `json:"vertices"`
+		Limitations []string `json:"limitations"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &doc) != nil {
+		t.Fatalf("%v: exit %d\n%s%s", args, code, out, errb)
+	}
+	for _, v := range doc.Vertices {
+		vertices = append(vertices, v.ID)
+	}
+	return vertices, doc.Limitations
+}
+
+// countWith는 limitation 목록에서 note가 든 항목 수다.
+func countWith(list []string, note string) int {
+	n := 0
+	for _, l := range list {
+		if strings.Contains(l, note) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestPatternErrorImportedCountedOnce는 풀리지 않은 import 경로를 --pattern으로도 주면 같은 패키지가 패턴 오류와
+// 로드 오류로 두 번 세이던 문제의 회귀다. go/packages는 그 경로의 가짜 패키지 하나를 패턴 루트와 import 그래프에
+// 함께 싣는다 — 예전에는 --deps 문서가 `1 package patterns reported errors …`와 `1 packages reported load errors`를,
+// unused-deps가 같은 두 줄을 냈다. 정점 집합은 바꾸지 않는다(--deps의 이름 없는 정점은 그대로 남는다). 같은 경로를
+// 패턴으로 주지 않으면 로드 오류로 그대로 센다 — 계수가 사라지지 않았다는 대조군이다.
+func TestPatternErrorImportedCountedOnce(t *testing.T) {
+	dir := unresolvedImportModule(t)
+	withPattern := []string{"--dir", dir, "--pattern", "./...", "--pattern", "example.com/missing/pkg"}
+
+	vertices, lims := harvestLimitations(t, append([]string{"graph", "--deps"}, withPattern...)...)
+	if countWith(lims, "1 "+patternErrorNote) != 1 || countWith(lims, loadErrorNote) != 0 {
+		t.Errorf("graph --deps: the unresolved package must be counted once, by the pattern error:\n%s",
+			strings.Join(lims, "\n"))
+	}
+	if strings.Join(vertices, " ") != "example.com/fixture example.com/missing/pkg" {
+		t.Errorf("graph --deps: the vertex set must not change, got %v", vertices)
+	}
+	if _, lims := harvestLimitations(t, "graph", "--deps", "--dir", dir); countWith(lims, "1 "+loadErrorNote) != 1 {
+		t.Errorf("graph --deps without the pattern must still count the load error:\n%s", strings.Join(lims, "\n"))
+	}
+	// 심볼 레벨에서는 주 패키지도 타입 오류(import 실패)를 낸다 — 그 하나만 로드 오류로 남는다(예전에는 2).
+	if _, lims := harvestLimitations(t, append([]string{"graph", "--level", "symbol", "--deps"}, withPattern...)...); countWith(lims, "1 "+loadErrorNote) != 1 {
+		t.Errorf("graph --level symbol --deps: only the importing package's own error is a load error:\n%s",
+			strings.Join(lims, "\n"))
+	}
+
+	code, out, errb := run(t, append([]string{"unused-deps"}, withPattern...)...)
+	if code != 0 || !strings.Contains(out, "1 "+patternErrorNote) || strings.Contains(out, loadErrorNote) {
+		t.Errorf("unused-deps: exit %d, the unresolved package must be counted once\n%s%s", code, out, errb)
+	}
+	code, out, errb = run(t, "unused-deps", "--dir", dir)
+	if code != 0 || !strings.Contains(out, "1 "+loadErrorNote) {
+		t.Errorf("unused-deps without the pattern: exit %d, the load error must stay counted\n%s%s", code, out, errb)
+	}
+}
+
+// TestModuleLevelCountsLoadErrors는 module 문서가 모듈 간선에 공백을 남기는 로드 오류 — 주 모듈 패키지의 오류와
+// 풀리지 않은 import — 를 세는지 본다. 예전에는 module 레벨이 로드 오류를 하나도 세지 않았다 — 풀리지 않은 import는
+// "1 packages have no module (builtin)"으로 세였고(std가 아니다), 주 모듈 패키지의 import 블록을 읽지 못해도
+// limitation이 없었다. 패턴 오류가 이미 센 경로는 다시 세지 않는다. 이 플랫폼 파일이 없어 오류를 낸 std
+// (syscall/js — go list가 GOROOT의 디렉터리를 싣는다)는 모듈 간선과 무관해 지금처럼 builtin으로 센다.
+func TestModuleLevelCountsLoadErrors(t *testing.T) {
+	const moduleNote = "1 " + loadErrorNote + "; module edges through them may be incomplete"
+	dir := unresolvedImportModule(t)
+	for _, args := range [][]string{
+		{"graph", "--level", "module", "--dir", dir},
+		{"graph", "--level", "module", "--deps", "--dir", dir},
+	} {
+		if _, lims := harvestLimitations(t, args...); countWith(lims, "(builtin)") != 0 || countWith(lims, moduleNote) != 1 {
+			t.Errorf("%v: an unresolved import is a load error, not a builtin package:\n%s", args, strings.Join(lims, "\n"))
+		}
+	}
+	_, lims := harvestLimitations(t, "graph", "--level", "module", "--deps", "--dir", dir,
+		"--pattern", "./...", "--pattern", "example.com/missing/pkg")
+	if countWith(lims, "1 "+patternErrorNote) != 1 || countWith(lims, loadErrorNote) != 0 || countWith(lims, "(builtin)") != 0 {
+		t.Errorf("module --deps with the pattern: count the unresolved package once:\n%s", strings.Join(lims, "\n"))
+	}
+
+	broken := testutil.WriteModule(t, map[string]string{
+		"main.go":    "package main\n\nimport \"example.com/fixture/lib\"\n\nfunc main() { lib.F() }\n",
+		"lib/lib.go": "package lib\n\nimport (\n\t\"example.com/fixture/zzz\n)\n\nfunc F() {}\n",
+	})
+	if _, lims := harvestLimitations(t, "graph", "--level", "module", "--dir", broken); countWith(lims, moduleNote) != 1 {
+		t.Errorf("module: a main-module package whose imports could not be read must be counted:\n%s",
+			strings.Join(lims, "\n"))
+	}
+
+	// 점 없는 경로도 std가 아닐 수 있다 — std 오타(`fmtt`, "is not in std")와 점 없는 주 모듈 경로의 없는 패키지는 go
+	// list가 디렉터리를 찾지 못한 풀리지 않은 import다(예전에는 경로 모양만 보고 builtin으로 셌다).
+	for name, files := range map[string]map[string]string{
+		"std typo": {"main.go": "package main\n\nimport _ \"fmtt\"\n\nfunc main() {}\n"},
+		"dotless module path": {"go.mod": "module myapp\n\ngo 1.27\n",
+			"main.go": "package main\n\nimport _ \"myapp/missing\"\n\nfunc main() {}\n"},
+	} {
+		_, lims := harvestLimitations(t, "graph", "--level", "module", "--dir", testutil.WriteModule(t, files))
+		if countWith(lims, moduleNote) != 1 || countWith(lims, "(builtin)") != 0 {
+			t.Errorf("%s: an unresolved dotless import is a load error, not builtin:\n%s", name, strings.Join(lims, "\n"))
+		}
+	}
+
+	if runtime.GOOS == "js" {
+		return
+	}
+	jsOnly := testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport _ \"syscall/js\"\n\nfunc main() {}\n",
+	})
+	for _, args := range [][]string{
+		{"graph", "--level", "module", "--dir", jsOnly},
+		{"graph", "--level", "module", "--deps", "--dir", jsOnly},
+	} {
+		if _, lims := harvestLimitations(t, args...); countWith(lims, "1 packages have no module (builtin)") != 1 ||
+			countWith(lims, loadErrorNote) != 0 {
+			t.Errorf("%v: a std package without files for this platform is builtin, not a module-edge gap:\n%s",
+				args, strings.Join(lims, "\n"))
+		}
 	}
 }
 

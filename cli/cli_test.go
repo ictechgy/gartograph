@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -4166,6 +4167,379 @@ func TestUnusedDepsExcludedFileLimitationCountsUnseenImports(t *testing.T) {
 		"1 source files excluded by build constraints import packages that were not loaded;") ||
 		rep.Limitations[1] != platformGapLimitation(1) {
 		t.Fatalf("an excluded file importing an unloaded module package must be counted: %v", rep.Limitations)
+	}
+}
+
+// TestUnusedDepsCountsDependencyExcludedFiles는 의존 패키지의 빌드 제약 제외 파일이 import하는 모듈도 "사용"으로
+// 세는지 확인한다. go mod tidy는 주 모듈이 import하는 패키지 전체의 모든 태그·플랫폼 파일을 보므로, dep의 다른 OS
+// 파일만 import하는 example.com/sys를 go.mod에 남긴다 — 이 fixture로 go1.27.1 `go mod tidy -diff`를 돌리면 차이가
+// 없다. 예전에는 주 모듈 파일만 읽어 sys를 미사용 indirect로 오보했다(golang.org/x/tools v0.50.0의 golang.org/x/sys,
+// modernc.org/sqlite v1.59.0의 go-isatty·go-strftime이 같은 모양이다). sys 패키지는 이 플랫폼에서 적재되지 않아
+// 그 import는 보지 못했으므로 제외 파일 limitation으로 센다. 대조군의 의존 패키지 테스트 파일은 제외 파일로 세지
+// 않는다 — 이 fixture의 dep go.mod는 sys를 같은 버전으로 require해 tidy가 지운다(테스트 의존 규칙은
+// TestUnusedDepsDependencyTestImportsFollowTidy).
+func TestUnusedDepsCountsDependencyExcludedFiles(t *testing.T) {
+	otherOS := "windows"
+	if runtime.GOOS == "windows" {
+		otherOS = "linux"
+	}
+	files := map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\n" +
+			"require example.com/sys v0.0.0 // indirect\n\n" +
+			"replace (\n\texample.com/dep => ./dep\n\texample.com/sys => ./sys\n)\n",
+		"main.go":                    "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
+		"dep/go.mod":                 "module example.com/dep\n\ngo 1.27\n\nrequire example.com/sys v0.0.0\n",
+		"dep/dep.go":                 "package dep\n\nfunc F() {}\n",
+		"dep/dep_" + otherOS + ".go": "package dep\n\nimport \"example.com/sys\"\n\nfunc init() { sys.Call() }\n",
+		"sys/go.mod":                 "module example.com/sys\n\ngo 1.27\n",
+		"sys/sys.go":                 "package sys\n\nfunc Call() {}\n",
+	}
+	code, out, errb := run(t, "unused-deps", "--dir", testutil.WriteModule(t, files), "--format", "json")
+	var rep struct {
+		UnusedIndirect []string `json:"unusedIndirect"`
+		UsedRequires   int      `json:"usedRequires"`
+		Limitations    []string `json:"limitations"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &rep) != nil {
+		t.Fatalf("unused-deps: exit %d\n%s%s", code, out, errb)
+	}
+	if len(rep.UnusedIndirect) != 0 || rep.UsedRequires != 2 {
+		t.Fatalf("a require imported by a dependency's excluded file is kept by tidy and must count as used: %s", out)
+	}
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0],
+		"1 source files excluded by build constraints import packages that were not loaded;") {
+		t.Fatalf("the dependency file importing the unloaded sys package must be counted: %v", rep.Limitations)
+	}
+	// 대조군: 그 파일이 없거나 의존 패키지의 테스트 파일이면 tidy가 sys를 지운다 — 판정도 미사용 indirect로 남아야
+	// 한다(과대 보존이 아니다).
+	depFile := files["dep/dep_"+otherOS+".go"]
+	delete(files, "dep/dep_"+otherOS+".go")
+	testFile := strings.Replace(depFile, "import \"example.com/sys\"\n\nfunc init() { sys.Call() }",
+		"import (\n\t\"testing\"\n\n\t\"example.com/sys\"\n)\n\nfunc TestCall(t *testing.T) { sys.Call() }", 1)
+	for name, variant := range map[string]map[string]string{
+		"no dependency file":            {},
+		"dependency excluded test file": {"dep/dep_" + otherOS + "_test.go": testFile},
+	} {
+		for k, v := range files {
+			variant[k] = v
+		}
+		code, out, errb = run(t, "unused-deps", "--dir", testutil.WriteModule(t, variant), "--format", "json")
+		rep.UnusedIndirect = nil
+		if code != 0 || json.Unmarshal([]byte(out), &rep) != nil || !slices.Equal(rep.UnusedIndirect, []string{"example.com/sys"}) {
+			t.Errorf("%s: sys is unused, as tidy says: exit %d\n%s%s", name, code, out, errb)
+		}
+	}
+}
+
+// tidyKeeps는 dir 모듈에서 `go mod tidy -diff`가 module의 require 줄을 남기는지 본다 — fixture 기대값이 tidy와 같다는
+// 것을 테스트가 직접 확인하는 오라클이다. 로컬 replace만 쓰는 fixture라 GOPROXY=off로 네트워크 없이 돈다.
+func tidyKeeps(t *testing.T, dir, module string) bool {
+	t.Helper()
+	cmd := exec.Command("go", "mod", "tidy", "-diff")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+		t.Fatalf("go mod tidy -diff in %s: %v\n%s", dir, err, stderr.String())
+	}
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		fields := strings.Fields(strings.TrimPrefix(line, "-"))
+		if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") && slices.Contains(fields, module) {
+			return false
+		}
+	}
+	return true
+}
+
+// dependencyTestFixture는 의존 패키지 테스트 판정 fixture의 기본 파일이다. 주 모듈은 dep(main.go가 import)와
+// sys v0.2.0(indirect)을 require하고 둘 다 로컬 디렉터리로 replace한다. dep의 테스트 파일이 sys를 import하는지와
+// dep·다른 루트의 go.mod는 사례마다 덮어쓴다. extraRequire·extraDirectives·extraReplace는 주 go.mod에 더할 줄이다.
+func dependencyTestFixture(extraRequire, extraDirectives, extraReplace string) map[string]string {
+	return map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n" + extraRequire + "\n" +
+			"require example.com/sys v0.2.0 // indirect\n\n" + extraDirectives +
+			"replace (\n\texample.com/dep => ./dep\n\texample.com/sys => ./sys\n" + extraReplace + ")\n",
+		"main.go":    "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
+		"dep/go.mod": "module example.com/dep\n\ngo 1.27\n",
+		"dep/dep.go": "package dep\n\nfunc F() {}\n",
+		"sys/go.mod": "module example.com/sys\n\ngo 1.27\n",
+		"sys/sys.go": "package sys\n\nfunc Call() {}\n",
+	}
+}
+
+// sysTestFile은 sys를 import하는 dep 테스트 파일이다. header는 패키지 절 앞에 둘 줄(빌드 제약)이다.
+func sysTestFile(header string) string {
+	return header + "package dep\n\nimport (\n\t\"testing\"\n\n\t\"example.com/sys\"\n)\n\n" +
+		"func TestCall(t *testing.T) { sys.Call() }\n"
+}
+
+// unusedSysReport는 fixture에서 unused-deps JSON을 읽어 sys가 미사용 indirect인지와 limitation을 돌려준다.
+func unusedSysReport(t *testing.T, dir string) (bool, []string) {
+	t.Helper()
+	var rep struct {
+		UnusedIndirect []string `json:"unusedIndirect"`
+		Limitations    []string `json:"limitations"`
+	}
+	code, out, errb := run(t, "unused-deps", "--dir", dir, "--format", "json")
+	if code != 0 || json.Unmarshal([]byte(out), &rep) != nil {
+		t.Fatalf("unused-deps: exit %d\n%s%s", code, out, errb)
+	}
+	return slices.Contains(rep.UnusedIndirect, "example.com/sys"), rep.Limitations
+}
+
+// TestUnusedDepsDependencyTestImportsFollowTidy는 의존 패키지 테스트만 import하는 require를 tidy와 같게 판정하는지
+// 본다. tidy는 "all"의 테스트도 적재하되, 테스트만의 의존 모듈은 "all"의 모듈(루트)에서 만든 모듈 그래프가 그 모듈을
+// 고른 버전 이상으로 제공하지 못할 때만 남긴다(go1.27.1 modload tidyPrunedRoots). 그래프에는 모든 루트의 go.mod
+// require가 들고(dep가 아닌 루트도), go 1.17 미만 루트에서는 전이 require까지 들며, 주 go.mod의 exclude에 걸린 require는
+// 빠진다. go 명령이 무시하는 테스트 파일(`//go:build ignore`, `_`·`.`로 시작하는 이름)은 세지 않는다. 예전에는 의존
+// 패키지 테스트를 보지 않아 남는 경우도 미사용 indirect로 냈다(pgx v5.11.0의 gopkg.in/check.v1이 실제 사례다). 기대값마다
+// tidyKeeps로 tidy 자신의 판정을 함께 확인한다. 테스트가 이번에 적재하지 않은 패키지를 import하면 그 패키지의 import는
+// 못 보므로, 미사용이 남을 때 limitation으로 센다(gap).
+func TestUnusedDepsDependencyTestImportsFollowTidy(t *testing.T) {
+	otherOS := "windows"
+	if runtime.GOOS == "windows" {
+		otherOS = "linux"
+	}
+	const depReq = "module example.com/dep\n\ngo 1.27\n\nrequire example.com/sys "
+	for _, c := range []struct {
+		name  string
+		base  map[string]string // 기본 파일(dependencyTestFixture)
+		files map[string]string // 덮어쓸 파일
+		kept  bool              // tidy가 sys require를 남기는지
+		gap   bool              // 테스트 의존 공백 limitation이 붙는지
+	}{
+		{name: "dep go.mod lacks sys", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/dep_test.go": sysTestFile("")}, kept: true},
+		{name: "constrained test file", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/dep_" + otherOS + "_test.go": sysTestFile("")}, kept: true},
+		{name: "dep go.mod requires an older sys", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/go.mod": depReq + "v0.1.0\n", "dep/dep_test.go": sysTestFile("")}, kept: true},
+		{name: "dep go.mod provides the selected sys", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/go.mod": depReq + "v0.2.0\n", "dep/dep_test.go": sysTestFile("")}, gap: true},
+		{name: "main go.mod excludes the version dep requires",
+			base:  dependencyTestFixture("", "exclude example.com/sys v0.3.0\n\n", ""),
+			files: map[string]string{"dep/go.mod": depReq + "v0.3.0\n", "dep/dep_test.go": sysTestFile("")}, kept: true},
+		{name: "another root's go.mod provides sys",
+			base: dependencyTestFixture("require example.com/dep2 v0.0.0\n", "", "\texample.com/dep2 => ./dep2\n"),
+			files: map[string]string{
+				"main.go":      "package main\n\nimport (\n\t\"example.com/dep\"\n\t_ \"example.com/dep2\"\n)\n\nfunc main() { dep.F() }\n",
+				"dep2/go.mod":  "module example.com/dep2\n\ngo 1.27\n\nrequire example.com/sys v0.2.0\n",
+				"dep2/dep2.go": "package dep2\n", "dep/dep_test.go": sysTestFile(""),
+			}, gap: true},
+		{name: "go 1.16 dep reaches sys through its requirement",
+			base: dependencyTestFixture("", "", "\texample.com/e => ./e\n"),
+			files: map[string]string{
+				"dep/go.mod": "module example.com/dep\n\ngo 1.16\n\nrequire example.com/e v0.0.0\n",
+				"e/go.mod":   "module example.com/e\n\ngo 1.27\n\nrequire example.com/sys v0.2.0\n",
+				"e/e.go":     "package e\n", "dep/dep_test.go": sysTestFile(""),
+			}, gap: true},
+		{name: "ignore-tagged test file", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/dep_test.go": sysTestFile("//go:build ignore\n\n")}},
+		{name: "underscore test file name", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/_x_test.go": sysTestFile("")}},
+		{name: "dot test file name", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/.x_test.go": sysTestFile("")}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			maps.Copy(c.base, c.files)
+			dir := testutil.WriteModule(t, c.base)
+			if got := tidyKeeps(t, dir, "example.com/sys"); got != c.kept {
+				t.Fatalf("fixture drifted from go mod tidy: tidy keeps sys = %v, want %v", got, c.kept)
+			}
+			reported, lims := unusedSysReport(t, dir)
+			if reported == c.kept {
+				t.Fatalf("sys reported unused = %v, but tidy keeps it = %v: %v", reported, c.kept, lims)
+			}
+			wantLims := 0
+			if c.gap {
+				wantLims = 1
+			}
+			if gotGap := slices.ContainsFunc(lims, func(l string) bool {
+				return strings.HasPrefix(l, "1 test files of dependency packages import packages that were not loaded;")
+			}); gotGap != c.gap || len(lims) != wantLims {
+				t.Fatalf("limitations = %v, want the dependency test gap = %v and nothing else", lims, c.gap)
+			}
+		})
+	}
+}
+
+// TestUnusedDepsDependencyTestVerdictIsStable는 같은 입력의 판정이 실행마다 같은지 본다. 가지치기된 루트 b가 가지치기
+// 안 된 루트 u(go 1.16)에서도 닿으면 tidy는 u의 걸음으로 b → y → z를 따라가 z를 지운다(tidyKeeps). 예전에는 루트 읽기와
+// 걸음이 방문 집합 하나를 함께 써, b를 루트로 먼저 읽으면 걸음이 b에서 멈춰 z를 사용으로 냈다 — 그 순서는 import 맵
+// 순회에 달려 실행마다 판정이 바뀌었다(PR #58 리뷰 fx2/nd). 열 번 돌려 모두 tidy와 같은지 본다.
+func TestUnusedDepsDependencyTestVerdictIsStable(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire (\n\texample.com/b v0.0.0\n\texample.com/u v0.0.0\n)\n\n" +
+			"require example.com/z v1.1.0 // indirect\n\nreplace (\n\texample.com/b => ./b\n\texample.com/u => ./u\n" +
+			"\texample.com/y => ./y\n\texample.com/z => ./z\n)\n",
+		"main.go":     "package main\n\nimport (\n\t_ \"example.com/b\"\n\t_ \"example.com/u\"\n)\n\nfunc main() {}\n",
+		"u/go.mod":    "module example.com/u\n\ngo 1.16\n\nrequire example.com/b v0.0.0\n",
+		"u/u.go":      "package u\n",
+		"u/u_test.go": "package u\n\nimport _ \"example.com/z\"\n",
+		"b/go.mod":    "module example.com/b\n\ngo 1.21\n\nrequire example.com/y v0.0.0\n",
+		"b/b.go":      "package b\n",
+		"y/go.mod":    "module example.com/y\n\ngo 1.21\n\nrequire example.com/z v1.1.0\n",
+		"y/y.go":      "package y\n",
+		"z/go.mod":    "module example.com/z\n\ngo 1.21\n",
+		"z/z.go":      "package z\n",
+	})
+	if tidyKeeps(t, dir, "example.com/z") {
+		t.Fatal("fixture drifted from go mod tidy: tidy must drop z (u → b → y → z provides it)")
+	}
+	for i := range 10 {
+		if code, out, errb := run(t, "unused-deps", "--dir", dir, "--format", "json"); code != 0 ||
+			!strings.Contains(out, `"unusedIndirect": [
+    "example.com/z"
+  ]`) {
+			t.Fatalf("run %d: z must be reported unused like tidy, every time: exit %d\n%s%s", i, code, out, errb)
+		}
+	}
+}
+
+// TestUnusedDepsIgnoresGoWorkReplaceForTheGraph는 go.work의 replace가 의존 모듈을 바꿔도 테스트 의존 판정의 모듈 그래프는
+// tidy처럼 주 go.mod의 replace로 고른 go.mod로 만드는지 본다. go mod tidy는 go.work를 보지 않아 dep2(go 1.21, require
+// 없음)를 읽고, dep2의 테스트만 import하는 z를 지킨다(tidyKeeps). 예전에는 적재된 go.work 대상(go 1.16 → e → z)의 go.mod로
+// 그래프를 만들어 z를 미사용으로 냈다(PR #58 리뷰 fx2/wsrep). 테스트 파일은 적재된 대상에서 읽으므로, 미사용이 남으면
+// go.work 아래의 판정이라는 limitation을 단다 — 이 fixture는 미사용이 남지 않아 조용하다.
+func TestUnusedDepsIgnoresGoWorkReplaceForTheGraph(t *testing.T) {
+	testFile := "package dep2\n\nimport _ \"example.com/z\"\n"
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep2 v0.0.0\n\n" +
+			"require example.com/z v1.1.0 // indirect\n\nreplace (\n\texample.com/dep2 => ./dep2\n" +
+			"\texample.com/e => ./e\n\texample.com/z => ./z\n)\n",
+		"go.work":               "go 1.27\n\nuse .\n\nreplace example.com/dep2 => ./depfork2\n",
+		"main.go":               "package main\n\nimport _ \"example.com/dep2\"\n\nfunc main() {}\n",
+		"dep2/go.mod":           "module example.com/dep2\n\ngo 1.21\n",
+		"dep2/dep2.go":          "package dep2\n",
+		"dep2/dep2_test.go":     testFile,
+		"depfork2/go.mod":       "module example.com/dep2\n\ngo 1.16\n\nrequire example.com/e v0.0.0\n",
+		"depfork2/dep2.go":      "package dep2\n",
+		"depfork2/dep2_test.go": testFile,
+		"e/go.mod":              "module example.com/e\n\ngo 1.21\n\nrequire example.com/z v1.1.0\n",
+		"e/e.go":                "package e\n",
+		"z/go.mod":              "module example.com/z\n\ngo 1.21\n",
+		"z/z.go":                "package z\n",
+	})
+	if !tidyKeeps(t, dir, "example.com/z") {
+		t.Fatal("fixture drifted from go mod tidy: tidy must keep z (dep2's go.mod does not provide it)")
+	}
+	code, out, errb := run(t, "unused-deps", "--dir", dir, "--format", "json")
+	if code != 0 || strings.Contains(out, "unusedIndirect\": [\n") || !strings.Contains(out, `"usedRequires": 2`) {
+		t.Fatalf("z is kept by tidy and must be used: exit %d\n%s%s", code, out, errb)
+	}
+	// 미사용 require(w)가 남으면 go.work 아래에서 낸 판정이라는 공백을 센다.
+	files := map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep2 v0.0.0\n\n" +
+			"require (\n\texample.com/w v0.0.0 // indirect\n\texample.com/z v1.1.0 // indirect\n)\n\n" +
+			"replace (\n\texample.com/dep2 => ./dep2\n\texample.com/e => ./e\n\texample.com/w => ./w\n" +
+			"\texample.com/z => ./z\n)\n",
+		"w/go.mod": "module example.com/w\n\ngo 1.21\n",
+		"w/w.go":   "package w\n",
+	}
+	for _, name := range []string{"go.work", "main.go", "dep2/go.mod", "dep2/dep2.go", "dep2/dep2_test.go", "depfork2/go.mod",
+		"depfork2/dep2.go", "depfork2/dep2_test.go", "e/go.mod", "e/e.go", "z/go.mod", "z/z.go"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[name] = string(data)
+	}
+	withUnused := testutil.WriteModule(t, files)
+	rep := runUnusedDepsJSON(t, withUnused)
+	if !slices.ContainsFunc(rep.Limitations, func(l string) bool {
+		return strings.HasPrefix(l, "1 requires reported unused were judged with a go.work file in effect, which go mod tidy ignores;")
+	}) {
+		t.Fatalf("with an unused require left under go.work, the verdict must be qualified: %v", rep.Limitations)
+	}
+	// GOWORK=off면 go.work가 적용되지 않는다 — w는 여전히 미사용이지만 그 limitation은 없다(go env GOWORK는 "off"를 낸다).
+	t.Setenv("GOWORK", "off")
+	rep = runUnusedDepsJSON(t, withUnused)
+	if slices.ContainsFunc(rep.Limitations, func(l string) bool { return strings.Contains(l, "go.work") }) {
+		t.Fatalf("GOWORK=off disables the workspace, so its limitation must not appear: %v", rep.Limitations)
+	}
+}
+
+// TestUnusedDepsWorkspaceLimitation은 go.work가 적용된 적재에서 미사용 판정이 남으면 tidy와 다를 수 있다는 사실을 세는지
+// 본다. go.work가 dep2를 워크스페이스 모듈로 `use`하면 dep2는 Module.Main이라 사용한 의존이 되지 못하고 그 테스트도
+// 읽히지 않는다 — dep2(직접)와 dep2의 테스트만 import하는 z(indirect)가 미사용으로 남는데 tidy는 go.work를 보지 않아
+// 둘 다 지킨다(tidyKeeps). 예전에는 limitation 없이 냈다(PR #58 리뷰 wsuse, 리뷰 2 fx/ws). 판정과 --strict 1은
+// 그대로다(바꾸지 않는다). GOWORK=off로 다시 돌리면 tidy와 같아지고 limitation도 없다.
+func TestUnusedDepsWorkspaceLimitation(t *testing.T) {
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep2 v0.0.0\n\n" +
+			"require example.com/z v1.1.0 // indirect\n\nreplace (\n\texample.com/dep2 => ./dep2\n\texample.com/z => ./z\n)\n",
+		"go.work":           "go 1.27\n\nuse (\n\t.\n\t./dep2\n)\n",
+		"main.go":           "package main\n\nimport _ \"example.com/dep2\"\n\nfunc main() {}\n",
+		"dep2/go.mod":       "module example.com/dep2\n\ngo 1.21\n",
+		"dep2/dep2.go":      "package dep2\n",
+		"dep2/dep2_test.go": "package dep2\n\nimport _ \"example.com/z\"\n",
+		"z/go.mod":          "module example.com/z\n\ngo 1.21\n",
+		"z/z.go":            "package z\n",
+	})
+	if !tidyKeeps(t, dir, "example.com/dep2") || !tidyKeeps(t, dir, "example.com/z") {
+		t.Fatal("fixture drifted from go mod tidy: tidy must keep dep2 and z")
+	}
+	rep := runUnusedDepsJSON(t, dir)
+	if !slices.Equal(rep.Unused, []string{"example.com/dep2"}) || !slices.ContainsFunc(rep.Limitations, func(l string) bool {
+		return strings.HasPrefix(l, "2 requires reported unused were judged with a go.work file in effect, which go mod tidy ignores;")
+	}) {
+		t.Fatalf("the workspace verdict must carry the go.work limitation: %+v", rep)
+	}
+	if code, _, _ := run(t, "unused-deps", "--dir", dir, "--strict"); code != 1 {
+		t.Fatalf("the verdict is unchanged, so --strict still exits 1 on the workspace module: %d", code)
+	}
+	t.Setenv("GOWORK", "off")
+	if rep := runUnusedDepsJSON(t, dir); len(rep.Unused) != 0 || len(rep.Limitations) != 0 || rep.UsedRequires != 2 {
+		t.Fatalf("with GOWORK=off the verdict must match tidy and stay quiet: %+v", rep)
+	}
+}
+
+// TestUnusedDepsVendoredDependencies는 vendor/로 적재한 의존 모듈의 테스트 의존을 판정하지 못한다는 사실을 세는지 본다.
+// go mod vendor는 의존 모듈의 go.mod와 테스트 파일을 옮기지 않아 적재된 모듈에 go.mod도 테스트 파일도 없다. tidy는
+// vendor/를 보지 않고 dep의 테스트를 읽어 sys를 지킨다(tidyKeeps) — 예전에는 sys를 미사용으로 내며 아무 limitation도
+// 없었다. 판정은 그대로 미사용이고, 그 공백을 limitation으로 센다.
+func TestUnusedDepsVendoredDependencies(t *testing.T) {
+	files := dependencyTestFixture("", "", "")
+	maps.Copy(files, map[string]string{
+		"dep/dep_test.go":               sysTestFile(""),
+		"vendor/example.com/dep/dep.go": "package dep\n\nfunc F() {}\n",
+		"vendor/modules.txt": "# example.com/dep v0.0.0 => ./dep\n## explicit; go 1.27\nexample.com/dep\n" +
+			"# example.com/sys v0.2.0 => ./sys\n## explicit; go 1.27\n# example.com/dep => ./dep\n# example.com/sys => ./sys\n",
+	})
+	dir := testutil.WriteModule(t, files)
+	if !tidyKeeps(t, dir, "example.com/sys") {
+		t.Fatal("fixture drifted from go mod tidy: tidy must keep sys through dep's test")
+	}
+	if reported, lims := unusedSysReport(t, dir); !reported || len(lims) != 1 ||
+		!strings.HasPrefix(lims[0], "1 dependency modules were loaded from vendor/, which keeps neither their go.mod nor their test files;") {
+		t.Fatalf("a vendored dependency's test gap must be counted: unused = %v, limitations = %v", reported, lims)
+	}
+}
+
+// TestUnusedDepsCgoHint는 CGO_ENABLED=0으로 빠진 cgo 파일이 제외 파일 limitation에 세일 때 안내가 CGO_ENABLED를
+// 말하는지 본다 — 예전에는 --goos·--tags만 권해, 그 둘로는 적재되지 않는 cgo 파일의 공백을 메울 길을 말하지 않았다.
+// cgo 파일이 없는 공백의 문구는 예전과 같다(TestUnusedDepsCountsDependencyExcludedFiles).
+func TestUnusedDepsCgoHint(t *testing.T) {
+	t.Setenv("CGO_ENABLED", "0")
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\n" +
+			"require example.com/sys v0.0.0 // indirect\n\n" +
+			"replace (\n\texample.com/dep => ./dep\n\texample.com/sys => ./sys\n)\n",
+		"main.go":    "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
+		"dep/go.mod": "module example.com/dep\n\ngo 1.27\n\nrequire example.com/sys v0.0.0\n",
+		"dep/dep.go": "package dep\n\nfunc F() {}\n",
+		"dep/cgo.go": "package dep\n\n// int y = 2;\nimport \"C\"\n\nimport \"example.com/sys\"\n\n" +
+			"func init() { sys.Call(); _ = C.y }\n",
+		"sys/go.mod": "module example.com/sys\n\ngo 1.27\n",
+		"sys/sys.go": "package sys\n\nfunc Call() {}\n",
+	})
+	rep := runUnusedDepsJSON(t, dir)
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0], "1 source files excluded by build constraints") ||
+		!strings.HasSuffix(rep.Limitations[0], "(load them with --goos or --tags, or CGO_ENABLED=1 for cgo files)") {
+		t.Fatalf("the cgo file excluded by CGO_ENABLED=0 must be counted with a CGO_ENABLED hint: %v", rep.Limitations)
 	}
 }
 

@@ -165,7 +165,21 @@ gartograph impact --since origin/main...HEAD   # 바뀐 파일 기준 영향 분
 gartograph path <from-id> <to-id>              # 최단 의존 경로 — 왜 도달하나
 gartograph shared <id1> <id2>                  # 공통 도달 집합 + 루트별 고유분
 gartograph unused-deps --strict                # 어느 패키지도 안 쓰는 go.mod require
-                                               # (tidy처럼 빌드 제약 제외 파일·로드 실패 import도 셈,
+                                               # (tidy처럼 빌드 제약 제외 파일·로드 실패 import도 셈 —
+                                               #  제외 파일은 모듈 패키지와 그 패키지가 import하는 의존
+                                               #  패키지 것을 읽음. 의존 패키지의 테스트 파일은 tidy 규칙대로
+                                               #  의존 모듈들로 만든 모듈 그래프(모든 의존 모듈의 go.mod require,
+                                               #  go 1.17 미만 모듈은 모듈 캐시로 전이 require까지, 주 go.mod
+                                               #  exclude 제외, go.mod는 tidy처럼 go.work 없이 주 go.mod의
+                                               #  replace로만 고름)가 해당 모듈을 고른 버전 이상으로 제공하지
+                                               #  못할 때만 셈 — 미사용이 남으면 이번에 로드하지 않은 패키지를
+                                               #  import하는 그 테스트 파일 수와 vendor/로 로드한 의존 모듈
+                                               #  수(go.mod·테스트 파일이 없다)를 limitations로 셈. go.work가
+                                               #  적용되면 미사용 판정에 limitation이 붙음 — tidy는 go.work를
+                                               #  보지 않는데 워크스페이스 모듈은 주 모듈로 로드되고(require한
+                                               #  워크스페이스 모듈은 미사용 직접 require로 남아 --strict는
+                                               #  여전히 실패) use·replace가 버전·파일을 바꿈. tidy와 맞추려면
+                                               #  GOWORK=off로 다시 실행.
                                                #  //go:build ignore 제외 — limitations는 로드 오류와,
                                                #  이번에 로드하지 않은 패키지를 import하는 제외 파일을 셈.
                                                #  std만 쓰는 제외 파일은 조용하다.

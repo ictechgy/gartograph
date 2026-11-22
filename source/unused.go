@@ -7,15 +7,18 @@
 package source
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/build/constraint"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -45,9 +48,10 @@ type UnusedReport struct {
 // "사용"은 도달 가능한 패키지들이 속한 비주 모듈 집합이다 — 테스트 변형까지
 // 포함해 로드한다. go mod tidy는 테스트 파일의 import도 의존으로 세므로,
 // --tests 없이 세면 tidy가 지키는 require를 미사용으로 오보한다.
-// 같은 이유로 빌드 제약으로 빠진 파일(다른 OS·태그)의 import와 로드에 실패한 import도
-// 사용으로 센다 — tidy는 ignore 외의 모든 태그·플랫폼을 보고, 받지 못한 모듈의 패키지도
-// import된 사실은 그대로다. 이 플랫폼 파일이 하나도 없는 디렉터리는 go list가 패키지로 내지 않아
+// 같은 이유로 빌드 제약으로 빠진 파일(다른 OS·태그 — 주 모듈과 의존 패키지 둘 다)의 import와 로드에
+// 실패한 import도 사용으로 센다 — tidy는 ignore 외의 모든 태그·플랫폼을 보고, 받지 못한 모듈의 패키지도
+// import된 사실은 그대로다. 의존 패키지 테스트의 import는 tidy가 테스트 의존을 남기는 규칙으로 따로
+// 판정한다(dependencyTestVerdicts). 이 플랫폼 파일이 하나도 없는 디렉터리는 go list가 패키지로 내지 않아
 // import를 읽을 길이 없다 — 그 수를 limitation으로 센다(scanUnloadedDirs).
 func UnusedRequires(opts Options) (*UnusedReport, error) {
 	opts.Tests = true
@@ -87,7 +91,11 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 	if err != nil {
 		return nil, err
 	}
-	rep := &UnusedReport{Module: modPath, Limitations: unusedLimitations(reachable, excluded, unloaded)}
+	tests := dependencyTestVerdicts(reachable, tidyTestInput{requires: requires, modules: modules, used: used,
+		unseen:  func(path string) bool { return unseenImport(path, loaded, modPath, modules) },
+		mainMod: mod, modDir: modDir})
+	broken := brokenPackages(reachable, patternErrorPaths(patternErrs))
+	rep := &UnusedReport{Module: modPath, Limitations: unusedLimitations(broken, excluded, unloaded, tests)}
 	if len(patternErrs) > 0 {
 		// 적재한 패키지의 판정은 그대로 내되, go list가 오류를 낸 패턴이 있었다는 사실을 수확 문서와 같은 문구로 센다.
 		rep.Limitations = append(rep.Limitations, patternErrorLimitation(patternErrs, len(pkgs)))
@@ -105,7 +113,79 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 	}
 	sort.Strings(rep.Unused)
 	sort.Strings(rep.UnusedIndirect)
+	if note, err := workspaceLimitation(opts, len(rep.Unused)+len(rep.UnusedIndirect)); err != nil {
+		return nil, err
+	} else if note != "" {
+		rep.Limitations = append(rep.Limitations, note)
+	}
 	return rep, nil
+}
+
+// workspaceLimitation은 go.work가 적용된 적재에서 미사용 판정이 남을 때의 limitation이다. go mod tidy는 go.work를 보지
+// 않는다 — 워크스페이스 모듈은 Module.Main이라 그 테스트도 루트도 되지 않고(주 모듈이 require하는 워크스페이스 모듈은
+// 미사용 직접 require로 남는다), go.work의 use·replace는 고른 버전과 적재한 파일을 바꾼다. 그래서 그 판정은 tidy가 남기는
+// 것과 다를 수 있다. 미사용이 없으면 거짓 미사용이 생길 수 없어 묻지도 않는다(빈 문자열).
+func workspaceLimitation(opts Options, unused int) (string, error) {
+	if unused == 0 {
+		return "", nil
+	}
+	goWork, err := activeGoWork(opts)
+	if err != nil || goWork == "" {
+		return "", err
+	}
+	return fmt.Sprintf("%d requires reported unused were judged with a go.work file in effect, which go mod tidy ignores; "+
+		"workspace modules and go.work use or replace directives can make them differ from what tidy keeps "+
+		"(rerun with GOWORK=off to match tidy)", unused), nil
+}
+
+// activeGoWork는 이 적재에 쓰인 go.work 경로다(없으면 빈 문자열). go list와 같은 디렉터리·환경(loaderEnv — GOWORK=off,
+// 캡처의 go.work 포함)으로 `go env GOWORK`에 묻는다 — go 명령이 하는 go.work 탐색을 다시 구현하지 않는다.
+func activeGoWork(opts Options) (string, error) {
+	cmd := exec.Command("go", "env", "GOWORK")
+	cmd.Dir = opts.Dir
+	cmd.Env = loaderEnv(opts)
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			err = fmt.Errorf("%w: %s", err, bytes.TrimSpace(exit.Stderr))
+		}
+		return "", fmt.Errorf("checking for an active go.work with go env GOWORK: %w — check that the go command runs in %s",
+			err, opts.Dir)
+	}
+	goWork := strings.TrimSpace(string(out))
+	if goWork == "off" {
+		return "", nil
+	}
+	return goWork, nil
+}
+
+// dependencyTestVerdicts는 의존 패키지 테스트가 import하는 require 중 tidy가 남기는 것을 in.used에 더하고, 그
+// 판정의 공백을 돌려준다. 다른 근거로 모든 require가 이미 사용이면 읽지 않는다 — 공백은 미사용 판정만 거짓으로
+// 만들 수 있어, 미사용이 하나도 없으면 알릴 것이 없다. 같은 이유로 테스트를 읽은 뒤에도 미사용이 남을 때만 공백을
+// 돌려준다(빈 값이면 limitation이 없다).
+func dependencyTestVerdicts(reachable []*packages.Package, in tidyTestInput) dependencyTestScan {
+	if !anyUnused(in.requires, in.used) {
+		return dependencyTestScan{}
+	}
+	scan := scanDependencyTests(reachable, in)
+	for m := range scan.used {
+		in.used[m] = true
+	}
+	if !anyUnused(in.requires, in.used) {
+		return dependencyTestScan{}
+	}
+	return scan
+}
+
+// anyUnused는 used에 없는 require가 하나라도 있는지 본다.
+func anyUnused(requires []requireEntry, used map[string]bool) bool {
+	for _, r := range requires {
+		if !used[r.path] {
+			return true
+		}
+	}
+	return false
 }
 
 // noMainModuleError는 주 모듈 패키지를 하나도 적재하지 못해 go.mod를 정할 수 없을 때의 오류다. require 판정에는
@@ -127,18 +207,23 @@ func noMainModuleError(opts Options, roots int, patternErrs []*packages.Package)
 // requireEntry는 go.mod의 require 한 줄에서 필요한 두 필드다.
 type requireEntry struct {
 	path     string
+	version  string // 의존 패키지 테스트 판정이 tidy처럼 고른 버전과 비교한다(scanDependencyTests)
 	indirect bool
 }
 
-// goModFacts는 go.mod에서 이 질의가 쓰는 두 가지다. ignores는 ignore 지시문(Go 1.25)의 경로다 — go
+// goModFacts는 go.mod에서 이 질의가 쓰는 사실이다. ignores는 ignore 지시문(Go 1.25)의 경로다 — go
 // 명령은 그 디렉터리를 ./... 순회와 tidy에서 빼므로, 패키지가 되지 않은 디렉터리를 셀 때도 빼야 한다.
+// excludes·replaces는 주 모듈의 exclude·replace 지시문이다 — tidy가 테스트 의존을 판정하는 모듈 그래프에
+// 적용되므로(tidyGraph) 그 근사도 같은 지시문을 따른다.
 type goModFacts struct {
 	requires []requireEntry
 	ignores  []string
+	excludes map[string]bool // "경로@버전"
+	replaces []*modfile.Replace
 }
 
-// readGoMod는 go.mod의 require 목록과 ignore 지시문을 한 번의 파싱으로 읽는다.
-// tool·toolchain·exclude 지시문은 require가 아니라 건너뛴다.
+// readGoMod는 go.mod의 require·ignore·exclude·replace 지시문을 한 번의 파싱으로 읽는다.
+// tool·toolchain 지시문은 require가 아니라 건너뛴다.
 func readGoMod(path string) (goModFacts, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -150,11 +235,17 @@ func readGoMod(path string) (goModFacts, error) {
 	}
 	facts := goModFacts{requires: make([]requireEntry, 0, len(f.Require))}
 	for _, r := range f.Require {
-		facts.requires = append(facts.requires, requireEntry{path: r.Mod.Path, indirect: r.Indirect})
+		facts.requires = append(facts.requires,
+			requireEntry{path: r.Mod.Path, version: r.Mod.Version, indirect: r.Indirect})
 	}
 	for _, ig := range f.Ignore {
 		facts.ignores = append(facts.ignores, ig.Path)
 	}
+	facts.excludes = make(map[string]bool, len(f.Exclude))
+	for _, ex := range f.Exclude {
+		facts.excludes[ex.Mod.String()] = true
+	}
+	facts.replaces = f.Replace
 	return facts, nil
 }
 
@@ -202,57 +293,102 @@ func owningRequire(importPath string, requires map[string]bool) (string, bool) {
 	return "", false
 }
 
-// unusedLimitations는 판정이 빈 곳을 실제로 센 수로 문장화한다. 로드 오류 패키지는 PkgPath로
-// 한 번만 센다 — 테스트 변형이 원 패키지의 오류를 다시 싣는다. 디렉터리 순회의 두 수는 끝에 붙인다
-// — 그런 디렉터리가 없는 모듈의 문구와 순서는 예전과 같다.
-func unusedLimitations(reachable []*packages.Package, excluded excludedScan, unloaded unloadedScan) []string {
+// brokenPackages는 로드 오류를 낸 도달 패키지의 수다. PkgPath로 한 번만 센다 — 테스트 변형이 원 패키지의 오류를
+// 다시 싣는다. 패턴 오류 limitation이 이미 센 경로(patternErrPaths)는 뺀다 — 풀리지 않은 import 경로를 --pattern으로도
+// 주면 같은 가짜 패키지가 import 그래프에도 실려 두 번 세였다.
+func brokenPackages(reachable []*packages.Package, patternErrPaths map[string]bool) int {
 	broken := map[string]bool{}
 	for _, p := range reachable {
-		if len(p.Errors) > 0 {
+		if len(p.Errors) > 0 && !patternErrPaths[p.PkgPath] {
 			broken[p.PkgPath] = true
 		}
 	}
+	return len(broken)
+}
+
+// unusedLimitations는 판정이 빈 곳을 실제로 센 수로 문장화한다. broken은 로드 오류 패키지 수다(brokenPackages).
+// 디렉터리 순회의 두 수와 의존 패키지 테스트의 두 수는 끝에 붙인다 — 그런 공백이 없는 모듈의 문구와 순서는
+// 예전과 같다.
+func unusedLimitations(broken int, excluded excludedScan, unloaded unloadedScan, tests dependencyTestScan) []string {
 	var out []string
-	if len(broken) > 0 {
+	if broken > 0 {
 		out = append(out, fmt.Sprintf(
 			"%d packages reported load errors; requires needed only through them may be reported as unused",
-			len(broken)))
+			broken))
 	}
 	if excluded.unseenFiles > 0 {
 		out = append(out, fmt.Sprintf(
-			"%d source files excluded by build constraints import packages that were not loaded; requires needed only by those packages' dependencies may be reported as unused (load them with --goos or --tags)",
-			excluded.unseenFiles))
+			"%d source files excluded by build constraints import packages that were not loaded; requires needed only by those packages' dependencies may be reported as unused (load them with --goos or --tags%s)",
+			excluded.unseenFiles, cgoHint(excluded.unseenCgo)))
 	}
 	if excluded.unreadable > 0 {
 		out = append(out, fmt.Sprintf(
 			"%d source files excluded by build constraints could not be read; requires imported only there may be reported as unused",
 			excluded.unreadable))
 	}
-	return append(out, unloaded.limitations()...)
+	out = append(out, unloaded.limitations()...)
+	return append(out, tests.limitations()...)
 }
 
-// excludedScan은 주 모듈 패키지에서 빌드 제약으로 빠진 Go 파일을 tidy처럼 읽은 결과다.
+// cgoHint는 공백을 남긴 제외 파일 중 cgo 파일(import "C")이 있을 때 덧붙이는 안내다. CGO_ENABLED=0이면 cgo 파일은
+// 플랫폼·태그와 무관하게 빠지므로 --goos·--tags만으로는 그 파일을 적재할 수 없다. 없으면 빈 문자열이라 문구가 예전과 같다.
+func cgoHint(cgo bool) string {
+	if !cgo {
+		return ""
+	}
+	return ", or CGO_ENABLED=1 for cgo files"
+}
+
+// limitations는 의존 패키지 테스트 판정의 공백을 문장화한다. dependencyTestVerdicts가 미사용이 남을 때만 값을 채운다.
+func (s dependencyTestScan) limitations() []string {
+	var out []string
+	if s.unseenFiles > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d test files of dependency packages import packages that were not loaded; requires that go mod tidy keeps only for those packages' imports may be reported as unused",
+			s.unseenFiles))
+	}
+	if s.unreadable > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d dependency test files, package directories, or go.mod files could not be read; requires needed only by dependency tests may be misjudged",
+			s.unreadable))
+	}
+	if s.vendored > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d dependency modules were loaded from vendor/, which keeps neither their go.mod nor their test files; requires that go mod tidy keeps only for dependency tests may be reported as unused",
+			s.vendored))
+	}
+	return out
+}
+
+// excludedScan은 도달한 모듈 패키지(주 모듈과 의존 모듈, 의존 패키지의 테스트 파일 제외)에서 빌드 제약으로 빠진
+// Go 파일을 tidy처럼 읽은 결과다.
 type excludedScan struct {
 	imports []string // 읽은 파일들의 import 경로
 	// unseenFiles는 이번 로드가 보지 못한 패키지(unseenImport)를 import하는 읽은 파일 수다 — 그
 	// 패키지 자신의 import가 공백이다. import가 모두 std거나 로드된 패키지인 파일은 공백이 없어 세지
 	// 않는다(대부분 저장소의 OS별 파일은 std만 쓴다). ignore 태그 파일은 tidy도 세지 않아 빠진다.
 	unseenFiles int
-	unreadable  int // 정규 파일이 아니거나 읽기·파싱에 실패해 import를 모르는 파일 수
+	// unseenCgo는 unseenFiles에 cgo 파일(import "C")이 있는지다 — 안내에 CGO_ENABLED를 더한다(cgoHint).
+	unseenCgo  bool
+	unreadable int // 정규 파일이 아니거나 읽기·파싱에 실패해 import를 모르는 파일 수
 }
 
-// scanExcludedFiles는 주 모듈 패키지(테스트 변형 포함)의 IgnoredFiles 중 Go 파일의 import를
-// 모은다. 변형은 원 패키지와 같은 디렉터리라 같은 파일을 다시 싣는다 — 경로로 한 번만 읽는다.
-// unseen은 import 하나가 이번 로드가 보지 못한 패키지인지다(unseenImport).
+// scanExcludedFiles는 도달한 모듈 패키지의 IgnoredFiles 중 Go 파일의 import를 모은다 — 주 모듈 패키지(테스트 변형
+// 포함)와 의존 모듈 패키지 둘 다다. go mod tidy는 주 모듈이 import하는 패키지 전체의 모든 태그·플랫폼 파일을 보므로,
+// 의존 패키지가 다른 OS 파일에서만 import하는 모듈도 go.mod에 남긴다(golang.org/x/tools의 x/telemetry → windows
+// 파일 → golang.org/x/sys). 예전에는 주 모듈 파일만 읽어 그런 require를 미사용 indirect로 오보했다. 변형은 원 패키지와
+// 같은 디렉터리라 같은 파일을 다시 싣는다 — 경로로 한 번만 읽는다. unseen은 import 하나가 이번 로드가 보지 못한
+// 패키지인지다(unseenImport). 모듈이 없는 std 패키지는 require에 기대지 않아 건너뛰고, 의존 패키지의 테스트 파일은
+// 판정 규칙이 달라 scanDependencyTests에 맡긴다(dependencyTestFile).
 func scanExcludedFiles(reachable []*packages.Package, unseen func(string) bool) excludedScan {
 	var scan excludedScan
 	seen := map[string]bool{}
 	for _, p := range reachable {
-		if p.Module == nil || !p.Module.Main {
+		if p.Module == nil {
 			continue
 		}
 		for _, file := range p.IgnoredFiles {
-			if seen[file] || !strings.HasSuffix(file, ".go") {
+			if seen[file] || !strings.HasSuffix(file, ".go") || dependencyTestFile(p, file) {
 				continue
 			}
 			seen[file] = true
@@ -260,6 +396,14 @@ func scanExcludedFiles(reachable []*packages.Package, unseen func(string) bool) 
 		}
 	}
 	return scan
+}
+
+// dependencyTestFile은 의존 모듈 패키지의 _test.go 제외 파일인지 본다 — 여기서는 읽지 않는다. 제외 파일의 import는
+// "all"의 패키지라 그 모듈을 무조건 사용으로 세지만, 의존 패키지 테스트의 import는 tidy가 의존 모듈들로 만든 모듈
+// 그래프(tidyGraph)가 그 모듈을 제공하지 못할 때만 남긴다 — 제약이 있든 없든 그 디렉터리의 테스트 파일 전부를 scanDependencyTests가 그
+// 규칙으로 읽는다. 주 모듈의 테스트 파일은 tidy가 세고 이 질의도 테스트 변형으로 적재하므로 여기서 읽는다.
+func dependencyTestFile(p *packages.Package, file string) bool {
+	return !p.Module.Main && strings.HasSuffix(file, "_test.go")
 }
 
 // read는 제외 파일 하나의 import를 모은다. tidy가 세지 않는 ignore 태그 파일은 건너뛴다.
@@ -272,15 +416,17 @@ func (s *excludedScan) read(path string, unseen func(string) bool) {
 	if !tidyBuildsFile(f) {
 		return
 	}
-	blind := false
+	blind, cgo := false, false
 	for _, spec := range f.Imports {
 		if imp, err := strconv.Unquote(spec.Path.Value); err == nil {
 			s.imports = append(s.imports, imp)
 			blind = blind || unseen(imp)
+			cgo = cgo || imp == "C"
 		}
 	}
 	if blind {
 		s.unseenFiles++
+		s.unseenCgo = s.unseenCgo || cgo
 	}
 }
 
@@ -308,14 +454,17 @@ func unseenImport(path string, loaded map[string]bool, modPath string, requires 
 	if _, ok := owningRequire(path, requires); ok {
 		return true
 	}
-	first, _, _ := strings.Cut(path, "/")
-	return strings.Contains(first, ".")
+	return !standardLibraryPath(path)
 }
 
 // maxImportHeader는 제외 파일에서 빌드 제약과 import를 찾으며 읽는 앞부분의 상한(바이트)이다.
 // 둘 다 파일 머리에 있어 보통 첫 몇 KB로 끝난다 — 상한은 끝없이 읽히는 장치나 거대한 생성
 // 파일에서 메모리를 지키는 방어다. import만 파싱하므로 상한 뒤가 잘려도 판정에 쓰이지 않는다.
 const maxImportHeader = 1 << 20
+
+// importHeaderChunk는 parseImportHeader가 처음 읽는 바이트 수다. 빌드 제약과 import 선언은 파일 머리에 있어 보통
+// 이 안에서 끝난다 — 끝나지 않았으면 두 배씩 늘려 maxImportHeader까지 읽는다.
+const importHeaderChunk = 16 << 10
 
 // parseImportHeader는 파일 머리를 막히지 않게 읽어 빌드 제약 주석과 import 선언만 파싱한다.
 // 제외 파일은 go list가 내용을 열지 않았을 수 있다(이름의 GOOS 접미사로 거른 파일) — 그래서
@@ -334,11 +483,67 @@ func parseImportHeader(path string) (*ast.File, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	src, err := io.ReadAll(io.LimitReader(f, maxImportHeader))
-	if err != nil {
-		return nil, err
+	return parseHeaderFrom(path, f)
+}
+
+// parseHeaderFrom은 r에서 import 선언이 끝날 때까지만 읽어 파싱한다. importHeaderChunk부터 두 배씩 늘려 읽고, 읽은
+// 앞부분이 파싱되며 패키지 절·import 선언 뒤에 다른 토큰이 보이면 멈춘다 — ImportsOnly 파싱은 그 뒤를 보지 않는다.
+// 파일 끝이나 maxImportHeader에 닿으면 그때까지 읽은 것으로 판정한다(상한까지 한 번에 읽던 예전과 같은 결과다).
+// 예전에는 모든 제외 파일을 상한(1 MiB)까지 읽었다 — 의존 패키지의 큰 생성 파일(modernc.org/libc의 플랫폼별 파일)을
+// 읽게 되며 그 비용이 커졌다.
+func parseHeaderFrom(path string, r io.Reader) (*ast.File, error) {
+	var src []byte
+	for limit := importHeaderChunk; ; limit *= 2 {
+		limit = min(limit, maxImportHeader)
+		more, eof, err := readUpTo(r, src, limit)
+		if err != nil {
+			return nil, err
+		}
+		src = more
+		fset := token.NewFileSet()
+		file, perr := parser.ParseFile(fset, path, src, parser.ImportsOnly|parser.ParseComments)
+		if eof || limit == maxImportHeader {
+			return file, perr
+		}
+		if perr == nil && headerEnded(fset, file, src) {
+			return file, nil
+		}
 	}
-	return parser.ParseFile(token.NewFileSet(), path, src, parser.ImportsOnly|parser.ParseComments)
+}
+
+// readUpTo는 buf 뒤에 r을 이어 읽어 길이가 limit가 되게 한다. 둘째 값은 r이 그 전에 끝났는지다.
+func readUpTo(r io.Reader, buf []byte, limit int) ([]byte, bool, error) {
+	chunk := make([]byte, limit-len(buf))
+	n, err := io.ReadFull(r, chunk)
+	buf = append(buf, chunk[:n]...)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return buf, true, nil
+	}
+	return buf, false, err
+}
+
+// headerEnded는 읽은 앞부분 src에서 패키지 절·import 선언 뒤에 다음 토큰이 온전히 보이는지 본다. 보이지 않으면
+// (주석·공백·세미콜론뿐이거나, 다음 토큰이 끝에 붙어 `import` 키워드가 잘렸을 수 있으면) 다음 import 선언이 읽은
+// 끝 너머에 있을 수 있어 더 읽어야 한다.
+func headerEnded(fset *token.FileSet, file *ast.File, src []byte) bool {
+	end := file.Name.End()
+	if n := len(file.Decls); n > 0 {
+		end = file.Decls[n-1].End()
+	}
+	rest := src[fset.File(end).Offset(end):]
+	tf := token.NewFileSet().AddFile("", -1, len(rest))
+	var sc scanner.Scanner
+	sc.Init(tf, rest, nil, 0)
+	for {
+		pos, tok, _ := sc.Scan()
+		switch tok {
+		case token.SEMICOLON:
+			continue
+		case token.EOF:
+			return false
+		}
+		return len(rest)-tf.Offset(pos) > len("import")
+	}
 }
 
 // tidyBuildsFile은 go mod tidy가 이 파일의 import를 세는지 본다. go 명령과 같은 우선순위로
