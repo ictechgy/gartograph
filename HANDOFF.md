@@ -177,7 +177,8 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
   go.work의 `use`(버전 상향, wsver)·`replace`(wsdir)도 같은 계열이다 — 적재 자체가 tidy가 보지 않는 go.work를 따른다.
   이제 그런 미사용 판정에는 go.work limitation이 붙지만 판정은 그대로라 fx/ws·wsuse에서 `--strict`는 여전히 1로 끝난다.
   판정까지 tidy에 맞추려면 unused-deps가 GOWORK=off로 다시 적재하는 변경이 후보다(워크스페이스가 내려받지 못하는 모듈을
-  로컬 디렉터리로만 제공하면 그 적재가 실패할 수 있어, 바꿀지 사용자가 고른다).
+  로컬 디렉터리로만 제공하면 그 적재가 실패할 수 있다). 2026-11-22 사용자가 판단을 맡겨 지금은 바꾸지 않고 limitation만
+  둔다 — 다시 적재가 실패하면 판정 자체를 잃고, limitation이 `GOWORK=off` 재실행을 안내해 사용자가 tidy와 같은 판정을 얻을 수 있다.
 - SARIF: cycles의 논리 위치 kind가 type·symbol 레벨 멤버에도 `module`이고, dead는 `func`·`var`처럼 SARIF 권장
   어휘(function·variable·member·type) 밖의 kind를 싣는다(권장 사항이라 무효는 아니다). 바꾸면 SARIF 소비자 출력이
   바뀐다.
