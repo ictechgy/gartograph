@@ -70,6 +70,14 @@
     limitation으로 센다(pgx 22, go-ora 62). 코퍼스의 나머지 열셋은 PR 머리(`3eeb840`) 대비 unused-deps 출력이 같다. 함께: module 레벨 std 오류는 builtin,
     cgo 제외 파일 안내에 `CGO_ENABLED=1`, 제외·테스트 파일은 import 선언까지만 읽기(sqlite 의존 제외 파일 767개
     약 47 MB → 첫 16 KiB 안, 상한 약 6 MB).
+  - PR #58 델타 리뷰 후속(같은 브랜치, fixture는 리뷰 하네스 `cmp.sh`로 go1.27.1 `go mod tidy -diff`와 대조):
+    그래프 근사(`source/tidygraph.go`)가 주 go.mod의 `exclude`를 따른다(fx/excl: tidy가 지키는데 미사용 → 사용),
+    go 1.17 미만 루트의 전이 require를 모듈 캐시 go.mod(replace 적용)로 따라간다(fx/unpr: tidy가 지우는데 사용 →
+    미사용), go 명령이 무시하는 `_`·`.` 이름의 테스트 파일을 읽지 않는다(fx/under·fx/dot: 사용 → 미사용, tidy가
+    지움), vendor/로 적재한 의존 모듈 수를 limitation으로 센다(fx/vend: tidy는 vendor/를 보지 않고 지키는데 판정
+    재료가 없다). module 레벨은 go list가 디렉터리를 찾지 못한 점 없는 경로(`fmtt`, `myapp/missing`)를 builtin이
+    아니라 로드 오류로 센다(fx/modlvl·fx/modlvl2 — main에서도 builtin이었다). 이 저장소와 실제 모듈 14개의 unused-deps·
+    module 출력은 PR 머리(`e49b034`) 대비 같다. fx/other·fx/ign·fx/eq·fx/lower·fx/xtest·fx/cgo도 tidy와 같다.
   - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.8%(기준 90%), `Scripts/verify-cli-contract.sh` OK, 자기 분석
     dead 12건(main과 같은 목록)·rules/cycles type·symbol `--strict` 0, conformance drift current. Windows·macOS 테스트는
     CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
@@ -137,9 +145,13 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
 - unused-deps의 테스트 의존 판정은 한 단계뿐이다. 의존 패키지 테스트가 import한 패키지가 이번 로드에 없으면(테스트만의
   의존) 그 패키지의 import와, tidy가 그 모듈을 루트로 더하며 늘어나는 그래프를 보지 못한다 — pgx v5.11.0의
   `github.com/kr/pretty`(yaml.v3 테스트 → check.v1 → kr/pretty, tidy는 지킨다)가 미사용 indirect로 남고 limitation이
-  붙는다. 메우려면 그 패키지 소스(모듈 캐시에 없을 수 있다)를 읽어 tidy의 단계별 루프를 따라가야 한다. 그래프 근사도
-  가지치기 안 된(go 1.17 미만) 모듈의 전이 require를 담지 않는다(판정이 사용 쪽으로 기운다). 둘 다 indirect 판정이라
-  `--strict`에 들지 않는다.
+  붙는다. 메우려면 그 패키지 소스(모듈 캐시에 없을 수 있다)를 읽어 tidy의 단계별 루프를 따라가야 한다. vendor/
+  모드도 같은 공백이다(모듈 캐시를 읽어 메울 수 있으나 vendor는 보통 캐시 없이 쓴다 — 지금은 limitation만 센다).
+  그래프 근사가 고른 버전을 주 go.mod의 require 버전으로 대신하는 점, 읽지 못한 go.mod는 사용 쪽으로 기우는 점(그
+  수는 limitation)도 남는다.
+- unused-deps(main부터의 기존 동작): go.work가 `./dep`를 `use`하면 example.com/dep을 미사용 직접 require로 낸다(리뷰
+  fx/ws) — tidy는 지킨다. 워크스페이스 모듈의 패키지는 Module.Main이라 "사용한 비주 모듈"에 들지 않기 때문이다.
+  `--strict`가 1로 끝나는 거짓 판정이라 다음 작업 후보다(워크스페이스 모듈을 require 사용으로 세는 변경).
 - SARIF: cycles의 논리 위치 kind가 type·symbol 레벨 멤버에도 `module`이고, dead는 `func`·`var`처럼 SARIF 권장
   어휘(function·variable·member·type) 밖의 kind를 싣는다(권장 사항이라 무효는 아니다). 바꾸면 SARIF 소비자 출력이
   바뀐다.
