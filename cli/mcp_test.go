@@ -70,6 +70,47 @@ func TestMcpHandshake(t *testing.T) {
 	}
 }
 
+// TestMcpToolSchemasAreValid는 tools/list의 inputSchema가 유효한 JSON Schema 객체 스키마인지 본다. 예전에는 필수
+// 인자가 없는 도구 일곱(summary·impact·cycles·dead·rules·metrics·mapping)이 "required": null을 실어, ajv가
+// "data.required should be array"로 스키마 컴파일을 거부했다. required는 있으면 비지 않은 문자열 배열이고 각 이름이
+// properties에 있어야 한다.
+func TestMcpToolSchemasAreValid(t *testing.T) {
+	res := mcpSession(t, testMcpServer(), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	tools := res[0]["result"].(map[string]any)["tools"].([]any)
+	withRequired := 0
+	for _, raw := range tools {
+		tool := raw.(map[string]any)
+		schema, ok := tool["inputSchema"].(map[string]any)
+		if !ok || schema["type"] != "object" {
+			t.Errorf("%v: inputSchema must be an object schema, got %v", tool["name"], tool["inputSchema"])
+			continue
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Errorf("%v: properties must be an object, got %v", tool["name"], schema["properties"])
+		}
+		value, present := schema["required"]
+		if !present {
+			continue
+		}
+		names, ok := value.([]any)
+		if !ok || len(names) == 0 {
+			t.Errorf("%v: required must be a non-empty array when present, got %#v", tool["name"], value)
+			continue
+		}
+		withRequired++
+		for _, name := range names {
+			if s, ok := name.(string); !ok || props[s] == nil {
+				t.Errorf("%v: required names a missing property %#v", tool["name"], name)
+			}
+		}
+	}
+	// query·path·shared는 필수 인자가 있다 — 키를 통째로 지워 검사를 통과시키는 회귀를 막는다.
+	if withRequired != 3 {
+		t.Errorf("want required on the 3 tools that need arguments, got %d", withRequired)
+	}
+}
+
 // TestMcpToolCall은 query 도구가 실제 그래프 위에서 답하는지 확인한다.
 func TestMcpToolCall(t *testing.T) {
 	res := mcpSession(t, testMcpServer(),

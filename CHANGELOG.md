@@ -36,6 +36,9 @@
   이번에 적재하지 않은 패키지를 import하면 기존 limitation(`N source files excluded by build constraints import
   packages that were not loaded; …`)으로 센다. 이 저장소와 실제 모듈 14개에서 판정이 바뀐 것은 위 셋(모두 사용
   쪽)이고, 그 limitation 수만 바뀐 것이 넷이다(go-mssqldb 5→6, x/crypto 0→2, x/net 3→5, modernc.org/libc 9→10).
+- `mcp`: `tools/list` 입력 스키마에 `"required": null`을 싣지 않는다. 필수 인자가 없는 도구 일곱(summary·impact·
+  cycles·dead·rules·metrics·mapping)이 그렇게 실어, 스키마를 검증하는 클라이언트(ajv 6.15: `data.required should
+  be array`)가 도구 정의를 거부했다. 필수 인자가 없으면 키를 뺀다(cartograph MCP와 같다).
 - go list가 오류를 낸 패턴을 버리지 않고 센다. `--pattern` 오타(`./interal/...`), 없는 디렉터리, 어느 모듈도
   제공하지 않는 import 경로, 모듈 밖 `--dir`, 없는 `replace` 대상, 읽을 수 없는 하위 디렉터리면 go list는 패턴
   오류만 담은 가짜 패키지를 (그 패턴이 고른 실제 패키지가 있으면 함께) 돌려주는데, 수확이 그것을 주 모듈 밖
