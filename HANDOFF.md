@@ -44,8 +44,8 @@
     "남은 일"에 이유와 함께 남겼다.
   - 남은 설계 후보는 아래 "남은 일"에 있다. 두 번 돌린 출력은 이제 `bridges`·`schema`도 `--generated-at`을 주면 같다.
 
-- 브랜치 `ccr-37904670-hxdjsx`(2026-11-22, main `b7e771d` 기준, 머지 전 — squash 머지되면 브랜치 커밋 해시는
-  사라지므로 PR 번호로 찾는다). 자기 분석·실제 모듈(GOMODCACHE의 x/tools·x/mod·x/sync·x/text·x/crypto·x/net·
+- PR #58(2026-11-22, squash 머지 `25b1f25`)과 #59(`345dfe4`, go.work 판정 결정 기록). 아래 해시는 머지 전 브랜치
+  커밋이라 main에 없다 — PR 번호로 찾는다. 자기 분석·실제 모듈(GOMODCACHE의 x/tools·x/mod·x/sync·x/text·x/crypto·x/net·
   x/telemetry·pgx·puddle·go-sql-driver/mysql·go-mssqldb·go-ora·modernc sqlite·libc, 스크래치 사본) 실행·두 번 실행
   비교에서 나온 것 중 사용자 결정이 필요 없는 넷을 고쳤다(CHANGELOG Fixed 첫 네 항목). 두 번 실행한 graph(세 레벨)·
   dead 출력은 x/mod·x/sync·x/text(dead는 x/tools도)에서 바이트가 같았고, x/mod·x/tools 심볼 문서에 유령 간선·중복
@@ -103,6 +103,37 @@
     그대로 둔다(끝 구분자를 떼면 빈 문자열·드라이브 상대 경로가 됐다).
   - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.8%(기준 90%), `Scripts/verify-cli-contract.sh` OK, 자기 분석
     dead 12건(main과 같은 목록)·rules/cycles type·symbol `--strict` 0, conformance drift current. Windows·macOS 테스트는
+    CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
+
+- 브랜치 `ccr-37904670-hxdjsx`(2026-11-22, main `345dfe4` 기준, 머지 전 — squash 머지되면 PR 번호로 찾는다).
+  사용자 결정이 필요 없는 둘을 고쳤다(CHANGELOG Fixed 첫 두 항목). 찾은 방법: 실제 모듈 dead를 deadcode(x/tools
+  RTA, `-generated`)와 대조(아래), 명령별 적대 입력, 공식 SARIF 2.1.0 스키마 검증.
+  - 규칙 파일의 모르는 키·둘째 YAML 문서를 거부한다(`config/keys.go`). 재현: `forbiden:`(forbidden 오타)인
+    설정에서 main은 `rules --strict`가 `0 violations`로 0, 철자를 고치면 1. 이제 종료 2와 `line 3: unknown key
+    "forbiden" (known keys: …)`. 적대 입력 21개를 main과 대조했다 — 바뀐 것은 모르는 키(최상위·deny·forbidden·
+    fileRules·limits 항목·`<<` 병합·따옴표 친 `"<<"`·끝 공백 키·`Deps` 대소문자·`x-` 앵커 키)와 내용 있는 둘째 문서뿐이고,
+    따옴표 키·JSON 형식·BOM·`version`·null 섹션·빈 끝 문서·알려진 키만 병합한 앵커·탭 들여쓰기 오류는 main과 같은
+    결과다. 지수적으로 겹친 병합 앵커는 main과 같이 디코딩의 `excessive aliasing`으로 즉시 거부된다(검사가 디코딩 뒤라
+    부풀지 않는다).
+  - `limits` 위반의 텍스트·SARIF(거짓 fileScope 문구, 빈 논리 위치 둘 — 공식 스키마의 `uniqueItems` 위반으로 main의
+    로그가 무효였다)와 SARIF 규칙 색인에 없던 `layer-stability`·`layer-limit`. 규칙 여덟 종류(allow·deny·visibleTo·
+    forbidden·independence·fileScope·stability·limit)를 내는 fixture에서 결과 10개 중 main 대비 바뀐 것은 limit 셋뿐이고
+    나머지 일곱 결과와 JSON 보고는 바이트가 같다. 새 로그는 공식 스키마
+    (oasis-tcs/sarif-spec `sarif-schema-2.1.0.json`, jsonschema Draft4) 오류 0, main은 3.
+  - 회귀 테스트는 고치기 전 코드에서 실패한다(스크래치 사본에 변이 12개 — 모두 잡힘): `config/keys_test.go`,
+    `cli/rulesconfig_test.go`, `cli/rules_sarif_test.go`.
+  - dead 오라클 대조(스크래치 사본, 고친 곳과 무관한 기존 동작 확인): x/tools v0.53.0·x/text v0.42.0·x/net v0.59.0·
+    x/crypto v0.57.0·x/mod v0.43.0과 이 저장소에서 gartograph(CHA)만 unreachable로 낸 func·method를 deadcode가 그
+    패키지를 프로그램에 담은 경우로 좁혀 하나씩 봤다. 남은 것은 모두 deadcode의 반사 규칙(인터페이스로 변환된 타입의
+    공개 메서드를 살린다 — gartograph는 `N packages import reflect` limitation으로 센다), 호출되지 않는 표지 메서드
+    (`nodeImpl`·`isJSONRPC2Message`), 아무도 읽지 않는 패키지 변수에 담긴 함수 값(x/text collate `ignoreCaseF` —
+    RTA는 주소를 딴 함수를 살린다)이었다. 거짓 unreachable은 찾지 못했다. x/tools의 패키지 import 간선 632개는 `go
+    list`와 정확히 같다.
+  - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.9%(기준 90%, 패키지 여섯 모두 ok), `Scripts/verify-cli-contract.sh`
+    OK, 자기 분석 dead 12건(main과 같은 목록·같은 limitation·루트 3)·rules `--strict` 0·cycles package/type/symbol
+    `--strict` 0, conformance drift current(isthmus `c76e105`). 자기 분석이 잡은 것 하나: 병합 키 펼침을 처음에 자기
+    재귀 함수로 써서 `cycles --level symbol --strict`가 1-순환으로 실패했다 — 작업 목록으로 바꿨다. 이 저장소·x/mod·
+    x/text의 graph(심볼)·dead JSON은 main 바이너리와 바이트가 같다(규칙 파일이 없는 입력). Windows·macOS 테스트는
     CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
 
 ## 검증 방법
@@ -182,6 +213,19 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
 - SARIF: cycles의 논리 위치 kind가 type·symbol 레벨 멤버에도 `module`이고, dead는 `func`·`var`처럼 SARIF 권장
   어휘(function·variable·member·type) 밖의 kind를 싣는다(권장 사항이라 무효는 아니다). 바꾸면 SARIF 소비자 출력이
   바뀐다.
+- `routes`의 계약 밖 동사(ServeMux `"PURGE /x"`·`"CONNECT /x"`·소문자 `"get /x"`, gin `Handle("PURGE", …)`·
+  `Match([]string{"GET", "PROPFIND"}, …)`, echo `Add`·`Match`, chi `Method`): 그 동사의 사실도 공백도 내지 않는다.
+  #35(`062fc4f`)부터의 설계다 — `registrationMethods` 주석("모델링된 호출이 보낼 수 없어"), 당시 GLM 리뷰의 같은
+  제안을 반박한 기록(HANDOFF-HISTORY). tsograph는 같은 등록을 `route-coverage: … HTTP verbs outside the contract's
+  method set …`로 센다. 계열을 맞추려면 isthmus 스코프 `methods`가 계약 동사만 담을 수 있어 그 공백의 스코프가 그
+  템플릿의 모든 동사가 된다(같은 경로의 GET 호출 `route-call-without-decl`이 unverified로 내려간다)는 점까지 사용자가
+  고른다. 2026-11-22 재현: ServeMux·gin·echo·chi fixture에서 그런 등록 8개가 limitation 없이 빠진다(둘은 함께 쓴 계약
+  동사의 사실만 남는다).
+- `routes`의 리터럴 `ANY` 동사: ServeMux `"ANY /x"`(요청 동사가 정확히 `ANY`일 때만 맞는다)·gin `Handle("ANY", …)`·
+  echo `Add("ANY", …)`가 모든 동사 decl(`method: "ANY"`)이 된다 — 패턴에 동사가 없을 때의 내부 표지와 같은 문자열이라
+  구분하지 않는다. 위 설계대로면 사실을 내지 않아야 한다(거짓 사실 제거라 반대 코퍼스와 isthmus 영향 증거와 함께).
+- 규칙 파일의 `independent: [web]`처럼 쌍을 하나도 만들지 않는 목록은 조용히 아무것도 검사하지 않는다. 거부하면
+  지금 통과하는 설정이 종료 2가 된다.
 - 릴리스(0.12.0)와 tap 갱신은 승인된 별도 작업이다. 새 자격 증명은 만들지 않는다.
 
 ## 주의

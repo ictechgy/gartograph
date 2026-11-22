@@ -299,6 +299,14 @@ independent: [web, cli]   # web과 cli는 어느 방향으로도 서로 도달 �
   지점이 없는 간선은 검사할 수 없어 `fileScopeUnchecked`로 셉니다.
 - 규칙이 참조하는 모든 이름은 정의된 컴포넌트여야 합니다 — `Load`가
   죽은 참조를 거부해 오타가 규칙인 척하지 못하게 합니다.
+- 모르는 키도 거부합니다(exit 2, 줄 번호와 알려진 키 목록을 함께): 최상위,
+  `deny`·`forbidden`·`fileRules`·`limits` 항목, `<<`로 병합한 매핑 모두입니다.
+  예전에는 `forbiden:`·`exclud:` 같은 오타를 조용히 버려, 금지 규칙이 꺼진 채
+  `rules --strict`가 통과하고 빼려던 패키지가 수확됐습니다. 모든 수확 명령이
+  `exclude`를 읽으려고 이 파일을 열므로 모두 여기서 멈춥니다. 앵커만 두는 키
+  (`x-common: &c [...]`)도 모르는 키입니다 — 앵커는 섹션 안 첫 사용 지점에
+  정의하세요. 같은 이유로 `---` 뒤의 둘째 YAML 문서도 거부합니다(첫 문서만
+  읽혔습니다). 내용 없는 끝 문서는 받습니다.
 
 ```yaml
 fileRules:
@@ -372,6 +380,11 @@ gartograph dead   --baseline .dead-baseline.json --strict
 `rules`·`cycles`·`dead` 모두 `--format sarif`를 받습니다 — 순환은
 `dependency-cycle` error, unreachable은 `unreachable-symbol` warning
 (삭제 판정이 아니라 사실)으로 보고됩니다.
+규칙 위반은 `layer-<규칙>` error이고, 결과가 가리킬 수 있는 모든 규칙
+(`layer-stability`·`layer-limit` 포함)이 `tool.driver.rules`에 있습니다.
+`limits` 위반은 정점 없는 컴포넌트 사실이라 메시지와 유일한 논리 위치가
+컴포넌트를 가리키고(`kind` 없음 — 컴포넌트는 SARIF의 module도 namespace도
+아닙니다), 텍스트 보고는 `violation[limit:maxOut]: component web`으로 찍습니다.
 SARIF 로그에는 결과만 실립니다 — `limitations`(패턴 오류를 포함해 수확이 보지 못한 몫)는
 텍스트·JSON 보고에 있으므로 SARIF를 올릴 때 그중 하나를 함께 보세요.
 `artifactLocation.uri`는 모듈 루트 기준 상대 경로를 세그먼트마다 퍼센트

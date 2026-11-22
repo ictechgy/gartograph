@@ -16,6 +16,25 @@
 
 ### Fixed
 
+- 규칙 파일(`.gartograph.yml`·`--config`): 모르는 키를 거부한다(종료 2, `line N: unknown key "forbiden" (known
+  keys: …)`). yaml.v3가 구조체에 없는 키를 조용히 버려, `forbiden:` 오타 하나가 forbidden 규칙을 통째로 끈 채
+  `rules --strict`가 "0 violations"로 0을 돌려줬고(철자를 고치면 위반 1건으로 1), `exclud:`면 빼려던 패키지가
+  아무 표시 없이 수확됐다. 최상위 키, `deny`·`forbidden`·`fileRules`·`limits` 항목의 키(`reason`을 받지 않는
+  forbidden 항목의 `reason`, `maxin`처럼 대소문자가 다른 키), `<<`로 병합한 매핑의 키를 모두 본다(따옴표로 감싼
+  `"<<"`는 yaml.v3처럼 병합 키가 아닌 보통 키다). 알려진 키 목록은 구조체의 yaml 태그와 대조하는 테스트가
+  지킨다(필드를 더하고 목록을 빠뜨리면 실패한다). `---` 뒤에 내용이 있는 둘째 YAML 문서도 거부한다 — 첫 문서만
+  읽혀 그 뒤 규칙이 빠졌다(끝에 붙은 빈 문서는 받는다). 모든 수확 명령이 exclude를 읽으려고 이 파일을 열므로 모두
+  여기서 멈춘다(깨진 YAML과 같은 동작). 앵커만 두는 확장 키(`x-common: &c [...]`)도 모르는 키라 거부된다 — 앵커는
+  섹션 안 첫 사용 지점에 정의한다. rustograph의 `.rustograph.yml`도 같은 이유로 모르는 키를 거부한다. 키 검사는
+  디코딩 뒤라 형식 오류 문구와 별칭 남용 상한(`excessive aliasing`)은 그대로다.
+- `rules`의 `limits` 위반(정점 없는 컴포넌트 사실) 출력: SARIF 메시지가 빈 정점을 간선 문구에 넣고 상한 종류를
+  fileScope 규칙 이름으로 읽어 ` may not depend on  (fileScope "maxOut": web -> ): …`(fileScope 위반이라는 거짓
+  문구)였고, 논리 위치로 같은 `{"fullyQualifiedName": "", "kind": "module"}` 둘을 실어 SARIF 2.1.0 스키마의
+  `logicalLocations` `uniqueItems`를 어겼다(공식 스키마 검증 실패 — 그 로그는 무효였다). 이제 `component web
+  (limit rule: maxOut): depends on 3 components; limit maxOut is 1`이고 논리 위치는 컴포넌트 하나(`kind` 없음 —
+  선택 속성이고 맞는 값이 없다)다. `tool.driver.rules`에 없던 `layer-stability`·`layer-limit`을 더해 모든 결과의
+  ruleId가 색인에 있다. 텍스트는 `violation[limit:maxOut]:  (web) ->  ()` 대신 `violation[limit:maxOut]:
+  component web`이다. 다른 위반의 텍스트·SARIF와 JSON 보고(`from`·`to` 빈 문자열 포함)는 바이트가 같다.
 - `graph --deps`·`unused-deps`(심볼 레벨 포함): 풀리지 않은 import 경로를 `--pattern`으로도 주면 같은 패키지를
   패턴 오류와 로드 오류로 두 번 셌다. go/packages는 그 경로의 가짜 패키지 하나를 패턴 루트와 import 그래프에 함께
   싣는데, 패턴 오류로 센 뒤 import를 따라 다시 닿아 `1 package patterns reported errors …`와 `1 packages reported
