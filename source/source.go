@@ -99,6 +99,8 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 	// 패턴 오류 가짜 패키지는 정점 후보가 아니다 — 떼어 내 limitation으로 센다(harvestScopeLimitation).
 	pkgs, patternErrs := splitPatternErrors(pkgs)
 	scopeNote := harvestScopeLimitation(len(pkgs), patternErrs, opts.Patterns)
+	// 같은 경로를 루트가 import하면 그 가짜 패키지가 import 그래프로 다시 들어온다 — 로드 오류로 두 번 세지 않는다.
+	patternErrPaths := patternErrorPaths(patternErrs)
 	loaded := walkImports(pkgs)
 	// exclude는 정점을 만드는 단계 전에 걸러야 두 레벨 모두에서
 	// 같은 범위가 된다 — 패키지와 모듈 문서가 다른 저장소를 보는 걸 막는다.
@@ -119,7 +121,7 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 		mod.Sort()
 		return mod, nil
 	}
-	doc, kept := buildDocument(root, reachable, opts.IncludeDeps, excluded)
+	doc, kept := buildDocument(root, reachable, opts.IncludeDeps, excluded, patternErrPaths)
 	if opts.Level.Rank() >= graph.LevelType.Rank() {
 		internal := internalPackages(pkgs, kept)
 		harvestSymbols(doc, internal, opts.Level, vertexOnly)
@@ -320,9 +322,11 @@ func platformNote(opts Options) string {
 // 패키지 목록은 패턴에 맞은 루트뿐이라, 정점 후보는 import 그래프를 BFS로 넓힌다.
 // excluded는 exclude 패턴으로 의도적으로 뺀 패키지 집합이다 — 그쪽으로의
 // import는 외부 생략이 아니라 "설정이 뺀 것"이라 따로 센다.
+// patternErrPaths는 패턴 오류 limitation이 이미 센 경로다(patternErrorPaths) — --deps에서 그 경로가 정점이
+// 되어도 로드 오류로는 다시 세지 않는다. 정점과 간선은 그대로다.
 // 두 번째 반환값은 그래프에 남은 패키지 — 심볼 수확이 순회할 범위다.
-func buildDocument(root string, reachable []*packages.Package,
-	includeDeps bool, excluded map[string]bool) (*graph.Document, map[string]*packages.Package) {
+func buildDocument(root string, reachable []*packages.Package, includeDeps bool,
+	excluded, patternErrPaths map[string]bool) (*graph.Document, map[string]*packages.Package) {
 	doc := &graph.Document{
 		Version: graph.Version,
 		Tool:    graph.Tool,
@@ -364,7 +368,7 @@ func buildDocument(root string, reachable []*packages.Package,
 		if kept[p.PkgPath] == nil {
 			continue
 		}
-		if len(p.Errors) > 0 {
+		if len(p.Errors) > 0 && !patternErrPaths[p.PkgPath] {
 			loadErrors[p.PkgPath] = true
 		}
 		if p.ID != p.PkgPath {

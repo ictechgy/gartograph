@@ -165,6 +165,84 @@ func TestPatternErrorWithHarvestedPackages(t *testing.T) {
 	}
 }
 
+// loadErrorNote는 수확 문서·unused-deps 보고의 로드 오류 limitation 공통 부분이다.
+const loadErrorNote = "packages reported load errors"
+
+// unresolvedImportModule은 주 패키지가 어느 모듈도 제공하지 않는 경로(example.com/missing/pkg)를 import하는
+// fixture다. 그 import는 go list가 오류만 담은 가짜 패키지로 돌려준다 — --deps면 이름 없는 정점이 된다.
+func unresolvedImportModule(t *testing.T) string {
+	t.Helper()
+	return testutil.WriteModule(t, map[string]string{
+		"main.go": "package main\n\nimport _ \"example.com/missing/pkg\"\n\nfunc main() {}\n",
+	})
+}
+
+// harvestLimitations는 JSON 그래프 문서의 정점 ID와 limitation을 읽는다.
+func harvestLimitations(t *testing.T, args ...string) (vertices, limitations []string) {
+	t.Helper()
+	code, out, errb := run(t, args...)
+	var doc struct {
+		Vertices []struct {
+			ID string `json:"id"`
+		} `json:"vertices"`
+		Limitations []string `json:"limitations"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &doc) != nil {
+		t.Fatalf("%v: exit %d\n%s%s", args, code, out, errb)
+	}
+	for _, v := range doc.Vertices {
+		vertices = append(vertices, v.ID)
+	}
+	return vertices, doc.Limitations
+}
+
+// countWith는 limitation 목록에서 note가 든 항목 수다.
+func countWith(list []string, note string) int {
+	n := 0
+	for _, l := range list {
+		if strings.Contains(l, note) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestPatternErrorImportedCountedOnce는 풀리지 않은 import 경로를 --pattern으로도 주면 같은 패키지가 패턴 오류와
+// 로드 오류로 두 번 세이던 문제의 회귀다. go/packages는 그 경로의 가짜 패키지 하나를 패턴 루트와 import 그래프에
+// 함께 싣는다 — 예전에는 --deps 문서가 `1 package patterns reported errors …`와 `1 packages reported load errors`를,
+// unused-deps가 같은 두 줄을 냈다. 정점 집합은 바꾸지 않는다(--deps의 이름 없는 정점은 그대로 남는다). 같은 경로를
+// 패턴으로 주지 않으면 로드 오류로 그대로 센다 — 계수가 사라지지 않았다는 대조군이다.
+func TestPatternErrorImportedCountedOnce(t *testing.T) {
+	dir := unresolvedImportModule(t)
+	withPattern := []string{"--dir", dir, "--pattern", "./...", "--pattern", "example.com/missing/pkg"}
+
+	vertices, lims := harvestLimitations(t, append([]string{"graph", "--deps"}, withPattern...)...)
+	if countWith(lims, "1 "+patternErrorNote) != 1 || countWith(lims, loadErrorNote) != 0 {
+		t.Errorf("graph --deps: the unresolved package must be counted once, by the pattern error:\n%s",
+			strings.Join(lims, "\n"))
+	}
+	if strings.Join(vertices, " ") != "example.com/fixture example.com/missing/pkg" {
+		t.Errorf("graph --deps: the vertex set must not change, got %v", vertices)
+	}
+	if _, lims := harvestLimitations(t, "graph", "--deps", "--dir", dir); countWith(lims, "1 "+loadErrorNote) != 1 {
+		t.Errorf("graph --deps without the pattern must still count the load error:\n%s", strings.Join(lims, "\n"))
+	}
+	// 심볼 레벨에서는 주 패키지도 타입 오류(import 실패)를 낸다 — 그 하나만 로드 오류로 남는다(예전에는 2).
+	if _, lims := harvestLimitations(t, append([]string{"graph", "--level", "symbol", "--deps"}, withPattern...)...); countWith(lims, "1 "+loadErrorNote) != 1 {
+		t.Errorf("graph --level symbol --deps: only the importing package's own error is a load error:\n%s",
+			strings.Join(lims, "\n"))
+	}
+
+	code, out, errb := run(t, append([]string{"unused-deps"}, withPattern...)...)
+	if code != 0 || !strings.Contains(out, "1 "+patternErrorNote) || strings.Contains(out, loadErrorNote) {
+		t.Errorf("unused-deps: exit %d, the unresolved package must be counted once\n%s%s", code, out, errb)
+	}
+	code, out, errb = run(t, "unused-deps", "--dir", dir)
+	if code != 0 || !strings.Contains(out, "1 "+loadErrorNote) {
+		t.Errorf("unused-deps without the pattern: exit %d, the load error must stay counted\n%s%s", code, out, errb)
+	}
+}
+
 // TestPatternErrorFirstLine는 first: 발췌가 go list 문구의 첫 줄에서 다음 줄을 소개하는 절(`; to add it:`)을 떼는지
 // 본다 — 예전에는 "…; to add it"으로 끊긴 채 실렸다.
 func TestPatternErrorFirstLine(t *testing.T) {

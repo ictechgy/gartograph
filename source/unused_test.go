@@ -75,7 +75,7 @@ func TestScanExcludedFilesReadsOnlyRegularFiles(t *testing.T) {
 	if scan.unseenFiles != 1 || scan.unreadable != 1 || len(scan.imports) != 1 || scan.imports[0] != "example.com/dep" {
 		t.Fatalf("want the regular file read and the FIFO counted unreadable: %+v", scan)
 	}
-	lims := unusedLimitations(nil, scan, unloadedScan{})
+	lims := unusedLimitations(0, scan, unloadedScan{})
 	if len(lims) != 2 {
 		t.Fatalf("both the read and the unreadable excluded files must be counted: %v", lims)
 	}
@@ -473,7 +473,7 @@ func TestScanUnloadedDirsStopsAtUnreadableDirectory(t *testing.T) {
 	if scan := scanTree(t, dir, []string{"./m/inner/..."}, nil, "."); len(scan.dirs) != 0 || scan.unreadable != 1 {
 		t.Fatalf("a pattern whose root cannot be reached must be counted: %+v", scan)
 	}
-	lims := unusedLimitations(nil, excludedScan{}, unloadedScan{dirs: []string{"a"}, unreadable: 1})
+	lims := unusedLimitations(0, excludedScan{}, unloadedScan{dirs: []string{"a"}, unreadable: 1})
 	if !slices.Equal(lims, []string{platformGapNote(1), "1 directories could not be read, so the directories " +
 		"under and after them were not checked for Go files of other platforms; requires imported only there " +
 		"may be reported as unused"}) {

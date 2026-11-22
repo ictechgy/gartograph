@@ -35,6 +35,19 @@ func splitPatternErrors(roots []*packages.Package) (kept, errs []*packages.Packa
 	return kept, errs
 }
 
+// patternErrorPaths는 패턴 오류 가짜 패키지의 경로 집합이다 — 로드 오류를 세는 쪽이 이미 센 패키지를 다시 세지
+// 않게 하는 재료다. 같은 풀리지 않은 import 경로를 --pattern으로도 주고 다른 루트가 import도 하면, go/packages는
+// 그 경로의 패키지 하나(패턴 오류와 같은 객체)를 import 그래프에도 싣는다. walkImports가 그 패키지에 닿으면
+// (--deps면 이름 없는 정점이 되고, module 레벨은 모듈 없는 패키지로 본다) 로드 오류 계수가 패턴 오류
+// limitation이 이미 센 같은 오류를 한 번 더 세었다. 정점 집합은 그대로 두고 계수만 하나로 맞춘다.
+func patternErrorPaths(errs []*packages.Package) map[string]bool {
+	out := make(map[string]bool, len(errs))
+	for _, p := range errs {
+		out[p.PkgPath] = true
+	}
+	return out
+}
+
 // patternErrorSummary는 패턴 오류 수와 첫 오류 문구다(`N package patterns reported errors from go list
 // (first: …)`). 본 것만 쓴다 — 오류를 낸 패턴이 실제 패키지도 골랐는지는 go list가 알려 주지 않아 "아무것도
 // 적재하지 못했다"고 단정하지 않는다. errs는 splitPatternErrors의 둘째 값이다.

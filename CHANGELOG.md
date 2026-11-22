@@ -16,6 +16,12 @@
 
 ### Fixed
 
+- `graph --deps`·`unused-deps`(심볼 레벨 포함): 풀리지 않은 import 경로를 `--pattern`으로도 주면 같은 패키지를
+  패턴 오류와 로드 오류로 두 번 셌다. go/packages는 그 경로의 가짜 패키지 하나를 패턴 루트와 import 그래프에 함께
+  싣는데, 패턴 오류로 센 뒤 import를 따라 다시 닿아 `1 package patterns reported errors …`와 `1 packages reported
+  load errors …`가 함께 나왔다(심볼 레벨은 import한 패키지 자신의 타입 오류와 합쳐 2). 이제 그 패키지는 패턴 오류
+  limitation만 센다 — 로드 오류 계수에는 import한 패키지 자신의 오류만 남는다. 정점 집합은 그대로다(`--deps`의
+  이름 없는 정점은 main과 같이 남는다). 같은 경로를 패턴으로 주지 않으면 지금처럼 로드 오류로 센다.
 - go list가 오류를 낸 패턴을 버리지 않고 센다. `--pattern` 오타(`./interal/...`), 없는 디렉터리, 어느 모듈도
   제공하지 않는 import 경로, 모듈 밖 `--dir`, 없는 `replace` 대상, 읽을 수 없는 하위 디렉터리면 go list는 패턴
   오류만 담은 가짜 패키지를 (그 패턴이 고른 실제 패키지가 있으면 함께) 돌려주는데, 수확이 그것을 주 모듈 밖

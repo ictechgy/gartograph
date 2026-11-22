@@ -87,7 +87,8 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 	if err != nil {
 		return nil, err
 	}
-	rep := &UnusedReport{Module: modPath, Limitations: unusedLimitations(reachable, excluded, unloaded)}
+	broken := brokenPackages(reachable, patternErrorPaths(patternErrs))
+	rep := &UnusedReport{Module: modPath, Limitations: unusedLimitations(broken, excluded, unloaded)}
 	if len(patternErrs) > 0 {
 		// 적재한 패키지의 판정은 그대로 내되, go list가 오류를 낸 패턴이 있었다는 사실을 수확 문서와 같은 문구로 센다.
 		rep.Limitations = append(rep.Limitations, patternErrorLimitation(patternErrs, len(pkgs)))
@@ -202,21 +203,27 @@ func owningRequire(importPath string, requires map[string]bool) (string, bool) {
 	return "", false
 }
 
-// unusedLimitations는 판정이 빈 곳을 실제로 센 수로 문장화한다. 로드 오류 패키지는 PkgPath로
-// 한 번만 센다 — 테스트 변형이 원 패키지의 오류를 다시 싣는다. 디렉터리 순회의 두 수는 끝에 붙인다
-// — 그런 디렉터리가 없는 모듈의 문구와 순서는 예전과 같다.
-func unusedLimitations(reachable []*packages.Package, excluded excludedScan, unloaded unloadedScan) []string {
+// brokenPackages는 로드 오류를 낸 도달 패키지의 수다. PkgPath로 한 번만 센다 — 테스트 변형이 원 패키지의 오류를
+// 다시 싣는다. 패턴 오류 limitation이 이미 센 경로(patternErrPaths)는 뺀다 — 풀리지 않은 import 경로를 --pattern으로도
+// 주면 같은 가짜 패키지가 import 그래프에도 실려 두 번 세였다.
+func brokenPackages(reachable []*packages.Package, patternErrPaths map[string]bool) int {
 	broken := map[string]bool{}
 	for _, p := range reachable {
-		if len(p.Errors) > 0 {
+		if len(p.Errors) > 0 && !patternErrPaths[p.PkgPath] {
 			broken[p.PkgPath] = true
 		}
 	}
+	return len(broken)
+}
+
+// unusedLimitations는 판정이 빈 곳을 실제로 센 수로 문장화한다. broken은 로드 오류 패키지 수다(brokenPackages).
+// 디렉터리 순회의 두 수는 끝에 붙인다 — 그런 디렉터리가 없는 모듈의 문구와 순서는 예전과 같다.
+func unusedLimitations(broken int, excluded excludedScan, unloaded unloadedScan) []string {
 	var out []string
-	if len(broken) > 0 {
+	if broken > 0 {
 		out = append(out, fmt.Sprintf(
 			"%d packages reported load errors; requires needed only through them may be reported as unused",
-			len(broken)))
+			broken))
 	}
 	if excluded.unseenFiles > 0 {
 		out = append(out, fmt.Sprintf(
