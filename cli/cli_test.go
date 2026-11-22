@@ -4315,6 +4315,30 @@ func TestUnusedDepsDependencyTestImportsFollowTidy(t *testing.T) {
 	}
 }
 
+// TestUnusedDepsCgoHint는 CGO_ENABLED=0으로 빠진 cgo 파일이 제외 파일 limitation에 세일 때 안내가 CGO_ENABLED를
+// 말하는지 본다 — 예전에는 --goos·--tags만 권해, 그 둘로는 적재되지 않는 cgo 파일의 공백을 메울 길을 말하지 않았다.
+// cgo 파일이 없는 공백의 문구는 예전과 같다(TestUnusedDepsCountsDependencyExcludedFiles).
+func TestUnusedDepsCgoHint(t *testing.T) {
+	t.Setenv("CGO_ENABLED", "0")
+	dir := testutil.WriteModule(t, map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\n" +
+			"require example.com/sys v0.0.0 // indirect\n\n" +
+			"replace (\n\texample.com/dep => ./dep\n\texample.com/sys => ./sys\n)\n",
+		"main.go":    "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
+		"dep/go.mod": "module example.com/dep\n\ngo 1.27\n\nrequire example.com/sys v0.0.0\n",
+		"dep/dep.go": "package dep\n\nfunc F() {}\n",
+		"dep/cgo.go": "package dep\n\n// int y = 2;\nimport \"C\"\n\nimport \"example.com/sys\"\n\n" +
+			"func init() { sys.Call(); _ = C.y }\n",
+		"sys/go.mod": "module example.com/sys\n\ngo 1.27\n",
+		"sys/sys.go": "package sys\n\nfunc Call() {}\n",
+	})
+	rep := runUnusedDepsJSON(t, dir)
+	if len(rep.Limitations) != 1 || !strings.HasPrefix(rep.Limitations[0], "1 source files excluded by build constraints") ||
+		!strings.HasSuffix(rep.Limitations[0], "(load them with --goos or --tags, or CGO_ENABLED=1 for cgo files)") {
+		t.Fatalf("the cgo file excluded by CGO_ENABLED=0 must be counted with a CGO_ENABLED hint: %v", rep.Limitations)
+	}
+}
+
 // TestUnusedDepsLoadErrors는 받을 수 없는 require(오프라인·인증 실패)를 import하는 패키지가 로드에
 // 실패해도 그 require를 미사용으로 오보하지 않는지 확인한다 — 실패한 import 경로를 require 목록의
 // 가장 긴 모듈에 귀속하고, 로드 오류 수를 limitation으로 남긴다. 판정 근거가 빈 사실을 숨기면

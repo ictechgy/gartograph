@@ -51,6 +51,8 @@
   unused`로 센다 — pgx의 `github.com/kr/pretty`(check.v1이 import한다)는 그 limitation과 함께 미사용으로 남는다.
   그래프 근사는 가지치기 안 된(go 1.17 미만) 모듈의 전이 require를 담지 않아 판정을 사용 쪽으로만 기울인다. 다른
   근거로 모든 require가 이미 사용이면 테스트 파일을 읽지 않는다(그 공백은 미사용 판정만 거짓으로 만들 수 있다).
+- `unused-deps`: 빌드 제약 제외 파일 limitation이 cgo 파일(`import "C"` — `CGO_ENABLED=0`이면 플랫폼·태그와 무관하게
+  빠진다)을 셀 때 안내에 `or CGO_ENABLED=1 for cgo files`를 더한다. cgo 파일이 없으면 문구는 그대로다.
 - `mcp`: `tools/list` 입력 스키마에 `"required": null`을 싣지 않는다. 필수 인자가 없는 도구 일곱(summary·impact·
   cycles·dead·rules·metrics·mapping)이 그렇게 실어, 스키마를 검증하는 클라이언트(ajv 6.15: `data.required should
   be array`)가 도구 정의를 거부했다. 필수 인자가 없으면 키를 뺀다(cartograph MCP와 같다).

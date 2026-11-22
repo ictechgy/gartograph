@@ -262,8 +262,8 @@ func unusedLimitations(broken int, excluded excludedScan, unloaded unloadedScan,
 	}
 	if excluded.unseenFiles > 0 {
 		out = append(out, fmt.Sprintf(
-			"%d source files excluded by build constraints import packages that were not loaded; requires needed only by those packages' dependencies may be reported as unused (load them with --goos or --tags)",
-			excluded.unseenFiles))
+			"%d source files excluded by build constraints import packages that were not loaded; requires needed only by those packages' dependencies may be reported as unused (load them with --goos or --tags%s)",
+			excluded.unseenFiles, cgoHint(excluded.unseenCgo)))
 	}
 	if excluded.unreadable > 0 {
 		out = append(out, fmt.Sprintf(
@@ -272,6 +272,15 @@ func unusedLimitations(broken int, excluded excludedScan, unloaded unloadedScan,
 	}
 	out = append(out, unloaded.limitations()...)
 	return append(out, tests.limitations()...)
+}
+
+// cgoHint는 공백을 남긴 제외 파일 중 cgo 파일(import "C")이 있을 때 덧붙이는 안내다. CGO_ENABLED=0이면 cgo 파일은
+// 플랫폼·태그와 무관하게 빠지므로 --goos·--tags만으로는 그 파일을 적재할 수 없다. 없으면 빈 문자열이라 문구가 예전과 같다.
+func cgoHint(cgo bool) string {
+	if !cgo {
+		return ""
+	}
+	return ", or CGO_ENABLED=1 for cgo files"
 }
 
 // limitations는 의존 패키지 테스트 판정의 공백을 문장화한다. dependencyTestVerdicts가 미사용이 남을 때만 값을 채운다.
@@ -298,7 +307,9 @@ type excludedScan struct {
 	// 패키지 자신의 import가 공백이다. import가 모두 std거나 로드된 패키지인 파일은 공백이 없어 세지
 	// 않는다(대부분 저장소의 OS별 파일은 std만 쓴다). ignore 태그 파일은 tidy도 세지 않아 빠진다.
 	unseenFiles int
-	unreadable  int // 정규 파일이 아니거나 읽기·파싱에 실패해 import를 모르는 파일 수
+	// unseenCgo는 unseenFiles에 cgo 파일(import "C")이 있는지다 — 안내에 CGO_ENABLED를 더한다(cgoHint).
+	unseenCgo  bool
+	unreadable int // 정규 파일이 아니거나 읽기·파싱에 실패해 import를 모르는 파일 수
 }
 
 // scanExcludedFiles는 도달한 모듈 패키지의 IgnoredFiles 중 Go 파일의 import를 모은다 — 주 모듈 패키지(테스트 변형
@@ -344,15 +355,17 @@ func (s *excludedScan) read(path string, unseen func(string) bool) {
 	if !tidyBuildsFile(f) {
 		return
 	}
-	blind := false
+	blind, cgo := false, false
 	for _, spec := range f.Imports {
 		if imp, err := strconv.Unquote(spec.Path.Value); err == nil {
 			s.imports = append(s.imports, imp)
 			blind = blind || unseen(imp)
+			cgo = cgo || imp == "C"
 		}
 	}
 	if blind {
 		s.unseenFiles++
+		s.unseenCgo = s.unseenCgo || cgo
 	}
 }
 
