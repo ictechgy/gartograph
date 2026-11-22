@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -4253,65 +4254,137 @@ func tidyKeeps(t *testing.T, dir, module string) bool {
 	return true
 }
 
+// dependencyTestFixture는 의존 패키지 테스트 판정 fixture의 기본 파일이다. 주 모듈은 dep(main.go가 import)와
+// sys v0.2.0(indirect)을 require하고 둘 다 로컬 디렉터리로 replace한다. dep의 테스트 파일이 sys를 import하는지와
+// dep·다른 루트의 go.mod는 사례마다 덮어쓴다. extraRequire·extraDirectives·extraReplace는 주 go.mod에 더할 줄이다.
+func dependencyTestFixture(extraRequire, extraDirectives, extraReplace string) map[string]string {
+	return map[string]string{
+		"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n" + extraRequire + "\n" +
+			"require example.com/sys v0.2.0 // indirect\n\n" + extraDirectives +
+			"replace (\n\texample.com/dep => ./dep\n\texample.com/sys => ./sys\n" + extraReplace + ")\n",
+		"main.go":    "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
+		"dep/go.mod": "module example.com/dep\n\ngo 1.27\n",
+		"dep/dep.go": "package dep\n\nfunc F() {}\n",
+		"sys/go.mod": "module example.com/sys\n\ngo 1.27\n",
+		"sys/sys.go": "package sys\n\nfunc Call() {}\n",
+	}
+}
+
+// sysTestFile은 sys를 import하는 dep 테스트 파일이다. header는 패키지 절 앞에 둘 줄(빌드 제약)이다.
+func sysTestFile(header string) string {
+	return header + "package dep\n\nimport (\n\t\"testing\"\n\n\t\"example.com/sys\"\n)\n\n" +
+		"func TestCall(t *testing.T) { sys.Call() }\n"
+}
+
+// unusedSysReport는 fixture에서 unused-deps JSON을 읽어 sys가 미사용 indirect인지와 limitation을 돌려준다.
+func unusedSysReport(t *testing.T, dir string) (bool, []string) {
+	t.Helper()
+	var rep struct {
+		UnusedIndirect []string `json:"unusedIndirect"`
+		Limitations    []string `json:"limitations"`
+	}
+	code, out, errb := run(t, "unused-deps", "--dir", dir, "--format", "json")
+	if code != 0 || json.Unmarshal([]byte(out), &rep) != nil {
+		t.Fatalf("unused-deps: exit %d\n%s%s", code, out, errb)
+	}
+	return slices.Contains(rep.UnusedIndirect, "example.com/sys"), rep.Limitations
+}
+
 // TestUnusedDepsDependencyTestImportsFollowTidy는 의존 패키지 테스트만 import하는 require를 tidy와 같게 판정하는지
-// 본다. tidy는 "all"의 테스트도 적재하되, 테스트만의 의존 모듈은 "all"의 모듈(루트)과 그 go.mod require로 만든
-// 그래프가 그 모듈을 고른 버전 이상으로 제공하지 못할 때만 남긴다(go1.27.1 modload tidyPrunedRoots). dep go.mod가
-// sys를 require하지 않거나 낮은 버전이면 남고, 같은 버전이면 지운다. 예전에는 의존 패키지 테스트를 보지 않아
-// 남는 경우도 미사용 indirect로 냈다(pgx v5.11.0의 gopkg.in/check.v1이 실제 사례다). 기대값마다 tidyKeeps로 tidy
-// 자신의 판정을 함께 확인한다. 테스트가 이번에 적재하지 않은 패키지를 import하면 그 패키지의 import는 못 보므로,
-// 미사용이 남을 때 limitation으로 센다.
+// 본다. tidy는 "all"의 테스트도 적재하되, 테스트만의 의존 모듈은 "all"의 모듈(루트)에서 만든 모듈 그래프가 그 모듈을
+// 고른 버전 이상으로 제공하지 못할 때만 남긴다(go1.27.1 modload tidyPrunedRoots). 그래프에는 모든 루트의 go.mod
+// require가 들고(dep가 아닌 루트도), go 1.17 미만 루트에서는 전이 require까지 들며, 주 go.mod의 exclude에 걸린 require는
+// 빠진다. go 명령이 무시하는 테스트 파일(`//go:build ignore`, `_`·`.`로 시작하는 이름)은 세지 않는다. 예전에는 의존
+// 패키지 테스트를 보지 않아 남는 경우도 미사용 indirect로 냈다(pgx v5.11.0의 gopkg.in/check.v1이 실제 사례다). 기대값마다
+// tidyKeeps로 tidy 자신의 판정을 함께 확인한다. 테스트가 이번에 적재하지 않은 패키지를 import하면 그 패키지의 import는
+// 못 보므로, 미사용이 남을 때 limitation으로 센다(gap).
 func TestUnusedDepsDependencyTestImportsFollowTidy(t *testing.T) {
 	otherOS := "windows"
 	if runtime.GOOS == "windows" {
 		otherOS = "linux"
 	}
-	testFile := "package dep\n\nimport (\n\t\"testing\"\n\n\t\"example.com/sys\"\n)\n\n" +
-		"func TestCall(t *testing.T) { sys.Call() }\n"
+	const depReq = "module example.com/dep\n\ngo 1.27\n\nrequire example.com/sys "
 	for _, c := range []struct {
-		name     string
-		depMod   string // dep/go.mod의 require 줄
-		testName string // sys를 import하는 dep 테스트 파일
-		kept     bool   // tidy가 sys require를 남기는지
+		name  string
+		base  map[string]string // 기본 파일(dependencyTestFixture)
+		files map[string]string // 덮어쓸 파일
+		kept  bool              // tidy가 sys require를 남기는지
+		gap   bool              // 테스트 의존 공백 limitation이 붙는지
 	}{
-		{"dep go.mod lacks sys", "", "dep_test.go", true},
-		{"constrained test file, dep go.mod lacks sys", "", "dep_" + otherOS + "_test.go", true},
-		{"dep go.mod requires an older sys", "require example.com/sys v0.1.0\n", "dep_test.go", true},
-		{"dep go.mod provides the selected sys", "require example.com/sys v0.2.0\n", "dep_test.go", false},
+		{name: "dep go.mod lacks sys", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/dep_test.go": sysTestFile("")}, kept: true},
+		{name: "constrained test file", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/dep_" + otherOS + "_test.go": sysTestFile("")}, kept: true},
+		{name: "dep go.mod requires an older sys", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/go.mod": depReq + "v0.1.0\n", "dep/dep_test.go": sysTestFile("")}, kept: true},
+		{name: "dep go.mod provides the selected sys", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/go.mod": depReq + "v0.2.0\n", "dep/dep_test.go": sysTestFile("")}, gap: true},
+		{name: "main go.mod excludes the version dep requires",
+			base:  dependencyTestFixture("", "exclude example.com/sys v0.3.0\n\n", ""),
+			files: map[string]string{"dep/go.mod": depReq + "v0.3.0\n", "dep/dep_test.go": sysTestFile("")}, kept: true},
+		{name: "another root's go.mod provides sys",
+			base: dependencyTestFixture("require example.com/dep2 v0.0.0\n", "", "\texample.com/dep2 => ./dep2\n"),
+			files: map[string]string{
+				"main.go":      "package main\n\nimport (\n\t\"example.com/dep\"\n\t_ \"example.com/dep2\"\n)\n\nfunc main() { dep.F() }\n",
+				"dep2/go.mod":  "module example.com/dep2\n\ngo 1.27\n\nrequire example.com/sys v0.2.0\n",
+				"dep2/dep2.go": "package dep2\n", "dep/dep_test.go": sysTestFile(""),
+			}, gap: true},
+		{name: "go 1.16 dep reaches sys through its requirement",
+			base: dependencyTestFixture("", "", "\texample.com/e => ./e\n"),
+			files: map[string]string{
+				"dep/go.mod": "module example.com/dep\n\ngo 1.16\n\nrequire example.com/e v0.0.0\n",
+				"e/go.mod":   "module example.com/e\n\ngo 1.27\n\nrequire example.com/sys v0.2.0\n",
+				"e/e.go":     "package e\n", "dep/dep_test.go": sysTestFile(""),
+			}, gap: true},
+		{name: "ignore-tagged test file", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/dep_test.go": sysTestFile("//go:build ignore\n\n")}},
+		{name: "underscore test file name", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/_x_test.go": sysTestFile("")}},
+		{name: "dot test file name", base: dependencyTestFixture("", "", ""),
+			files: map[string]string{"dep/.x_test.go": sysTestFile("")}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			dir := testutil.WriteModule(t, map[string]string{
-				"go.mod": "module example.com/fixture\n\ngo 1.27\n\nrequire example.com/dep v0.0.0\n\n" +
-					"require example.com/sys v0.2.0 // indirect\n\n" +
-					"replace (\n\texample.com/dep => ./dep\n\texample.com/sys => ./sys\n)\n",
-				"main.go":           "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
-				"dep/go.mod":        "module example.com/dep\n\ngo 1.27\n\n" + c.depMod,
-				"dep/dep.go":        "package dep\n\nfunc F() {}\n",
-				"dep/" + c.testName: testFile,
-				"sys/go.mod":        "module example.com/sys\n\ngo 1.27\n",
-				"sys/sys.go":        "package sys\n\nfunc Call() {}\n",
-			})
+			maps.Copy(c.base, c.files)
+			dir := testutil.WriteModule(t, c.base)
 			if got := tidyKeeps(t, dir, "example.com/sys"); got != c.kept {
 				t.Fatalf("fixture drifted from go mod tidy: tidy keeps sys = %v, want %v", got, c.kept)
 			}
-			var rep struct {
-				UnusedIndirect []string `json:"unusedIndirect"`
-				Limitations    []string `json:"limitations"`
+			reported, lims := unusedSysReport(t, dir)
+			if reported == c.kept {
+				t.Fatalf("sys reported unused = %v, but tidy keeps it = %v: %v", reported, c.kept, lims)
 			}
-			code, out, errb := run(t, "unused-deps", "--dir", dir, "--format", "json")
-			if code != 0 || json.Unmarshal([]byte(out), &rep) != nil {
-				t.Fatalf("unused-deps: exit %d\n%s%s", code, out, errb)
+			wantLims := 0
+			if c.gap {
+				wantLims = 1
 			}
-			if reported := slices.Contains(rep.UnusedIndirect, "example.com/sys"); reported == c.kept {
-				t.Fatalf("sys reported unused = %v, but tidy keeps it = %v:\n%s", reported, c.kept, out)
-			}
-			// 미사용이 남으면 dep 테스트가 import한(이번에 적재하지 않은) sys의 import를 못 봤다는 공백을 센다.
-			wantGap := !c.kept
-			if gotGap := slices.ContainsFunc(rep.Limitations, func(l string) bool {
+			if gotGap := slices.ContainsFunc(lims, func(l string) bool {
 				return strings.HasPrefix(l, "1 test files of dependency packages import packages that were not loaded;")
-			}); gotGap != wantGap {
-				t.Fatalf("dependency test gap limitation = %v, want %v: %v", gotGap, wantGap, rep.Limitations)
+			}); gotGap != c.gap || len(lims) != wantLims {
+				t.Fatalf("limitations = %v, want the dependency test gap = %v and nothing else", lims, c.gap)
 			}
 		})
+	}
+}
+
+// TestUnusedDepsVendoredDependencies는 vendor/로 적재한 의존 모듈의 테스트 의존을 판정하지 못한다는 사실을 세는지 본다.
+// go mod vendor는 의존 모듈의 go.mod와 테스트 파일을 옮기지 않아 적재된 모듈에 go.mod도 테스트 파일도 없다. tidy는
+// vendor/를 보지 않고 dep의 테스트를 읽어 sys를 지킨다(tidyKeeps) — 예전에는 sys를 미사용으로 내며 아무 limitation도
+// 없었다. 판정은 그대로 미사용이고, 그 공백을 limitation으로 센다.
+func TestUnusedDepsVendoredDependencies(t *testing.T) {
+	files := dependencyTestFixture("", "", "")
+	maps.Copy(files, map[string]string{
+		"dep/dep_test.go":               sysTestFile(""),
+		"vendor/example.com/dep/dep.go": "package dep\n\nfunc F() {}\n",
+		"vendor/modules.txt": "# example.com/dep v0.0.0 => ./dep\n## explicit; go 1.27\nexample.com/dep\n" +
+			"# example.com/sys v0.2.0 => ./sys\n## explicit; go 1.27\n# example.com/dep => ./dep\n# example.com/sys => ./sys\n",
+	})
+	dir := testutil.WriteModule(t, files)
+	if !tidyKeeps(t, dir, "example.com/sys") {
+		t.Fatal("fixture drifted from go mod tidy: tidy must keep sys through dep's test")
+	}
+	if reported, lims := unusedSysReport(t, dir); !reported || len(lims) != 1 ||
+		!strings.HasPrefix(lims[0], "1 dependency modules were loaded from vendor/, which keeps neither their go.mod nor their test files;") {
+		t.Fatalf("a vendored dependency's test gap must be counted: unused = %v, limitations = %v", reported, lims)
 	}
 }
 

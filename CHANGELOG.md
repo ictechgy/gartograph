@@ -40,17 +40,21 @@
   by build constraints import packages that were not loaded; …`)으로 센다. 이 저장소와 실제 모듈 14개에서 판정이 바뀐 것은 위 셋(모두 사용
   쪽)이고, 그 limitation 수만 바뀐 것이 넷이다(go-mssqldb 5→6, x/crypto 0→2, x/net 3→5, modernc.org/libc 9→10).
 - `unused-deps`: 의존 패키지 테스트만 import하는 require를 tidy처럼 판정한다. tidy는 "all"의 테스트도 적재하고,
-  테스트만의 의존 모듈은 "all"의 모듈과 그 go.mod require로 만든 그래프가 그 모듈을 고른 버전 이상으로 제공하지
-  못할 때 go.mod에 남긴다(go1.27.1 modload `tidyPrunedRoots`). 의존 모듈의 go.mod가 같은 버전 이상으로 require하면
-  지우고, require하지 않거나 낮은 버전이면 남긴다. 예전에는 의존 패키지 테스트를 보지 않아 남는 경우도 미사용
+  테스트만의 의존 모듈은 "all"의 모듈(루트)에서 만든 모듈 그래프가 그 모듈을 고른 버전 이상으로 제공하지 못할 때
+  go.mod에 남긴다(go1.27.1 modload `tidyPrunedRoots`). 그 그래프를 같은 규칙으로 근사한다 — 모든 루트의 go.mod
+  require, go 1.17 미만(또는 go 지시문 없는) 루트에서는 모듈 캐시의 go.mod(주 go.mod의 replace 적용)를 따라간 전이
+  require, 주 go.mod의 `exclude`에 걸린 require 제외. 어느 루트의 go.mod든 같은 버전 이상을 제공하면 지우고, 아니면
+  남긴다. 예전에는 의존 패키지 테스트를 보지 않아 남는 경우도 미사용
   indirect로 냈다 — pgx v5.11.0의 `gopkg.in/check.v1`(yaml.v3 v3.0.1의 go.mod는 2016년 판을 require하고 pgx는
   2020년 판을 고른다; `go mod tidy -diff`가 지킨다). 테스트 파일은 tidy처럼 모든 태그·플랫폼 파일을 읽는다
-  (`//go:build ignore` 제외). 테스트가 이번에 적재하지 않은 패키지를 import하면 그 패키지의 import(와 tidy가 그 모듈을
+  (`//go:build ignore`와 go 명령이 무시하는 `_`·`.`로 시작하는 이름 제외). 테스트가 이번에 적재하지 않은 패키지를 import하면 그 패키지의 import(와 tidy가 그 모듈을
   루트로 더하며 늘어나는 그래프)는 보지 못하므로, 미사용 판정이 남을 때 `N test files of dependency packages import
   packages that were not loaded; requires that go mod tidy keeps only for those packages' imports may be reported as
   unused`로 센다 — pgx의 `github.com/kr/pretty`(check.v1이 import한다)는 그 limitation과 함께 미사용으로 남는다.
-  그래프 근사는 가지치기 안 된(go 1.17 미만) 모듈의 전이 require를 담지 않아 판정을 사용 쪽으로만 기울인다. 다른
-  근거로 모든 require가 이미 사용이면 테스트 파일을 읽지 않는다(그 공백은 미사용 판정만 거짓으로 만들 수 있다).
+  읽지 못한 테스트 파일·디렉터리·go.mod는 `N dependency test files, package directories, or go.mod files could not be
+  read; …`로, vendor/로 적재해 go.mod도 테스트 파일도 없는 의존 모듈은 `N dependency modules were loaded from vendor/,
+  …`로 센다(tidy는 vendor/를 보지 않는다). 다른 근거로 모든 require가 이미 사용이면 테스트 파일을 읽지 않는다(그
+  공백은 미사용 판정만 거짓으로 만들 수 있다).
 - `unused-deps`: 빌드 제약 제외 파일 limitation이 cgo 파일(`import "C"` — `CGO_ENABLED=0`이면 플랫폼·태그와 무관하게
   빠진다)을 셀 때 안내에 `or CGO_ENABLED=1 for cgo files`를 더한다. cgo 파일이 없으면 문구는 그대로다.
 - `mcp`: `tools/list` 입력 스키마에 `"required": null`을 싣지 않는다. 필수 인자가 없는 도구 일곱(summary·impact·

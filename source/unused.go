@@ -90,7 +90,8 @@ func UnusedRequires(opts Options) (*UnusedReport, error) {
 		return nil, err
 	}
 	tests := dependencyTestVerdicts(reachable, tidyTestInput{requires: requires, modules: modules, used: used,
-		unseen: func(path string) bool { return unseenImport(path, loaded, modPath, modules) }})
+		unseen:  func(path string) bool { return unseenImport(path, loaded, modPath, modules) },
+		mainMod: mod, modDir: modDir})
 	broken := brokenPackages(reachable, patternErrorPaths(patternErrs))
 	rep := &UnusedReport{Module: modPath, Limitations: unusedLimitations(broken, excluded, unloaded, tests)}
 	if len(patternErrs) > 0 {
@@ -164,15 +165,19 @@ type requireEntry struct {
 	indirect bool
 }
 
-// goModFacts는 go.mod에서 이 질의가 쓰는 두 가지다. ignores는 ignore 지시문(Go 1.25)의 경로다 — go
+// goModFacts는 go.mod에서 이 질의가 쓰는 사실이다. ignores는 ignore 지시문(Go 1.25)의 경로다 — go
 // 명령은 그 디렉터리를 ./... 순회와 tidy에서 빼므로, 패키지가 되지 않은 디렉터리를 셀 때도 빼야 한다.
+// excludes·replaces는 주 모듈의 exclude·replace 지시문이다 — tidy가 테스트 의존을 판정하는 모듈 그래프에
+// 적용되므로(tidyGraph) 그 근사도 같은 지시문을 따른다.
 type goModFacts struct {
 	requires []requireEntry
 	ignores  []string
+	excludes map[string]bool // "경로@버전"
+	replaces []*modfile.Replace
 }
 
-// readGoMod는 go.mod의 require 목록과 ignore 지시문을 한 번의 파싱으로 읽는다.
-// tool·toolchain·exclude 지시문은 require가 아니라 건너뛴다.
+// readGoMod는 go.mod의 require·ignore·exclude·replace 지시문을 한 번의 파싱으로 읽는다.
+// tool·toolchain 지시문은 require가 아니라 건너뛴다.
 func readGoMod(path string) (goModFacts, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -190,6 +195,11 @@ func readGoMod(path string) (goModFacts, error) {
 	for _, ig := range f.Ignore {
 		facts.ignores = append(facts.ignores, ig.Path)
 	}
+	facts.excludes = make(map[string]bool, len(f.Exclude))
+	for _, ex := range f.Exclude {
+		facts.excludes[ex.Mod.String()] = true
+	}
+	facts.replaces = f.Replace
 	return facts, nil
 }
 
@@ -296,6 +306,11 @@ func (s dependencyTestScan) limitations() []string {
 			"%d dependency test files, package directories, or go.mod files could not be read; requires needed only by dependency tests may be misjudged",
 			s.unreadable))
 	}
+	if s.vendored > 0 {
+		out = append(out, fmt.Sprintf(
+			"%d dependency modules were loaded from vendor/, which keeps neither their go.mod nor their test files; requires that go mod tidy keeps only for dependency tests may be reported as unused",
+			s.vendored))
+	}
 	return out
 }
 
@@ -338,8 +353,8 @@ func scanExcludedFiles(reachable []*packages.Package, unseen func(string) bool) 
 }
 
 // dependencyTestFile은 의존 모듈 패키지의 _test.go 제외 파일인지 본다 — 여기서는 읽지 않는다. 제외 파일의 import는
-// "all"의 패키지라 그 모듈을 무조건 사용으로 세지만, 의존 패키지 테스트의 import는 tidy가 의존 모듈의 go.mod가 그
-// 모듈을 제공하지 못할 때만 남긴다 — 제약이 있든 없든 그 디렉터리의 테스트 파일 전부를 scanDependencyTests가 그
+// "all"의 패키지라 그 모듈을 무조건 사용으로 세지만, 의존 패키지 테스트의 import는 tidy가 의존 모듈들로 만든 모듈
+// 그래프(tidyGraph)가 그 모듈을 제공하지 못할 때만 남긴다 — 제약이 있든 없든 그 디렉터리의 테스트 파일 전부를 scanDependencyTests가 그
 // 규칙으로 읽는다. 주 모듈의 테스트 파일은 tidy가 세고 이 질의도 테스트 변형으로 적재하므로 여기서 읽는다.
 func dependencyTestFile(p *packages.Package, file string) bool {
 	return !p.Module.Main && strings.HasSuffix(file, "_test.go")

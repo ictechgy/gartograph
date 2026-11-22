@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 	"golang.org/x/tools/go/packages"
 
 	"github.com/ictechgy/gartograph/internal/testutil"
@@ -191,6 +193,101 @@ func TestScanDependencyTestsCountsUnreadable(t *testing.T) {
 	}
 	if lims := scan.limitations(); len(lims) != 1 || !strings.HasPrefix(lims[0], "2 dependency test files, package directories, or go.mod files could not be read;") {
 		t.Fatalf("limitations = %v", lims)
+	}
+}
+
+// TestScanDependencyTestsCountsUnparsableTestFile은 파싱하지 못한 의존 패키지 테스트 파일을 판정 공백으로 세는지 본다 —
+// 그 import를 모르면 tidy가 남기는 require를 미사용으로 낼 수 있다.
+func TestScanDependencyTestsCountsUnparsableTestFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "broken_test.go"), []byte("package dep\n\nimport (\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goMod := filepath.Join(dir, "go.mod")
+	if err := os.WriteFile(goMod, []byte("module example.com/dep\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dep := &packages.Package{PkgPath: "example.com/dep", Dir: dir,
+		Module: &packages.Module{Path: "example.com/dep", Version: "v1.0.0", GoMod: goMod, GoVersion: "1.27"}}
+	scan := scanDependencyTests([]*packages.Package{dep}, tidyTestInput{used: map[string]bool{},
+		unseen: func(string) bool { return true }})
+	if scan.unreadable != 1 || scan.unseenFiles != 0 {
+		t.Fatalf("the unparsable test file must be counted as unreadable, got %+v", scan)
+	}
+}
+
+// writeModFile은 path에 go.mod 내용을 쓴다(디렉터리를 만든다).
+func writeModFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTidyGraphFollowsUnprunedRequirements는 go 1.17 미만 루트에서 모듈 캐시의 go.mod를 따라 전이 require를 더하고,
+// go 1.17 이상 루트에서는 루트 go.mod의 require만 더하며, 주 go.mod의 exclude에 걸린 require는 빼는지 본다 —
+// tidy의 readModGraph와 같다. 캐시 경로는 대문자를 `!`로 바꾼 escape 경로다.
+func TestTidyGraphFollowsUnprunedRequirements(t *testing.T) {
+	cache := t.TempDir()
+	download := filepath.Join(cache, "cache", "download")
+	writeModFile(t, filepath.Join(download, "example.com", "!e", "@v", "v1.0.0.mod"),
+		"module example.com/E\n\nrequire example.com/x v1.1.0\n")
+	writeModFile(t, filepath.Join(download, "example.com", "x", "@v", "v1.1.0.mod"), "module example.com/x\n")
+	rootMod := filepath.Join(download, "example.com", "dep", "@v", "v1.0.0.mod")
+	writeModFile(t, rootMod, "module example.com/dep\n\nrequire example.com/E v1.0.0\n")
+	root := func(goVersion string) []*packages.Package {
+		return []*packages.Package{{PkgPath: "example.com/dep", Module: &packages.Module{
+			Path: "example.com/dep", Version: "v1.0.0", GoMod: rootMod, GoVersion: goVersion}}}
+	}
+	if g := buildTidyGraph(root("1.16"), goModFacts{}, t.TempDir()); g.versions["example.com/x"] != "v1.1.0" ||
+		g.modCache != cache || g.unreadable != 0 {
+		t.Fatalf("an unpruned root must reach x through the cached go.mod of E: %+v", g)
+	}
+	if g := buildTidyGraph(root(""), goModFacts{}, t.TempDir()); g.versions["example.com/x"] != "v1.1.0" {
+		t.Fatalf("a root without a go directive is unpruned: %+v", g.versions)
+	}
+	if g := buildTidyGraph(root("1.27"), goModFacts{}, t.TempDir()); g.versions["example.com/x"] != "" ||
+		g.versions["example.com/E"] != "v1.0.0" {
+		t.Fatalf("a pruned root contributes only its own requirements: %+v", g.versions)
+	}
+	excluded := goModFacts{excludes: map[string]bool{"example.com/E@v1.0.0": true}}
+	if g := buildTidyGraph(root("1.16"), excluded, t.TempDir()); g.versions["example.com/E"] != "" ||
+		g.versions["example.com/x"] != "" {
+		t.Fatalf("an excluded requirement and what it brings must be left out: %+v", g.versions)
+	}
+}
+
+// TestTidyGraphGoModFile은 주 go.mod의 replace를 go 명령의 우선순위(버전을 적은 것이 먼저)로 적용해 go.mod 위치를
+// 정하는지 본다 — 디렉터리 대상은 주 모듈 기준 go.mod, 모듈 대상은 대상 모듈의 캐시 go.mod다.
+func TestTidyGraphGoModFile(t *testing.T) {
+	main := goModFacts{replaces: []*modfile.Replace{
+		{Old: module.Version{Path: "example.com/a"}, New: module.Version{Path: "./local-a"}},
+		{Old: module.Version{Path: "example.com/a", Version: "v1.2.0"}, New: module.Version{Path: "example.com/fork", Version: "v0.1.0"}},
+	}}
+	g := &tidyGraph{main: main, modDir: "/work", modCache: "/cache"}
+	for _, c := range []struct {
+		m    module.Version
+		want string
+	}{
+		{module.Version{Path: "example.com/a", Version: "v1.0.0"}, filepath.Join("/work", "local-a", "go.mod")},
+		{module.Version{Path: "example.com/a", Version: "v1.2.0"}, filepath.Join("/cache", "cache", "download", "example.com", "fork", "@v", "v0.1.0.mod")},
+		{module.Version{Path: "example.com/B", Version: "v2.0.0+incompatible"}, filepath.Join("/cache", "cache", "download", "example.com", "!b", "@v", "v2.0.0+incompatible.mod")},
+	} {
+		if got, err := g.goModFile(c.m); err != nil || got != c.want {
+			t.Errorf("goModFile(%v) = %q, %v; want %q", c.m, got, err, c.want)
+		}
+	}
+}
+
+// TestPrunedGoVersion은 go 지시문이 모듈 그래프 가지치기를 켜는지(1.17 이상) 본다. 지시문이 없으면 꺼져 있다.
+func TestPrunedGoVersion(t *testing.T) {
+	for v, want := range map[string]bool{"": false, "1.16": false, "1.17": true, "1.21rc1": true, "1.27.1": true, "2": true} {
+		if got := prunedGoVersion(v); got != want {
+			t.Errorf("prunedGoVersion(%q) = %v, want %v", v, got, want)
+		}
 	}
 }
 
