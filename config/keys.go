@@ -36,7 +36,8 @@ var (
 
 // parseRules는 규칙 파일을 yaml 노드로 읽는다. 문서가 없으면(빈 파일, 주석뿐인 파일) nil이다.
 // 둘째 문서부터는 내용이 있으면 거부한다 — yaml.Unmarshal은 첫 문서만 읽어 `---` 뒤의 규칙이 조용히
-// 빠졌다. 끝에 붙은 `---`·`...`처럼 내용이 없는(null) 문서는 잃을 규칙이 없어 받는다.
+// 빠졌다. 끝에 붙은 `---`·`...`처럼 내용이 없는(null) 문서는 잃을 규칙이 없어 받는다. 오류의 줄은 그 문서의
+// `---` 줄이다(문서 노드의 줄 — 내용 노드의 줄은 `---` 다음 줄일 수 있다).
 func parseRules(data []byte) (*yaml.Node, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var first yaml.Node
@@ -56,9 +57,9 @@ func parseRules(data []byte) (*yaml.Node, error) {
 			return nil, err
 		}
 		if content := documentContent(&next); content != nil && content.ShortTag() != "!!null" {
-			return nil, fmt.Errorf("line %d: a second YAML document starts here; gartograph reads one "+
-				"document per rules file, so its rules would be ignored — merge the documents into one",
-				content.Line)
+			return nil, fmt.Errorf("line %d: a second YAML document starts here; gartograph reads only the "+
+				"first document of a rules file, so everything from this line on would be ignored — merge the "+
+				"documents into one", next.Line)
 		}
 	}
 }
@@ -87,15 +88,15 @@ func checkKnownKeys(doc *yaml.Node) error {
 	if root == nil || root.Kind != yaml.MappingNode {
 		return nil
 	}
-	return eachPair(root, func(key, value *yaml.Node) error {
+	return eachPair(root, func(key mapKey, value *yaml.Node) error {
 		if err := knownKey(key, fileKeys, ""); err != nil {
 			return err
 		}
-		if key.Value == "deny" {
+		if key.name == "deny" {
 			return checkDenyEntries(value)
 		}
-		if keys, ok := entrySections[key.Value]; ok {
-			return checkEntries(value, key.Value+" entry", keys)
+		if keys, ok := entrySections[key.name]; ok {
+			return checkEntries(value, key.name+" entry", keys)
 		}
 		return nil
 	})
@@ -107,7 +108,7 @@ func checkDenyEntries(section *yaml.Node) error {
 	if section == nil || section.Kind != yaml.MappingNode {
 		return nil
 	}
-	return eachPair(section, func(_, list *yaml.Node) error {
+	return eachPair(section, func(_ mapKey, list *yaml.Node) error {
 		return checkEntries(list, "deny entry", denyEntryKeys)
 	})
 }
@@ -123,7 +124,7 @@ func checkEntries(list *yaml.Node, where string, keys []string) error {
 		if item == nil || item.Kind != yaml.MappingNode {
 			continue
 		}
-		if err := eachPair(item, func(key, _ *yaml.Node) error {
+		if err := eachPair(item, func(key mapKey, _ *yaml.Node) error {
 			return knownKey(key, keys, where)
 		}); err != nil {
 			return err
@@ -132,12 +133,20 @@ func checkEntries(list *yaml.Node, where string, keys []string) error {
 	return nil
 }
 
+// mapKey는 매핑 키 하나의 이름과 그 키를 쓴 줄이다.
+type mapKey struct {
+	name string
+	line int
+}
+
 // eachPair는 매핑의 키·값 쌍마다 visit을 부른다. 병합 키(`<<: *anchor`, `<<: [*a, *b]`)는 yaml.v3가
 // 디코딩할 때처럼 병합되는 매핑의 쌍으로 펼친다 — 펼치지 않으면 병합한 매핑 속 오타를 놓친다.
+// 별칭 키(`{&k from: a}` 뒤의 `{*k : b}`)는 yaml.v3 디코딩처럼 대상의 이름(from)으로 읽고, 줄은 별칭을 쓴
+// 자리다. 병합 키 판정은 별칭을 풀기 전의 키로 한다 — yaml.v3도 `<<`를 가리키는 별칭은 병합으로 보지 않는다.
 // 재귀 대신 작업 목록으로 펼치고 매핑마다 한 번만 본다: 같은 앵커를 겹겹이 병합해도 일이 매핑 수에 묶이고,
 // 자기 자신을 병합하는 앵커가 있어도 끝난다(자기 재귀 함수는 자기 분석 cycles --level symbol의 순환이기도 하다).
 // 순서는 매핑 자신의 키(문서 순서) 다음에 병합된 매핑의 키다 — 결정적이라 첫 오류가 실행마다 같다.
-func eachPair(mapping *yaml.Node, visit func(key, value *yaml.Node) error) error {
+func eachPair(mapping *yaml.Node, visit func(key mapKey, value *yaml.Node) error) error {
 	pending := []*yaml.Node{mapping}
 	seen := map[*yaml.Node]bool{mapping: true}
 	for len(pending) > 0 {
@@ -154,7 +163,7 @@ func eachPair(mapping *yaml.Node, visit func(key, value *yaml.Node) error) error
 				}
 				continue
 			}
-			if err := visit(key, value); err != nil {
+			if err := visit(mapKey{name: resolveAlias(key).Value, line: key.Line}, value); err != nil {
 				return err
 			}
 		}
@@ -183,11 +192,11 @@ func mergeSources(value *yaml.Node) []*yaml.Node {
 	return out
 }
 
-// knownKey는 키 노드가 keys 중 하나인지 본다. 아니면 줄 번호, 자리(where, 최상위면 비움), 알려진 키 목록을
+// knownKey는 키가 keys 중 하나인지 본다. 아니면 줄 번호, 자리(where, 최상위면 비움), 알려진 키 목록을
 // 담은 오류다 — 무엇이 틀렸고 무엇을 쓸 수 있는지를 함께 알려 준다. 스칼라가 아닌 키(`? [x]`)는 구조체로
 // 디코딩할 수 없어 Decode가 먼저 거부한다.
-func knownKey(key *yaml.Node, keys []string, where string) error {
-	if slices.Contains(keys, key.Value) {
+func knownKey(key mapKey, keys []string, where string) error {
+	if slices.Contains(keys, key.name) {
 		return nil
 	}
 	place := ""
@@ -195,5 +204,5 @@ func knownKey(key *yaml.Node, keys []string, where string) error {
 		place = " in a " + where
 	}
 	return fmt.Errorf("line %d: unknown key %q%s (known keys: %s); a misspelled key would leave "+
-		"its setting unread", key.Line, key.Value, place, strings.Join(keys, ", "))
+		"its setting unread", key.line, key.name, place, strings.Join(keys, ", "))
 }

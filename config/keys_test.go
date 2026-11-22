@@ -35,6 +35,15 @@ func TestLoadRejectsUnknownKeys(t *testing.T) {
 		{"merged into an entry", comps + "fileRules:\n  - &r {name: r, from: \"*.go\", to: b}\n" +
 			"deny:\n  a:\n    - {<<: *r}\n", `unknown key "name" in a deny entry`},
 		{"merged at top level", comps + "<<: {independant: [a, b]}\n", `unknown key "independant"`},
+		// 별칭 항목과 별칭 섹션도 대상 매핑의 키로 본다 — fileRules 항목을 deny·forbidden에 그대로 별칭하면 name이
+		// 모르는 키다(별칭을 풀지 않으면 deny는 빈 대상 오류로, forbidden은 성공으로 지나간다).
+		{"aliased entry", comps + "fileRules:\n  - &r {name: r, from: a, to: b}\ndeny:\n  a: [*r]\n",
+			`line 4: unknown key "name" in a deny entry`},
+		{"aliased section", comps + "fileRules: &fr [{name: r, from: a, to: b}]\nforbidden: *fr\n",
+			`line 3: unknown key "name" in a forbidden entry`},
+		// 별칭 키의 오류 줄은 앵커 정의(4)가 아니라 별칭을 쓴 자리(6)다.
+		{"aliased key unknown here", comps + "fileRules:\n  - {&k name: r, from: a, to: b}\n" +
+			"forbidden:\n  - {from: a, to: b, *k : x}\n", `line 6: unknown key "name" in a forbidden entry`},
 	}
 	for _, c := range cases {
 		_, err := Load(writeRules(t, c.body))
@@ -93,9 +102,15 @@ exclude: [gen/**]
 // 문서만 읽어 둘째 문서의 규칙이 조용히 빠졌다. 내용 없는 끝 문서(`---`·`...`만)는 잃을 규칙이 없어 받는다.
 func TestLoadRejectsSecondDocument(t *testing.T) {
 	const head = "components: {a: [a], b: [b]}\ndeps: {a: [b], b: []}\n"
+	// 줄은 `---` 줄(3)이다 — 내용의 첫 줄(4)을 가리키면 사용자가 문서 경계를 찾지 못한다.
 	_, err := Load(writeRules(t, head+"---\nforbidden:\n  - {from: a, to: b}\n"))
-	if err == nil || !strings.Contains(err.Error(), "line 4: a second YAML document starts here") {
-		t.Fatalf("a second document must be rejected with its line, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "line 3: a second YAML document starts here; gartograph "+
+		"reads only the first document of a rules file, so everything from this line on would be ignored") {
+		t.Fatalf("a second document must be rejected at its --- line, got %v", err)
+	}
+	if _, err := Load(writeRules(t, head+"\n--- {}\n")); err == nil ||
+		!strings.Contains(err.Error(), "line 4: a second YAML document starts here") {
+		t.Fatalf("a second document on the --- line must be rejected at that line, got %v", err)
 	}
 	for _, tail := range []string{"---\n", "...\n", "---\n# only a comment\n", "--- ~\n"} {
 		if _, err := Load(writeRules(t, "---\n"+head+tail)); err != nil {
@@ -128,8 +143,8 @@ func TestEachPairVisitsEachMergedMappingOnce(t *testing.T) {
 	}
 	var keys []string
 	testutil.FinishWithin(t, testutil.BlockDeadline, func() {
-		if err := eachPair(self, func(key, _ *yaml.Node) error {
-			keys = append(keys, key.Value)
+		if err := eachPair(self, func(key mapKey, _ *yaml.Node) error {
+			keys = append(keys, key.name)
 			return nil
 		}); err != nil {
 			t.Error(err)
@@ -178,4 +193,17 @@ func yamlTagKeys(v any) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// TestLoadAcceptsAliasedKeys는 별칭 키(`{&k from: a}` 뒤의 `{*k : b}`)를 yaml.v3 디코딩처럼 대상 이름의 키로
+// 받는지 확인한다. main은 이 설정을 읽어 두 금지 규칙을 모두 썼는데, 키 검사가 별칭 이름(k)을 키로 읽어 거부했다.
+func TestLoadAcceptsAliasedKeys(t *testing.T) {
+	f, err := Load(writeRules(t, "components: {a: [a], b: [b]}\ndeps: {a: [b], b: []}\n"+
+		"forbidden: [{&k from: a, to: b}, {*k : b, to: a}]\n"))
+	if err != nil {
+		t.Fatalf("an aliased known key must load: %v", err)
+	}
+	if len(f.Forbidden) != 2 || f.Forbidden[1].From != "b" || f.Forbidden[1].To != "a" {
+		t.Fatalf("the aliased key must decode as from: %+v", f.Forbidden)
+	}
 }
