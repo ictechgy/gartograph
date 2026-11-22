@@ -16,17 +16,6 @@
 
 ### Fixed
 
-- 규칙 파일(`.gartograph.yml`·`--config`): 모르는 키를 거부한다(종료 2, `line N: unknown key "forbiden" (known
-  keys: …)`). yaml.v3가 구조체에 없는 키를 조용히 버려, `forbiden:` 오타 하나가 forbidden 규칙을 통째로 끈 채
-  `rules --strict`가 "0 violations"로 0을 돌려줬고(철자를 고치면 위반 1건으로 1), `exclud:`면 빼려던 패키지가
-  아무 표시 없이 수확됐다. 최상위 키, `deny`·`forbidden`·`fileRules`·`limits` 항목의 키(`reason`을 받지 않는
-  forbidden 항목의 `reason`, `maxin`처럼 대소문자가 다른 키), `<<`로 병합한 매핑의 키를 모두 본다(따옴표로 감싼
-  `"<<"`는 yaml.v3처럼 병합 키가 아닌 보통 키다). 알려진 키 목록은 구조체의 yaml 태그와 대조하는 테스트가
-  지킨다(필드를 더하고 목록을 빠뜨리면 실패한다). `---` 뒤에 내용이 있는 둘째 YAML 문서도 거부한다 — 첫 문서만
-  읽혀 그 뒤 규칙이 빠졌다(끝에 붙은 빈 문서는 받는다). 모든 수확 명령이 exclude를 읽으려고 이 파일을 열므로 모두
-  여기서 멈춘다(깨진 YAML과 같은 동작). 앵커만 두는 확장 키(`x-common: &c [...]`)도 모르는 키라 거부된다 — 앵커는
-  섹션 안 첫 사용 지점에 정의한다. rustograph의 `.rustograph.yml`도 같은 이유로 모르는 키를 거부한다. 키 검사는
-  디코딩 뒤라 형식 오류 문구와 별칭 남용 상한(`excessive aliasing`)은 그대로다.
 - `rules`의 `limits` 위반(정점 없는 컴포넌트 사실) 출력: SARIF 메시지가 빈 정점을 간선 문구에 넣고 상한 종류를
   fileScope 규칙 이름으로 읽어 ` may not depend on  (fileScope "maxOut": web -> ): …`(fileScope 위반이라는 거짓
   문구)였고, 논리 위치로 같은 `{"fullyQualifiedName": "", "kind": "module"}` 둘을 실어 SARIF 2.1.0 스키마의
@@ -177,6 +166,25 @@
 
 ### Changed
 
+- **Breaking**: 규칙 파일(`.gartograph.yml`·`--config`): 모르는 키와 내용 있는 둘째 YAML 문서를 거부한다(종료 2,
+  `line N: unknown key "forbiden" (known keys: …)`). yaml.v3가 구조체에 없는 키를 조용히 버려, `forbiden:` 오타 하나가
+  forbidden 규칙을 통째로 끈 채 `rules --strict`가 "0 violations"로 0을 돌려줬고(철자를 고치면 위반 1건으로 1),
+  `exclud:`면 빼려던 패키지가 아무 표시 없이 수확됐다 — 오타가 거짓 "0 violations"가 되는 것을 막는 변경이다.
+  최상위 키, `deny`·`forbidden`·`fileRules`·`limits` 항목의 키(`reason`을 받지 않는 forbidden 항목의 `reason`,
+  `maxin`처럼 대소문자가 다른 키), `<<`로 병합한 매핑과 별칭으로 가리킨 항목·섹션의 키를 모두 본다. 별칭 키
+  (`{&k from: a}` 뒤의 `{*k : b}`)는 yaml.v3처럼 대상 이름으로 읽고, 따옴표로 감싼 `"<<"`는 병합 키가 아닌 보통
+  키다. 둘째 문서 오류는 그 문서의 `---` 줄을 가리킨다(끝에 붙은 빈 문서는 받는다). 알려진 키 목록은 구조체의 yaml
+  태그와 대조하는 테스트가 지킨다. 키 검사는 디코딩 뒤라 형식 오류 문구와 별칭 남용 상한(`excessive aliasing`)은
+  그대로다. rustograph의 `.rustograph.yml`도 같은 이유로 모르는 키를 거부한다(serde `deny_unknown_fields`).
+  - 영향: 예전에 읽히던 설정이 종료 2가 된다 — 오타·남은 키, 앵커만 두는 확장 키(`x-common: &c [a]`), `---` 뒤의
+    내용. 규칙 파일을 읽는 명령이 모두 멈춘다: `rules`·`metrics`·`mapping`·`mcp`(시작할 때), 그리고 exclude를 읽으려고
+    여는 `graph`·`cycles`·`dead`(`--algo rta` 포함)·`query`·`impact`(`--since`·`--files`·`--base` 포함)·`path`·`shared`·
+    `reach`·`routes`·`schema`. `bridges`·`unused-deps`·`diff`·`init`은 규칙 파일을 읽지 않아 그대로다.
+  - 앞으로의 호환성: 새 판이 키를 더하면 그 키를 쓴 설정은 그보다 오래된 gartograph에서 종료 2가 된다(예전에는
+    조용히 무시됐다). `version` 키는 받지만 읽지 않으므로 판 사이 협상에 쓰이지 않는다.
+  - 마이그레이션: 오류가 가리키는 줄의 키를 알려진 키로 고친다. 앵커는 섹션 안 첫 사용 지점에 정의하고 별칭·병합으로
+    다시 쓴다(`deps: {web: &core [db]}` 뒤의 `signature: {web: *core}`, `fileRules: [&b {name: a, from: "!*_test.go",
+    to: th}, {<<: *b, name: b, from: "!*_gen.go"}]`). 여러 문서는 하나로 합친다.
 - `unused-deps`: 빌드 제약 제외 파일과 의존 패키지 테스트 파일을 import 선언이 끝날 때까지만 읽는다(16 KiB부터 두
   배씩, 상한 1 MiB는 그대로). 예전에는 모든 제외 파일을 1 MiB까지 읽었다 — modernc.org/sqlite v1.59.0은 의존 제외
   파일 767개에서 약 47 MB를 읽었고, 이제 첫 16 KiB 안에서 끝난다(상한 약 6 MB). 판정은 같다.

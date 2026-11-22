@@ -106,8 +106,14 @@
     CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
 
 - 브랜치 `ccr-37904670-hxdjsx`(2026-11-22, main `345dfe4` 기준, 머지 전 — squash 머지되면 PR 번호로 찾는다).
-  사용자 결정이 필요 없는 둘을 고쳤다(CHANGELOG Fixed 첫 두 항목). 찾은 방법: 실제 모듈 dead를 deadcode(x/tools
-  RTA, `-generated`)와 대조(아래), 명령별 적대 입력, 공식 SARIF 2.1.0 스키마 검증.
+  둘을 고쳤다(CHANGELOG Changed의 **Breaking** 규칙 파일 항목, Fixed 첫 항목). 찾은 방법: 실제 모듈 dead를
+  deadcode(x/tools RTA, `-generated`)와 대조(아래), 명령별 적대 입력, 공식 SARIF 2.1.0 스키마 검증.
+  - 규칙 파일 키 검사는 **Breaking**이다 — 예전에 읽히던 설정(오타·남은 키, `x-` 앵커 키, `---` 뒤 내용)이 이제 종료
+    2이고, 규칙 파일을 읽는 명령(`rules`·`metrics`·`mapping`·`mcp`와 exclude를 읽는 수확 명령)이 모두 멈춘다. 그래도
+    둔 근거는 거짓 사실이다: 오타 하나가 사용자가 쓴 규칙을 읽지도 않고 버려 "0 violations"를 냈다. 아래 "남은 일"의
+    `independent: [web]`은 다르다 — 파일에 쓴 그대로 읽혀 버려지는 것이 없고, 거부해도 거짓 보고를 고치지 않고 종료
+    코드만 바뀐다. Breaking 여부는 코디네이터가 사용자에게 알린다. `x-` 키도 거부를 유지한다(나중에 푸는 것은 추가
+    변경이고, rustograph도 serde `deny_unknown_fields`다). 수요가 생기면 최상위 `x-*`만 허용하는 것이 그 길이다.
   - 규칙 파일의 모르는 키·둘째 YAML 문서를 거부한다(`config/keys.go`). 재현: `forbiden:`(forbidden 오타)인
     설정에서 main은 `rules --strict`가 `0 violations`로 0, 철자를 고치면 1. 이제 종료 2와 `line 3: unknown key
     "forbiden" (known keys: …)`. 적대 입력 21개를 main과 대조했다 — 바뀐 것은 모르는 키(최상위·deny·forbidden·
@@ -120,8 +126,15 @@
     forbidden·independence·fileScope·stability·limit)를 내는 fixture에서 결과 10개 중 main 대비 바뀐 것은 limit 셋뿐이고
     나머지 일곱 결과와 JSON 보고는 바이트가 같다. 새 로그는 공식 스키마
     (oasis-tcs/sarif-spec `sarif-schema-2.1.0.json`, jsonschema Draft4) 오류 0, main은 3.
-  - 회귀 테스트는 고치기 전 코드에서 실패한다(스크래치 사본에 변이 12개 — 모두 잡힘): `config/keys_test.go`,
-    `cli/rulesconfig_test.go`, `cli/rules_sarif_test.go`.
+  - 회귀 테스트는 고치기 전 코드에서 실패한다(스크래치 사본에 변이 18개 — 모두 잡힘): `config/keys_test.go`,
+    `cli/rulesconfig_test.go`, `cli/rules_sarif_test.go`. `Scripts/verify-cli-contract.sh`에 모르는 키 종료 2 사례를
+    더했다(main 바이너리는 0으로 그 사례만 실패한다).
+  - PR #60 독립 리뷰 후속(같은 브랜치): CHANGELOG 항목을 Fixed에서 Changed의 **Breaking**(영향 명령·앞으로의 호환성·
+    마이그레이션)으로 옮겼다. 별칭 키(`forbidden: [{&k from: a, to: b}, {*k : b, to: a}]` — main은 두 규칙을 다 읽는데
+    `line 3: unknown key "k"`로 거부했다)는 yaml.v3처럼 대상 이름으로 읽고 오류 줄은 별칭을 쓴 자리다. 둘째 문서
+    오류가 내용 줄(`---` 다음 줄)을 가리키던 것을 `---` 줄로 고치고 문구를 "everything from this line on would be
+    ignored"로 바꿨다(`--- {}`처럼 규칙이 없는 문서에도 맞는다). 살아남던 변이 셋(항목·섹션 별칭 풀기 제거,
+    `sarifLogical.Kind`의 omitempty 제거)을 잡는 사례를 더했다.
   - dead 오라클 대조(스크래치 사본, 고친 곳과 무관한 기존 동작 확인): x/tools v0.53.0·x/text v0.42.0·x/net v0.59.0·
     x/crypto v0.57.0·x/mod v0.43.0과 이 저장소에서 gartograph(CHA)만 unreachable로 낸 func·method를 deadcode가 그
     패키지를 프로그램에 담은 경우로 좁혀 하나씩 봤다. 남은 것은 모두 deadcode의 반사 규칙(인터페이스로 변환된 타입의
@@ -129,8 +142,8 @@
     (`nodeImpl`·`isJSONRPC2Message`), 아무도 읽지 않는 패키지 변수에 담긴 함수 값(x/text collate `ignoreCaseF` —
     RTA는 주소를 딴 함수를 살린다)이었다. 거짓 unreachable은 찾지 못했다. x/tools의 패키지 import 간선 632개는 `go
     list`와 정확히 같다.
-  - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.9%(기준 90%, 패키지 여섯 모두 ok), `Scripts/verify-cli-contract.sh`
-    OK, 자기 분석 dead 12건(main과 같은 목록·같은 limitation·루트 3)·rules `--strict` 0·cycles package/type/symbol
+  - 검증(리뷰 후속 뒤 다시 돌림): `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.9%(기준 90%, 패키지 여섯 모두 ok),
+    `Scripts/verify-cli-contract.sh` OK, 자기 분석 dead 12건(main과 같은 목록·같은 limitation·루트 3)·rules `--strict` 0·cycles package/type/symbol
     `--strict` 0, conformance drift current(isthmus `c76e105`). 자기 분석이 잡은 것 하나: 병합 키 펼침을 처음에 자기
     재귀 함수로 써서 `cycles --level symbol --strict`가 1-순환으로 실패했다 — 작업 목록으로 바꿨다. 이 저장소·x/mod·
     x/text의 graph(심볼)·dead JSON은 main 바이너리와 바이트가 같다(규칙 파일이 없는 입력). Windows·macOS 테스트는
@@ -224,8 +237,10 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
 - `routes`의 리터럴 `ANY` 동사: ServeMux `"ANY /x"`(요청 동사가 정확히 `ANY`일 때만 맞는다)·gin `Handle("ANY", …)`·
   echo `Add("ANY", …)`가 모든 동사 decl(`method: "ANY"`)이 된다 — 패턴에 동사가 없을 때의 내부 표지와 같은 문자열이라
   구분하지 않는다. 위 설계대로면 사실을 내지 않아야 한다(거짓 사실 제거라 반대 코퍼스와 isthmus 영향 증거와 함께).
-- 규칙 파일의 `independent: [web]`처럼 쌍을 하나도 만들지 않는 목록은 조용히 아무것도 검사하지 않는다. 거부하면
-  지금 통과하는 설정이 종료 2가 된다.
+- 규칙 파일의 `independent: [web]`처럼 쌍을 하나도 만들지 않는 목록은 조용히 아무것도 검사하지 않는다. 모르는 키와
+  달리 파일 내용은 빠짐없이 읽혀 거짓 보고가 아니고, 거부하면 지금 통과하는 설정이 종료 2가 되기만 해서 사용자가 고른다.
+- 규칙 파일의 `x-*` 확장 키: 지금은 모르는 키로 거부한다. docker-compose식 앵커 보관 키 수요가 생기면 최상위 `x-*`만
+  허용하는 것이 후보다(추가 변경이라 하위 호환).
 - 릴리스(0.12.0)와 tap 갱신은 승인된 별도 작업이다. 새 자격 증명은 만들지 않는다.
 
 ## 주의

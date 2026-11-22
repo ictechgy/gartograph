@@ -375,14 +375,21 @@ independent: [web, cli]   # web and cli must not reach each other either way
   rejects dead references instead of letting a typo pretend to be a rule.
 - Unknown keys are rejected too (exit 2, with the line and the known keys):
   at the top level, in `deny`, `forbidden`, `fileRules`, and `limits` entries,
-  and in mappings merged with `<<`. A misspelled `forbiden:` or `exclud:`
-  used to be dropped silently, so `rules --strict` passed with the ban off
-  and the harvest kept packages meant to be excluded. Every harvest command
-  reads the file for `exclude`, so they all stop on it. Anchor-only keys
-  (`x-common: &c [...]`) count as unknown — define the anchor at its first
-  use inside a section. A second YAML document after `---` is rejected for
-  the same reason (only the first was read); an empty trailing document is
-  fine.
+  and in mappings merged with `<<` or referenced by an alias (an aliased key
+  such as `*k : b` reads as its target's name, as yaml.v3 decodes it). A
+  misspelled `forbiden:` or `exclud:` used to be dropped silently, so
+  `rules --strict` passed with the ban off and the harvest kept packages meant
+  to be excluded. Every command that reads the file stops on it — `rules`,
+  `metrics`, `mapping`, `mcp`, and the harvesting commands that read its
+  `exclude` (`bridges`, `unused-deps`, `diff`, and `init` do not read it).
+  Anchor-only keys (`x-common: &c [...]`) count as unknown — define the
+  anchor at its first use inside a section and reuse it
+  (`deps: {web: &core [db]}` then `signature: {web: *core}`, or
+  `fileRules: [&b {...}, {<<: *b, name: x}]`). A second YAML document after
+  `---` is rejected for the same reason (only the first was read), at its
+  `---` line; merge the documents. An empty trailing document is fine. A key
+  added by a newer gartograph fails the same way in an older one — `version`
+  is accepted but not read.
 
 ```yaml
 fileRules:
