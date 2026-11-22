@@ -373,6 +373,23 @@ independent: [web, cli]   # web and cli must not reach each other either way
   reader knows what to do instead.
 - Every name referenced by a rule must be a defined component — `Load`
   rejects dead references instead of letting a typo pretend to be a rule.
+- Unknown keys are rejected too (exit 2, with the line and the known keys):
+  at the top level, in `deny`, `forbidden`, `fileRules`, and `limits` entries,
+  and in mappings merged with `<<` or referenced by an alias (an aliased key
+  such as `*k : b` reads as its target's name, as yaml.v3 decodes it). A
+  misspelled `forbiden:` or `exclud:` used to be dropped silently, so
+  `rules --strict` passed with the ban off and the harvest kept packages meant
+  to be excluded. Every command that reads the file stops on it — `rules`,
+  `metrics`, `mapping`, `mcp`, and the harvesting commands that read its
+  `exclude` (`bridges`, `unused-deps`, `diff`, and `init` do not read it).
+  Anchor-only keys (`x-common: &c [...]`) count as unknown — define the
+  anchor at its first use inside a section and reuse it
+  (`deps: {web: &core [db]}` then `signature: {web: *core}`, or
+  `fileRules: [&b {...}, {<<: *b, name: x}]`). A second YAML document after
+  `---` is rejected for the same reason (only the first was read), at its
+  `---` line; merge the documents. An empty trailing document is fine. A key
+  added by a newer gartograph fails the same way in an older one — `version`
+  is accepted but not read.
 
 ```yaml
 fileRules:
@@ -457,6 +474,12 @@ would pass silently.
 `rules`, `cycles`, and `dead` all accept `--format sarif` for CI code
 scanning — cycles report as `dependency-cycle` errors, unreachable symbols
 as `unreachable-symbol` warnings (a fact, not a deletion verdict).
+Rule violations report as `layer-<rule>` errors, and every rule a result can
+name (`layer-stability` and `layer-limit` included) is in
+`tool.driver.rules`. A `limits` violation is a component-level fact with no
+vertex: its message and only logical location name the component (no
+`kind` — a component is neither a SARIF module nor a namespace), and the
+text report prints it as `violation[limit:maxOut]: component web`.
 SARIF logs carry results only — `limitations` (what the harvest could not
 see, including pattern errors) are in the text and JSON reports, so read one
 of those alongside the SARIF upload. Each `artifactLocation.uri` is the file's path relative to the module root,

@@ -98,9 +98,11 @@ type sarifRegion struct {
 	StartColumn int `json:"startColumn,omitempty"`
 }
 
+// sarifLogical은 논리 위치 하나다. Kind는 SARIF 2.1.0 §3.33.7의 선택 속성이라, 맞는 값이 없는 위치
+// (규칙 파일의 컴포넌트 — 패키지 묶음이지 module·namespace가 아니다)는 키를 뺀다.
 type sarifLogical struct {
 	FullyQualifiedName string `json:"fullyQualifiedName"`
-	Kind               string `json:"kind"`
+	Kind               string `json:"kind,omitempty"`
 }
 
 // sarifLog는 결과와 규칙 색인을 SARIF 로그로 감싼다.
@@ -195,27 +197,14 @@ func isPlainSegmentByte(c byte) bool {
 func rulesSARIF(root string, violations []analysis.Violation) ([]byte, error) {
 	results := make([]sarifResult, 0, len(violations))
 	for _, v := range violations {
-		msg := fmt.Sprintf("%s may not depend on %s (%s rule: %s -> %s)",
-			v.From, v.To, v.Rule, v.FromComponent, v.ToComponent)
-		if v.Name != "" {
-			msg = fmt.Sprintf("%s may not depend on %s (fileScope %q: %s -> %s)",
-				v.From, v.To, v.Name, v.FromComponent, v.ToComponent)
-		}
-		if v.Reason != "" {
-			msg += ": " + v.Reason
-		}
+		msg := ruleViolationMessage(v)
 		var props map[string]any
 		if len(v.Path) > 0 {
 			// forbidden은 도달 위반 — 증거는 양 끝이 아니라 사슬 전체다.
 			msg += fmt.Sprintf(" (via %s)", strings.Join(v.Path, " -> "))
 			props = map[string]any{"witnessPath": v.Path}
 		}
-		loc := sarifLocation{
-			LogicalLocations: []sarifLogical{
-				{FullyQualifiedName: v.From, Kind: "module"},
-				{FullyQualifiedName: v.To, Kind: "module"},
-			},
-		}
+		loc := sarifLocation{LogicalLocations: ruleViolationLogicals(v)}
 		// v2 문서는 위반 지점을 안다 — 논리 위치와 함께 물리 위치를 준다.
 		msg += placeFile(&loc, root, v.Position)
 		results = append(results, sarifResult{
@@ -241,7 +230,45 @@ func rulesSARIF(root string, violations []analysis.Violation) ([]byte, error) {
 			Text: "components declared independent reach each other"}},
 		{ID: "layer-fileScope", ShortDescription: sarifMessage{
 			Text: "import from a file matching a file-scoped rule"}},
+		{ID: "layer-stability", ShortDescription: sarifMessage{
+			Text: "component depends on a less stable component"}},
+		{ID: "layer-limit", ShortDescription: sarifMessage{
+			Text: "component exceeds its maxIn or maxOut dependency limit"}},
 	}, results)
+}
+
+// ruleViolationMessage는 규칙 위반 하나의 SARIF 메시지다(목격 경로·위치 생략 꼬리는 호출자가 붙인다).
+// limit 위반은 간선이 아니라 컴포넌트 덩치의 사실이라 정점이 없다 — 간선 문구("X may not depend on Y")에
+// 빈 정점을 넣으면 " may not depend on  (…)"가 되고, Name(상한 종류)을 fileScope 규칙 이름으로 읽어
+// fileScope 위반이라고 적었다. 그래서 컴포넌트와 사유만 쓴다. fileScope는 규칙 이름을 함께 쓴다.
+func ruleViolationMessage(v analysis.Violation) string {
+	var msg string
+	switch {
+	case componentViolation(v):
+		msg = fmt.Sprintf("component %s (%s rule: %s)", violationComponent(v), v.Rule, v.Name)
+	case v.Rule == "fileScope":
+		msg = fmt.Sprintf("%s may not depend on %s (fileScope %q: %s -> %s)",
+			v.From, v.To, v.Name, v.FromComponent, v.ToComponent)
+	default:
+		msg = fmt.Sprintf("%s may not depend on %s (%s rule: %s -> %s)",
+			v.From, v.To, v.Rule, v.FromComponent, v.ToComponent)
+	}
+	if v.Reason != "" {
+		msg += ": " + v.Reason
+	}
+	return msg
+}
+
+// ruleViolationLogicals는 규칙 위반의 논리 위치다. 간선 위반은 양 끝 패키지(kind module — 기존 계약),
+// 컴포넌트 위반은 그 컴포넌트 하나다. 빈 정점 ID를 논리 위치로 싣지 않는다.
+func ruleViolationLogicals(v analysis.Violation) []sarifLogical {
+	if componentViolation(v) {
+		return []sarifLogical{{FullyQualifiedName: violationComponent(v)}}
+	}
+	return []sarifLogical{
+		{FullyQualifiedName: v.From, Kind: "module"},
+		{FullyQualifiedName: v.To, Kind: "module"},
+	}
 }
 
 // cyclesSARIF는 순환을 SARIF 로그로 직렬화한다.

@@ -51,6 +51,15 @@ components:
   db: ["db"]
 deps: {}
 EOF
+# 모르는 키(forbidden 오타)가 든 규칙 파일 — 조용히 버리면 금지 규칙이 꺼진 채 --strict가 0으로 끝난다.
+cat > "$FIX/unknown-key.yml" <<'EOF'
+components:
+  web: ["web"]
+  db: ["db"]
+deps: {web: [db], db: []}
+forbiden:
+  - {from: web, to: db}
+EOF
 
 fails=0
 check() { # check <기대 코드> <설명> <인자...>
@@ -80,6 +89,7 @@ check 2 "unknown command"  frobnicate
 check 2 "usage"            ""
 check 2 "bad format"       cycles --format xml
 check 2 "bad rules format" rules --format xml
+check 2 "rules unknown config key" rules --strict --config "$FIX/unknown-key.yml"
 check 2 "bad level"        graph --level bogus
 check 2 "level mismatch"   cycles --graph /dev/null
 check 0 "tags flag"        graph --tags customtag

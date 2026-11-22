@@ -1215,8 +1215,13 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 			if v.Name != "" {
 				label = v.Rule + ":" + v.Name
 			}
-			textLine(stdout, "violation[%s]: %s (%s) -> %s (%s)",
-				label, v.From, v.FromComponent, v.To, v.ToComponent)
+			if componentViolation(v) {
+				// limit 위반은 정점 없는 컴포넌트 사실이다 — 간선 모양으로 찍으면 "  (b) ->  ()"가 된다.
+				textLine(stdout, "violation[%s]: component %s", label, violationComponent(v))
+			} else {
+				textLine(stdout, "violation[%s]: %s (%s) -> %s (%s)",
+					label, v.From, v.FromComponent, v.To, v.ToComponent)
+			}
 			if v.Position != nil {
 				textLine(stdout, "  at: %s:%d:%d",
 					v.Position.File, v.Position.Line, v.Position.Column)
@@ -1244,6 +1249,20 @@ func cmdRules(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// componentViolation은 정점 없이 컴포넌트에만 걸린 위반(limits의 maxIn·maxOut)인지 본다. 그런 위반은
+// 간선이 아니라 컴포넌트 덩치의 사실이라 From·To가 비어 있다 — 텍스트·SARIF가 간선 모양으로 찍으면 안 된다.
+func componentViolation(v analysis.Violation) bool {
+	return v.From == "" && v.To == ""
+}
+
+// violationComponent는 컴포넌트 위반이 걸린 컴포넌트다 — maxOut은 FromComponent, maxIn은 ToComponent에 있다.
+func violationComponent(v analysis.Violation) string {
+	if v.FromComponent != "" {
+		return v.FromComponent
+	}
+	return v.ToComponent
 }
 
 // cmdQuery는 정점 하나에 대해 이웃을 되묻는다.
