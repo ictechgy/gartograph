@@ -86,6 +86,10 @@ limits:
 			len(r.Locations[0].LogicalLocations) != 1 {
 			t.Errorf("limit result must name only its component: %q %v", r.Message.Text, r.Locations[0].LogicalLocations)
 		}
+		// 컴포넌트에 맞는 SARIF kind는 없어 키를 뺀다 — 빈 문자열 kind("kind": "")도 싣지 않는다.
+		if kind, has := r.Locations[0].LogicalLocations[0]["kind"]; has {
+			t.Errorf("limit result's component location must carry no kind, got %q", kind)
+		}
 	}
 	want := []string{
 		"component web (limit rule: maxOut): depends on 2 components; limit maxOut is 1",
