@@ -243,6 +243,37 @@ func TestPatternErrorImportedCountedOnce(t *testing.T) {
 	}
 }
 
+// TestModuleLevelCountsLoadErrors는 module 문서가 로드 오류를 패키지 레벨과 같이 세는지 본다. 예전에는 module
+// 레벨이 로드 오류를 하나도 세지 않았다 — 풀리지 않은 import는 "1 packages have no module (builtin)"으로 세였고
+// (std가 아니다), 주 모듈 패키지의 import 블록을 읽지 못해도 limitation이 없었다. 패턴 오류가 이미 센 경로는
+// 다시 세지 않는다.
+func TestModuleLevelCountsLoadErrors(t *testing.T) {
+	const moduleNote = "1 " + loadErrorNote + "; module edges through them may be incomplete"
+	dir := unresolvedImportModule(t)
+	for _, args := range [][]string{
+		{"graph", "--level", "module", "--dir", dir},
+		{"graph", "--level", "module", "--deps", "--dir", dir},
+	} {
+		if _, lims := harvestLimitations(t, args...); countWith(lims, "(builtin)") != 0 || countWith(lims, moduleNote) != 1 {
+			t.Errorf("%v: an unresolved import is a load error, not a builtin package:\n%s", args, strings.Join(lims, "\n"))
+		}
+	}
+	_, lims := harvestLimitations(t, "graph", "--level", "module", "--deps", "--dir", dir,
+		"--pattern", "./...", "--pattern", "example.com/missing/pkg")
+	if countWith(lims, "1 "+patternErrorNote) != 1 || countWith(lims, loadErrorNote) != 0 || countWith(lims, "(builtin)") != 0 {
+		t.Errorf("module --deps with the pattern: count the unresolved package once:\n%s", strings.Join(lims, "\n"))
+	}
+
+	broken := testutil.WriteModule(t, map[string]string{
+		"main.go":    "package main\n\nimport \"example.com/fixture/lib\"\n\nfunc main() { lib.F() }\n",
+		"lib/lib.go": "package lib\n\nimport (\n\t\"example.com/fixture/zzz\n)\n\nfunc F() {}\n",
+	})
+	if _, lims := harvestLimitations(t, "graph", "--level", "module", "--dir", broken); countWith(lims, moduleNote) != 1 {
+		t.Errorf("module: a main-module package whose imports could not be read must be counted:\n%s",
+			strings.Join(lims, "\n"))
+	}
+}
+
 // TestPatternErrorFirstLine는 first: 발췌가 go list 문구의 첫 줄에서 다음 줄을 소개하는 절(`; to add it:`)을 떼는지
 // 본다 — 예전에는 "…; to add it"으로 끊긴 채 실렸다.
 func TestPatternErrorFirstLine(t *testing.T) {

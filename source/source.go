@@ -106,7 +106,7 @@ func documentWith(pkgs []*packages.Package, opts Options, vertexOnly bool) (*gra
 	// 같은 범위가 된다 — 패키지와 모듈 문서가 다른 저장소를 보는 걸 막는다.
 	reachable, excluded := dropExcluded(loaded, opts.Exclude)
 	if opts.Level == graph.LevelModule {
-		mod := buildModuleDocument(root, reachable, opts.IncludeDeps)
+		mod := buildModuleDocument(root, reachable, opts.IncludeDeps, patternErrPaths)
 		if len(excluded) > 0 {
 			mod.Limitation(fmt.Sprintf(
 				"%d packages matched exclude patterns; they have no vertices and their imports are not module edges",

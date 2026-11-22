@@ -22,6 +22,11 @@
   load errors …`가 함께 나왔다(심볼 레벨은 import한 패키지 자신의 타입 오류와 합쳐 2). 이제 그 패키지는 패턴 오류
   limitation만 센다 — 로드 오류 계수에는 import한 패키지 자신의 오류만 남는다. 정점 집합은 그대로다(`--deps`의
   이름 없는 정점은 main과 같이 남는다). 같은 경로를 패턴으로 주지 않으면 지금처럼 로드 오류로 센다.
+- `graph --level module`(MCP 포함): 로드 오류를 패키지 레벨과 같은 기준으로 센다(`N packages reported load errors;
+  module edges through them may be incomplete`). 예전에는 module 레벨이 로드 오류를 하나도 세지 않아 주 모듈
+  패키지의 import 블록을 읽지 못해도 limitation이 없었고, 어느 모듈도 제공하지 않는 import 경로는 std가 아닌데
+  `N packages have no module (builtin)`으로 세였다. builtin 계수는 이제 오류 없는 모듈 없는 패키지(std)만 세고,
+  패턴 오류 limitation이 이미 센 경로는 다시 세지 않는다. 로드 오류가 없는 문서는 바이트가 같다.
 - go list가 오류를 낸 패턴을 버리지 않고 센다. `--pattern` 오타(`./interal/...`), 없는 디렉터리, 어느 모듈도
   제공하지 않는 import 경로, 모듈 밖 `--dir`, 없는 `replace` 대상, 읽을 수 없는 하위 디렉터리면 go list는 패턴
   오류만 담은 가짜 패키지를 (그 패턴이 고른 실제 패키지가 있으면 함께) 돌려주는데, 수확이 그것을 주 모듈 밖
