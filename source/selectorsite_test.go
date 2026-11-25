@@ -26,6 +26,7 @@ func use(d *lib.Doc, w lib.Wrapper) {
 	d.Sort()
 	fmt.Println(d.Name)
 	_ = cfg.Name
+	_ = lib.Doc{Name: "k"}
 	_ = w.Inner.Field
 }
 
@@ -47,7 +48,8 @@ type Wrapper struct{ Inner Inner }
 // TestSelectorIsOneReferenceSite는 선택자 x.Sel 하나가 참조 지점 하나로 기록되는지 확인한다. selectorEdge가
 // 선택자 위치로 기록한 뒤 ast.Inspect가 Sel 식별자로 내려가 identEdge가 같은 객체를 다시 기록해, 간선
 // 위치가 둘(선택자 시작·Sel)이 되고 signature 간선의 한정 이름(lib.Wrapper)도 두 위치였다. 선택자의 X 쪽
-// 식별자(cfg.Name의 cfg)는 다른 참조라 그대로 남아야 한다.
+// 식별자(cfg.Name의 cfg)는 다른 참조라 그대로 남아야 하고, 건너뛰기는 식별자 노드 단위라 선택자로 쓴 객체를
+// 선택자 밖에서 다시 쓴 지점(키 리터럴 lib.Doc{Name: …}의 Name)도 남아야 한다 — 객체로 거르면 이 지점을 잃는다.
 func TestSelectorIsOneReferenceSite(t *testing.T) {
 	doc := loadSymbol(t, testutil.WriteModule(t, map[string]string{
 		"main.go":    selectorSiteMain,
@@ -78,7 +80,7 @@ func TestSelectorIsOneReferenceSite(t *testing.T) {
 				c.kind, c.to, line, col, e.Positions)
 		}
 	}
-	// d.Name과 cfg.Name은 (Doc).Name의 두 지점이다 — 지점마다 선택자 시작 한 위치다.
+	// d.Name·cfg.Name·lib.Doc{Name: …}은 (Doc).Name의 세 지점이다 — 선택자는 그 시작, 키는 키 식별자 한 위치다.
 	name, ok := findEdge(doc, m+".use", lib+".(Doc).Name", graph.EdgeReferences)
 	if !ok || len(name.Positions) == 0 {
 		t.Fatalf("missing references edge use -> (Doc).Name with positions: %+v", name)
@@ -86,9 +88,12 @@ func TestSelectorIsOneReferenceSite(t *testing.T) {
 	file := name.Positions[0].File
 	dLine, dCol := sourceSite(t, selectorSiteMain, "d.Name")
 	cLine, cCol := sourceSite(t, selectorSiteMain, "cfg.Name")
-	want := []graph.Position{{File: file, Line: dLine, Column: dCol}, {File: file, Line: cLine, Column: cCol}}
+	kLine, kCol := sourceSite(t, selectorSiteMain, "Name: \"k\"")
+	want := []graph.Position{{File: file, Line: dLine, Column: dCol}, {File: file, Line: cLine, Column: cCol},
+		{File: file, Line: kLine, Column: kCol}}
 	if !slices.Equal(name.Positions, want) {
-		t.Errorf("d.Name and cfg.Name are two sites, one position each: want %+v, got %+v", want, name.Positions)
+		t.Errorf("d.Name, cfg.Name and the key Name are three sites, one position each: want %+v, got %+v",
+			want, name.Positions)
 	}
 	// X 쪽 패키지 변수 cfg는 자기 참조로 남는다.
 	if !hasEdge(doc, m+".use", m+".cfg", graph.EdgeReferences) {
