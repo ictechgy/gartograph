@@ -4,7 +4,7 @@
 [AGENTS.md](AGENTS.md), 이전 세션 원문(v0.2~v0.11 준비 기록·결정의 경위)은 [HANDOFF-HISTORY.md](HANDOFF-HISTORY.md)에
 있다. 이력의 "진행 중"·"다음 할 일"·수치는 당시 기록이며 현재 지시가 아니다.
 
-## 현재 상태 (2026-11-22)
+## 현재 상태 (2026-11-25)
 
 - 최신 발행본은 **v0.11.0**(태그 = main `aa69cc7`, GitHub Release 자산 6개). Homebrew tap은 `HOMEBREW_TAP_TOKEN`이
   없어 수동으로 0.11.0에 맞췄다 — 절차는 [RELEASING.md](RELEASING.md)의 "Homebrew tap 수동 갱신".
@@ -105,7 +105,7 @@
     dead 12건(main과 같은 목록)·rules/cycles type·symbol `--strict` 0, conformance drift current. Windows·macOS 테스트는
     CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
 
-- 브랜치 `ccr-37904670-hxdjsx`(2026-11-22, main `345dfe4` 기준, 머지 전 — squash 머지되면 PR 번호로 찾는다).
+- PR #60(2026-11-22, squash 머지 `20c4479`, main `345dfe4` 기준 브랜치였다 — 아래 해시는 머지 전 브랜치 커밋이다).
   둘을 고쳤다(CHANGELOG Changed의 **Breaking** 규칙 파일 항목, Fixed 첫 항목). 찾은 방법: 실제 모듈 dead를
   deadcode(x/tools RTA, `-generated`)와 대조(아래), 명령별 적대 입력, 공식 SARIF 2.1.0 스키마 검증.
   - 규칙 파일 키 검사는 **Breaking**이다 — 예전에 읽히던 설정(오타·남은 키, `x-` 앵커 키, `---` 뒤 내용)이 이제 종료
@@ -149,6 +149,36 @@
     x/text의 graph(심볼)·dead JSON은 main 바이너리와 바이트가 같다(규칙 파일이 없는 입력). Windows·macOS 테스트는
     CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
 
+- 브랜치 `ccr-37904670-hxdjsx`(2026-11-25, main `20c4479` 기준, 머지 전 — squash 머지되면 PR 번호로 찾는다). 하나를
+  고쳤다(CHANGELOG Fixed 첫 항목). 찾은 방법: 자기 분석 심볼 문서에서 `export.JSON → graph.(Document).Sort` references
+  간선의 위치가 같은 식 `d.Sort()`의 두 열(18:2·18:4)이었다.
+  - 선택자 `x.Sel` 하나를 참조 지점 둘로 기록했다. `selectorEdge`가 선택자 시작으로 기록한 뒤 `ast.Inspect`가 Sel 식별자로
+    내려가 `identEdge`가 같은 객체를 다시 기록했다(`sigTypeEdges`의 한정 타입 이름 `pkg.T`도 같다). 그래서 references·
+    signature 간선 위치가 겹쳤고 모듈 밖 참조 수가 선택자마다 한 번 더 늘었다(`fmt.Println("x")` 3, 점 import로 쓴 같은
+    호출 `Println("x")` 2). 이제 `inspect`·`sigTypeEdges`가 만난 선택자의 Sel 식별자를 집합(`selectorIdents`)으로 기억해
+    건너뛴다 — 중첩 선택자(`w.Inner.Field`) 때문에 마지막 하나가 아니라 집합이다. X 쪽 식별자(`cfg.Name`의 `cfg`)는 그대로다.
+  - 그대로 둔 단위: 호출 하나는 call과 references 두 사실이라 2로 센다(`TestSharedPromotedImplementationCountedOnce`가
+    고정한 단위다). `selectorEdge` 주석은 "비호출 위치"라고 하지만 호출 위치에서도 references를 긋는 것은 main부터의
+    동작이고, 바꾸면 간선이 사라져 두었다. 여러 이름 ValueSpec(`var a, b = …`)은 이름마다 같은 식을 훑어 이름마다 센다
+    (간선도 이름마다 따로다).
+  - 회귀 테스트 `source/selectorsite_test.go`: main의 `symbols.go`로 두 테스트 모두 실패하고, 변이 넷(inspect의 건너뛰기
+    제거, sigTypeEdges의 건너뛰기 제거, X 식별자도 건너뛰기, 마지막 선택자 하나만 기억)이 모두 잡힌다.
+  - 대조(스크래치 사본의 main 바이너리와 비교): 이 저장소(`--tests` 포함)·x/mod v0.41.0·x/sync v0.23.0·x/text v0.42.0·
+    x/net v0.59.0·x/crypto v0.57.0·x/tools v0.50.0·pgx v5.11.0의 심볼 문서에서 정점·간선(`candidate` 포함)·다른 limitation·
+    최상위 키가 같고, 사라진 위치는 모두 바로 앞이 `.`인 Sel 식별자이며 같은 간선에 그보다 앞선 위치가 남는다(그래서 첫
+    위치를 쓰는 순환 근거·위반 위치는 그대로다). 적대 fixture(메서드 표현식 `(*lib.T).PM`, 제네릭 `lib.F[int]`·`lib.G[lib.T]`,
+    호출 결과 선택 `mk().In.V`, 타입 단언·type switch, 승격 메서드·필드, 인터페이스 메서드 값, 여러 이름 ValueSpec, 배열
+    길이의 한정 상수, 익명 struct 필드, 레이블)도 같다. 사라진 위치·수(심볼 레벨): 이 저장소 5196개·9185 → 5711, x/mod
+    1873·2318 → 1497, x/sync 122·173 → 112, x/text 10304·6566 → 4148, x/net 14090·15644 → 9677, x/crypto 9300·16077 →
+    10197, x/tools 23500·56411 → 34525, pgx 8555·11458 → 7197. type 레벨은 이 저장소 142 → 71.
+  - 살펴봤지만 고치지 않은 것: `diff`를 apidiff(x/exp `a4bb9ff`)와 사례 46개로 대조했다 — 거짓 breaking과 놓친 breaking은
+    아래 "남은 일"에 있다.
+  - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.9%(기준 90%, 패키지 여섯 모두 ok — 이 기계의 부하가 커서
+    `GOFLAGS=-timeout=90m`으로 돌렸다; 기본 10분 제한으로는 cli 패키지가 시간 초과로 멈췄다), `Scripts/verify-cli-contract.sh`
+    OK, 자기 분석 dead 12건(main 바이너리와 목록·루트 3이 같고 references 수 줄만 9185 → 5711)·rules `--strict` 0·cycles
+    package/type/symbol `--strict` 0(symbol 출력도 수 줄만 다르다), conformance drift current(isthmus `c76e105`). Windows·
+    macOS 테스트는 CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
+
 ## 검증 방법
 
 ```sh
@@ -165,7 +195,7 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
 - `go.mod`가 Go 1.27.1을 요구한다. 오래된 go가 PATH에 있으면 `GOTOOLCHAIN=auto`가 받아 오지만,
   `verify-cli-contract.sh`가 띄우는 바이너리는 PATH의 go로 `go list`를 부르므로 1.27.1을 PATH 앞에 둔다
   (`PATH="$(go env GOROOT)/bin:$PATH"`).
-- 자기 분석 `dead`는 `--strict` 없이 근거만 본다(CI도 같다). 2026-11-22 기준 12건(11-03·11-15와 같다) — 테스트에서만
+- 자기 분석 `dead`는 `--strict` 없이 근거만 본다(CI도 같다). 2026-11-25 기준 12건(11-03·11-15·11-22와 같다) — 테스트에서만
   쓰는 공개 함수(`analysis.DependencyReachable` 등), `internal/testutil`, 직렬화 태그 필드다. 지우라는 뜻이 아니다.
   전부 exported라 `--retain-public`이면 0건이 된다(결정 기록).
   수가 늘면 테스트 전용 코드가 제품 파일에 들어온 것인지 먼저 본다(스코프 적용 오라클은 그래서
@@ -241,6 +271,21 @@ node ../isthmus/scripts/conformance-drift.mjs gartograph=.   # 벤더링 사본 
   달리 파일 내용은 빠짐없이 읽혀 거짓 보고가 아니고, 거부하면 지금 통과하는 설정이 종료 2가 되기만 해서 사용자가 고른다.
 - 규칙 파일의 `x-*` 확장 키: 지금은 모르는 키로 거부한다. docker-compose식 앵커 보관 키 수요가 생기면 최상위 `x-*`만
   허용하는 것이 후보다(추가 변경이라 하위 호환).
+- `diff`의 봉인(sealed) 인터페이스: 공개 인터페이스의 메서드 집합에 자기 패키지의 비공개 메서드가 있으면 패키지 밖
+  타입은 그 패키지의 타입이나 인터페이스를 임베드해야만 구현할 수 있어, apidiff는 메서드 추가를 호환으로 본다.
+  gartograph는 `exported interface I gained method N — implementers no longer satisfy it`를 breaking으로 내 `--strict`가
+  1이다(2026-11-25 재현 여덟 사례 — 직접 선언, 비공개 임베드 인터페이스가 얻음, 새 임베드, 제네릭 인터페이스, 비공개
+  메서드 추가, 구현 타입(공개·비공개)도 함께 얻음 — 모두 apidiff는 호환). 문서만으로 호환을 증명하려면 그 비공개
+  메서드를 가진 모든 패키지 타입이 새 메서드를 같은 서명으로 얻었는지 알아야 한다: 외부 타입이 임베드해 구현에 쓰는
+  `Base`·gRPC `Unimplemented…` 꼴 타입은 혼자서는 I를 구현하지 않아 implements 간선이 없고, 문서에는 구체 메서드의
+  서명이 없으며, 제네릭 타입의 implements는 이름·개수만 맞춘다. 그래서 판정을 바꾸지 않았다 — 메서드 서명 사실을 더할지, apidiff처럼
+  호환으로 볼지 사용자가 고른다. 지금의 breaking이 참인 경우도 있다: 구현 타입이 새 메서드를 얻지 못하면 그 타입을
+  I로 쓰는 외부 코드가 깨진다(값 리시버 `T`는 apidiff도 `T: no longer implements I`로 잡고, 포인터 리시버 `*T`는 놓친다).
+- `diff`의 다른 차이(README의 breaking 목록대로의 동작이라 바꾸면 계약 변경이다): `func F` → `var F = func(){}`는 kind
+  변경 breaking인데 호출은 그대로 컴파일된다(apidiff 호환 — 다만 제네릭 함수는 var가 될 수 없어 깨지고 문서에 제네릭
+  표시가 없다). 함수 타입 파라미터 제약을 넓히는 변경(`F[T C]` → `F[T any]`)은 `no longer references C`로 breaking이다
+  (apidiff 호환). 놓치는 breaking(apidiff는 잡는다): 별칭 → 정의 타입(`type A = B` → `type A B`), `F(T)` → `F(*T)`, 값 →
+  포인터 리시버, 공개 변수의 비공개 인터페이스 타입이 메서드를 얻는 경우 — 시그니처 참조 집합만 보는 휴리스틱의 범위다.
 - 릴리스(0.12.0)와 tap 갱신은 승인된 별도 작업이다. 새 자격 증명은 만들지 않는다.
 
 ## 주의
