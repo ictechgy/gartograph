@@ -35,6 +35,12 @@ type harvester struct {
 	linkname int                     // 모듈 심볼로 해석하지 못한 //go:linkname 지시문 수
 	// linknameUnmodeled는 함수·변수 정점이 없는 레벨(type 등)이라 잇지 않은 //go:linkname 지시문 수다.
 	linknameUnmodeled int
+	// moduleRefs는 정점이 없는 모듈 심볼 참조 수다 — type 레벨의 함수·메서드·변수·상수·필드, --pattern 밖이거나
+	// exclude에 걸린 모듈 패키지의 심볼. 모듈 밖 참조와 섞어 세면 "outside the module"이 거짓 문장이 된다.
+	moduleRefs int
+	// mainPkgs는 적재한 패키지 중 주 모듈(go.work면 워크스페이스 모듈)의 PkgPath다 — 수확하지 않은(--pattern 밖·
+	// exclude) 모듈 패키지도 담는다. 생략한 참조를 모듈 안·밖으로 가르는 기준이다(modulePkgs는 수확한 패키지만이다).
+	mainPkgs map[string]bool
 	// reflectPkgs는 reflect를 import하는 패키지의 PkgPath다 — 테스트 변형이 원 패키지와 같은
 	// 패키지를 다시 싣으므로 수가 아니라 집합으로 센다.
 	reflectPkgs map[string]bool
@@ -98,6 +104,7 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 		spell:          newTypeSpeller(),
 		vertexOnly:     vertexOnly,
 		modulePkgs:     packagePathSet(internal),
+		mainPkgs:       mainModulePackages(internal),
 		moduleTypes:    moduleTypesByPath(internal),
 	}
 	for _, v := range doc.Vertices {
@@ -132,6 +139,12 @@ func harvestSymbols(doc *graph.Document, internal []*packages.Package, level gra
 	if h.extRefs > 0 {
 		doc.Limitation(fmt.Sprintf(
 			"%d references to symbols outside the module were omitted", h.extRefs))
+	}
+	if h.moduleRefs > 0 {
+		doc.Limitation(fmt.Sprintf(
+			"%d references to module symbols that have no vertex in this document were omitted "+
+				"(functions, methods, variables, constants, and fields are vertices only at symbol level, and "+
+				"packages outside --pattern or matched by exclude have no symbol vertices)", h.moduleRefs))
 	}
 	if len(h.reflectPkgs) > 0 {
 		doc.Limitation(fmt.Sprintf(
@@ -800,12 +813,41 @@ func isTestMain(p *packages.Package) bool {
 	return false
 }
 
-// omitRef는 모듈 밖 참조 하나를 limitation 수치에 센다 — 테스트 변형이 원 패키지가 이미 센
-// 파일을 다시 훑는 중이면(revisit) 세지 않는다.
-func (h *harvester) omitRef() {
-	if !h.revisit {
+// omitRef는 정점이 없어 긋지 못한 참조 하나를 limitation 수치에 센다 — 대상 패키지(pkgPath)가 주 모듈이면
+// 정점 없는 모듈 심볼로, 아니면 모듈 밖 심볼로 센다. 테스트 변형이 원 패키지가 이미 센 파일을 다시 훑는
+// 중이면(revisit) 세지 않는다.
+func (h *harvester) omitRef(pkgPath string) {
+	switch {
+	case h.revisit:
+	case h.mainPkgs[pkgPath]:
+		h.moduleRefs++
+	default:
 		h.extRefs++
 	}
+}
+
+// mainModulePackages는 수확 패키지에서 import로 닿는 패키지 중 주 모듈 소속(Module.Main)의 PkgPath 집합이다.
+// 모듈 소속은 경로 접두사로 추론하지 않고 적재 사실을 쓴다 — 중첩 모듈은 접두사가 같아도 다른 모듈이다.
+func mainModulePackages(internal []*packages.Package) map[string]bool {
+	out := make(map[string]bool)
+	for _, p := range walkImports(internal) {
+		if p.Module != nil && p.Module.Main {
+			out[p.PkgPath] = true
+		}
+	}
+	return out
+}
+
+// idPackagePath는 심볼 정점 ID의 패키지 경로다(objectID의 역). 메서드("경로.(리시버).이름")는 ".(" 앞,
+// 나머지("경로.이름")는 마지막 "." 앞이다 — 식별자와 충돌 접미사(#symbol)에는 '.'이, import 경로에는 '('가 올 수 없다.
+func idPackagePath(id string) string {
+	if i := strings.Index(id, ".("); i >= 0 {
+		return id[:i]
+	}
+	if i := strings.LastIndex(id, "."); i >= 0 {
+		return id[:i]
+	}
+	return id
 }
 
 // declEdges는 선언 하나의 몸체를 해당 정점의 간선으로 번역한다.
@@ -1011,19 +1053,19 @@ func (h *harvester) specEdges(p *packages.Package, spec ast.Spec,
 // 실행되는 코드가 없어 변수를 거쳐서만 닿게 둔다 — 쓰이지 않는 표의 핸들러를 살리지 않게.
 // 순회는 초기화 식만이다(선언 타입 제외). 호출이 있는 식은 그 식 전체(같은 식 안의
 // 함수 값·리터럴 본문 포함)가 루트에 붙는다 — "살아 있다" 쪽 과대 근사다.
-// 모듈 밖 참조는 변수 쪽 순회가 이미 셌다 — 두 번 세면 limitation 수치가 부풀어서
-// 이 순회의 증가분은 되돌린다.
+// 생략한 참조(모듈 밖·정점 없는 모듈 심볼)는 변수 쪽 순회가 이미 셌다 — 두 번 세면 limitation
+// 수치가 부풀어서 이 순회의 증가분은 되돌린다.
 func (h *harvester) initializerEdges(p *packages.Package, s *ast.ValueSpec) {
 	if len(s.Names) == 0 || s.Names[0].Name == "_" || !executesCall(p, s.Values) ||
 		!h.referencesModule(p, s.Values) {
 		return
 	}
 	h.blankVertex(p, s.Names[0])
-	counted := h.extRefs
+	counted, module := h.extRefs, h.moduleRefs
 	for _, v := range s.Values {
 		h.inspect(p, v, p.PkgPath+"._")
 	}
-	h.extRefs = counted
+	h.extRefs, h.moduleRefs = counted, module
 }
 
 // blankSource는 빈 선언의 간선 출발점을 정한다. 모듈 심볼을 참조하면 초기화 루트를
@@ -1151,13 +1193,20 @@ func (h *harvester) fieldRef(v *types.Var) (string, bool) {
 }
 
 // inspect는 노드 아래의 호출·참조를 from 정점의 간선으로 기록한다.
+// 선택자 x.Sel은 참조 지점 하나다 — selectorEdge가 선택자 위치로 이미 기록했으므로 ast.Inspect가
+// Sel 식별자로 내려가도 identEdge를 다시 부르지 않는다(selectorIdents). 다시 부르면 같은 객체를
+// 같은 지점에서 두 번 기록해 간선 위치가 둘(선택자 시작·Sel)이 되고, 모듈 밖 참조 수가 한 번 더
+// 늘었다 — fmt.Println("x")가 3, 같은 호출을 점 import로 쓴 Println("x")가 2였다. X 쪽 식별자
+// (pkgVar.Field의 pkgVar)는 다른 참조라 그대로 기록한다.
 func (h *harvester) inspect(p *packages.Package, node ast.Node, from string) {
+	selected := selectorIdents{}
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.CallExpr:
 			h.callEdge(p, x, from)
 		case *ast.SelectorExpr:
 			h.selectorEdge(p, x, from)
+			selected.mark(x)
 		case *ast.CompositeLit:
 			h.compositeLitFields(p, x, from)
 		case *ast.BinaryExpr:
@@ -1166,11 +1215,24 @@ func (h *harvester) inspect(p *packages.Package, node ast.Node, from string) {
 				h.structCompareFields(p, x.Y, from)
 			}
 		case *ast.Ident:
-			h.identEdge(p, x, from)
+			if !selected.has(x) {
+				h.identEdge(p, x, from)
+			}
 		}
 		return true
 	})
 }
+
+// selectorIdents는 순회 중 만난 선택자의 Sel 식별자 집합이다. ast.Inspect는 선택자를 자식(X, Sel)보다
+// 먼저 방문하므로, 선택자에서 표시해 두면 곧이어 오는 Sel 방문을 가릴 수 있다. 선택자는 중첩되므로
+// (a.b.c는 바깥 c, 안쪽 b) 마지막 하나가 아니라 집합으로 기억한다.
+type selectorIdents map[*ast.Ident]bool
+
+// mark는 선택자의 Sel 식별자를 이미 기록한 참조로 표시한다.
+func (s selectorIdents) mark(sel *ast.SelectorExpr) { s[sel.Sel] = true }
+
+// has는 식별자가 이미 선택자 지점으로 기록된 Sel인지 본다.
+func (s selectorIdents) has(id *ast.Ident) bool { return s[id] }
 
 // compositeLitFields는 위치 인자 struct 리터럴(T{a, b})이 모든 필드를
 // 쓰는 사실을 references 간선으로 긋는다. 위치 리터럴은 필드명을 적지
@@ -1409,13 +1471,18 @@ func sameShape(a, b *types.Signature) bool {
 // sigTypeEdges는 선언의 타입 표현식 안 타입 참조를 signature 간선으로 긋는다.
 // 같은 참조는 inspect가 references로도 남긴다 — 종류가 다른 두 사실이고,
 // 중복 제거는 간선 키의 kind가 갈라 주므로 둘 다 살아남는다.
+// 한정 이름 pkg.T는 선택자 위치 한 지점이다 — inspect처럼 Sel 식별자를 다시 기록하지 않는다.
 func (h *harvester) sigTypeEdges(p *packages.Package, expr ast.Expr, from string) {
+	selected := selectorIdents{}
 	ast.Inspect(expr, func(n ast.Node) bool {
 		switch t := n.(type) {
 		case *ast.Ident:
-			h.sigRef(p.TypesInfo.Uses[t], from, position(p, t.Pos()))
+			if !selected.has(t) {
+				h.sigRef(p.TypesInfo.Uses[t], from, position(p, t.Pos()))
+			}
 		case *ast.SelectorExpr:
 			h.sigRef(p.TypesInfo.Uses[t.Sel], from, position(p, t.Pos()))
+			selected.mark(t)
 		}
 		return true
 	})
@@ -1510,7 +1577,7 @@ func (h *harvester) refObject(obj types.Object, from string, pos *graph.Position
 		return // 모듈 안 인터페이스 메서드다 — 모듈 밖 참조로 세지 않고, 구현자는 dispatchTargets가 잇는다
 	}
 	if !h.vertices[id] {
-		h.omitRef()
+		h.omitRef(obj.Pkg().Path())
 		return
 	}
 	h.edge(from, id, graph.EdgeReferences, pos)
@@ -1577,7 +1644,7 @@ func (h *harvester) addEdge(from, to string, kind graph.EdgeKind, pos *graph.Pos
 	}
 	if !h.vertices[from] || !h.vertices[to] {
 		if h.vertices[from] && kind != graph.EdgeContains {
-			h.omitRef()
+			h.omitRef(idPackagePath(to))
 		}
 		return
 	}

@@ -16,6 +16,32 @@
 
 ### Fixed
 
+- type·symbol 레벨 수확(`graph`, 그 문서를 읽는 `dead`·`cycles`·`query`·`impact`·`path`·`shared`·`reach`·`metrics`·
+  MCP): 선택자 `x.Sel` 하나를 참조 지점 둘로 기록하던 것. 선택자 시작 위치로 참조를 기록한 뒤 Sel 식별자에서 같은
+  객체를 다시 기록해, references 간선의 `positions`에 같은 식이 두 번(선택자 시작 열·Sel 열 — 이 저장소
+  `export/export.go`의 `d.Sort()`가 `18:2`와 `18:4`) 실렸고, signature 간선의 한정 타입 이름(`lib.Doc`)도 그랬으며,
+  `N references to symbols outside the module were omitted`가 모듈 밖 선택자를 한 번 더 셌다 — `fmt.Println("x")` 한
+  호출이 3이고 점 import로 쓴 같은 호출 `Println("x")`는 2였다. 이제 선택자는 그 시작 위치 한 지점이다. 생략 참조 수는
+  출발 정점·간선 종류·지점마다 하나다: 호출은 call과 references라 어느 철자든 2이고, 여러 이름 선언(`var a, b = …`)은
+  초기화식 전체를 이름마다 출발 정점으로 삼아 간선을 긋듯 이름마다 센다(`var c, d = fmt.Sprint(1), 2`는 4 — 전에는 6,
+  `var c = fmt.Sprint(1)`은 2 — 전에는 3). 선택자의 X 쪽(`cfg.Name`의 `cfg`)과 선택자로 쓴 객체를 선택자 밖에서 다시 쓴
+  지점(`T{Name: …}`의 키)은 다른 참조라 그대로 기록한다 — 건너뛰기는 객체가 아니라 Sel 식별자 노드 단위다. 정점·간선
+  집합(`candidate` 표시 포함)과 수 문장 밖의 limitation은 그대로다 — 이 저장소와 실제 모듈 7개(x/mod v0.41.0·x/sync
+  v0.23.0·x/text v0.42.0·x/net v0.59.0·x/crypto v0.57.0·x/tools v0.50.0·pgx v5.11.0)의 심볼 문서에서 정점·간선이 main과
+  같고, 사라진 위치는 모두 선택자의 Sel 식별자였다. 수는 심볼 레벨에서 이 저장소 9202 → 5722, x/tools 56411 → 34525,
+  x/mod 2318 → 1497이고, type 레벨(이 저장소 142 → 71)도 같은 이유로 줄었다. limitation은 문자열로 정렬되므로 수가
+  바뀌면 줄 순서가 바뀔 수 있다(`30 references …`는 `3 imports …` 뒤였지만 `15 references …`는 앞이다). `fileScope`
+  위반은 import 간선 위치만 보므로 바뀌지 않고, 간선의 첫 위치(순환 근거·위반 위치)는 원래 선택자 시작이라 그대로다.
+- type 레벨과 `--pattern` 밖이거나 `exclude`에 걸린 모듈 패키지(위와 같은 명령): 정점이 없는 **모듈 안** 심볼 참조를
+  `N references to symbols outside the module were omitted`로 셌다. type 레벨에는 함수·메서드·변수·상수·필드 정점이
+  없어 `type A [lib.N]int`의 모듈 상수 `lib.N`이, `--pattern .`이면 import한 모듈 패키지의 심볼 참조 전부가 "모듈
+  밖"이 됐다 — 거짓 문장이다. 이제 대상 패키지가 주 모듈(go.work면 워크스페이스 모듈) 소속이면 `N references to
+  module symbols that have no vertex in this document were omitted (functions, methods, variables, constants, and
+  fields are vertices only at symbol level, and packages outside --pattern or matched by exclude have no symbol
+  vertices)`로 따로 센다. 소속은 경로 접두사가 아니라 적재 사실(`Module.Main`)로 가른다. 버리지 않고 옮겨서 두 수의
+  합은 위 수정 뒤의 한 수와 같다: type 레벨 x/mod 27 → 1 + 26, x/text 67 → 10 + 57, x/net 353 → 11 + 342, x/crypto
+  343 → 17 + 326, x/tools 566 → 3 + 563, 이 저장소 `--pattern ./cli` 심볼 레벨 1572 → 387 + 1185. 모든 패키지를 심볼
+  레벨로 수확한 문서(이 저장소·실제 모듈 7개)에는 정점 없는 모듈 심볼 참조가 없어 바뀌지 않는다.
 - `rules`의 `limits` 위반(정점 없는 컴포넌트 사실) 출력: SARIF 메시지가 빈 정점을 간선 문구에 넣고 상한 종류를
   fileScope 규칙 이름으로 읽어 ` may not depend on  (fileScope "maxOut": web -> ): …`(fileScope 위반이라는 거짓
   문구)였고, 논리 위치로 같은 `{"fullyQualifiedName": "", "kind": "module"}` 둘을 실어 SARIF 2.1.0 스키마의
