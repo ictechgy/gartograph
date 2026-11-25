@@ -149,8 +149,8 @@
     x/text의 graph(심볼)·dead JSON은 main 바이너리와 바이트가 같다(규칙 파일이 없는 입력). Windows·macOS 테스트는
     CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
 
-- 브랜치 `ccr-37904670-hxdjsx`(2026-11-25, main `20c4479` 기준, 머지 전 — squash 머지되면 PR 번호로 찾는다). 하나를
-  고쳤다(CHANGELOG Fixed 첫 항목). 찾은 방법: 자기 분석 심볼 문서에서 `export.JSON → graph.(Document).Sort` references
+- 브랜치 `ccr-37904670-hxdjsx`(PR #61, 2026-11-25, main `20c4479` 기준, 머지 전 — squash 머지되면 PR 번호로 찾는다).
+  둘을 고쳤다(CHANGELOG Fixed 첫 두 항목 — 둘째는 리뷰 후속이다). 첫째를 찾은 방법: 자기 분석 심볼 문서에서 `export.JSON → graph.(Document).Sort` references
   간선의 위치가 같은 식 `d.Sort()`의 두 열(18:2·18:4)이었다.
   - 선택자 `x.Sel` 하나를 참조 지점 둘로 기록했다. `selectorEdge`가 선택자 시작으로 기록한 뒤 `ast.Inspect`가 Sel 식별자로
     내려가 `identEdge`가 같은 객체를 다시 기록했다(`sigTypeEdges`의 한정 타입 이름 `pkg.T`도 같다). 그래서 references·
@@ -160,7 +160,7 @@
   - 그대로 둔 단위: 호출 하나는 call과 references 두 사실이라 2로 센다(`TestSharedPromotedImplementationCountedOnce`가
     고정한 단위다). `selectorEdge` 주석은 "비호출 위치"라고 하지만 호출 위치에서도 references를 긋는 것은 main부터의
     동작이고, 바꾸면 간선이 사라져 두었다. 여러 이름 ValueSpec(`var a, b = …`)은 이름마다 같은 식을 훑어 이름마다 센다
-    (간선도 이름마다 따로다).
+    (간선도 이름마다 따로다 — 한 번만 훑으면 이름별 간선이 달라진다).
   - 회귀 테스트 `source/selectorsite_test.go`: main의 `symbols.go`로 두 테스트 모두 실패하고, 변이 넷(inspect의 건너뛰기
     제거, sigTypeEdges의 건너뛰기 제거, X 식별자도 건너뛰기, 마지막 선택자 하나만 기억)이 모두 잡힌다.
   - 대조(스크래치 사본의 main 바이너리와 비교): 이 저장소(`--tests` 포함)·x/mod v0.41.0·x/sync v0.23.0·x/text v0.42.0·
@@ -168,16 +168,48 @@
     최상위 키가 같고, 사라진 위치는 모두 바로 앞이 `.`인 Sel 식별자이며 같은 간선에 그보다 앞선 위치가 남는다(그래서 첫
     위치를 쓰는 순환 근거·위반 위치는 그대로다). 적대 fixture(메서드 표현식 `(*lib.T).PM`, 제네릭 `lib.F[int]`·`lib.G[lib.T]`,
     호출 결과 선택 `mk().In.V`, 타입 단언·type switch, 승격 메서드·필드, 인터페이스 메서드 값, 여러 이름 ValueSpec, 배열
-    길이의 한정 상수, 익명 struct 필드, 레이블)도 같다. 사라진 위치·수(심볼 레벨): 이 저장소 5196개·9185 → 5711, x/mod
-    1873·2318 → 1497, x/sync 122·173 → 112, x/text 10304·6566 → 4148, x/net 14090·15644 → 9677, x/crypto 9300·16077 →
-    10197, x/tools 23500·56411 → 34525, pgx 8555·11458 → 7197. type 레벨은 이 저장소 142 → 71.
+    길이의 한정 상수, 익명 struct 필드, 레이블)도 같다. 사라진 위치·수(심볼 레벨, `5065cfa` 시점): 이 저장소 5196개·
+    9185 → 5711, x/mod 1873·2318 → 1497, x/sync 122·173 → 112, x/text 10304·6566 → 4148, x/net 14090·15644 → 9677,
+    x/crypto 9300·16077 → 10197, x/tools 23500·56411 → 34525, pgx 8555·11458 → 7197. type 레벨은 이 저장소 142 → 71.
   - 살펴봤지만 고치지 않은 것: `diff`를 apidiff(x/exp `a4bb9ff`)와 사례 46개로 대조했다 — 거짓 breaking과 놓친 breaking은
     아래 "남은 일"에 있다.
-  - 검증: `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.9%(기준 90%, 패키지 여섯 모두 ok — 이 기계의 부하가 커서
+  - 검증(`5065cfa` 시점): `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.9%(기준 90%, 패키지 여섯 모두 ok — 이 기계의 부하가 커서
     `GOFLAGS=-timeout=90m`으로 돌렸다; 기본 10분 제한으로는 cli 패키지가 시간 초과로 멈췄다), `Scripts/verify-cli-contract.sh`
     OK, 자기 분석 dead 12건(main 바이너리와 목록·루트 3이 같고 references 수 줄만 9185 → 5711)·rules `--strict` 0·cycles
     package/type/symbol `--strict` 0(symbol 출력도 수 줄만 다르다), conformance drift current(isthmus `c76e105`). Windows·
     macOS 테스트는 CI에서만 돈다. 독립 리뷰(GLM `packet-ask`)는 이 환경에 없어 실행하지 못했다.
+  - PR #61 독립 리뷰 후속(같은 브랜치, `5065cfa` 위): 고칠 것 둘과 사소한 것 셋을 반영했다.
+    - 정점 없는 **모듈** 심볼 참조를 "outside the module"로 세던 것(main부터의 동작, CHANGELOG Fixed 둘째 항목). type
+      레벨에는 함수·메서드·변수·상수·필드 정점이 없어 `type A [lib.N]int`의 `lib.N`이, `--pattern` 밖이거나 exclude에 걸린
+      모듈 패키지의 심볼 참조 전부가 모듈 밖으로 세였다. 이제 `omitRef`가 대상 패키지(참조는 객체의 패키지, 간선은 정점
+      ID에서 뗀 경로 `idPackagePath`)가 적재한 주 모듈 패키지(`Module.Main` — `mainModulePackages`)면 `N references to
+      module symbols that have no vertex in this document were omitted (…)`로 센다. 리뷰가 제안한 `modulePkgs`(수확한
+      패키지만)로 가르면 `--pattern`·exclude 밖 모듈 패키지가 계속 "모듈 밖"이라 적재 사실을 썼다. 초기화 루트 재방문의
+      되돌리기는 두 수 모두에 적용한다. 새 문장은 AGENTS·HANDOFF가 사용자 결정으로 두는 계약(종료 코드, `query` 스키마,
+      키 이름)이 아니고 #57·#58·#60도 센 사실을 새 문장으로 더했다 — 수를 버리지 않고 옮겨 두 수의 합은 전과 같다.
+    - 재현(main → `5065cfa` → 지금, 모듈 쪽 + 밖): `lib.N` 배열 길이 fixture type 2 → 1 → 1 + 0; 리뷰 f12 type 10 → 6 →
+      2 + 4, `--pattern .` 심볼 37 → 21 → 17 + 4; exclude fixture 심볼 5 → 3 → 3 + 0; 이 저장소 `--pattern ./cli` 심볼
+      2496 → 1572 → 387 + 1185, type 51 → 26 → 21 + 5. 실제 모듈 type 레벨: x/mod 52 → 27 → 1 + 26, x/text 123 → 67 →
+      10 + 57, x/net 671 → 353 → 11 + 342, x/crypto 647 → 343 → 17 + 326, x/tools 1119 → 566 → 3 + 563. x/sync·pgx type과
+      이 저장소·실제 모듈 7개의 심볼 레벨(`./...`)은 모듈 쪽이 0이라 `5065cfa`와 같다. 문서의 나머지는 `5065cfa`와 같다.
+    - 회귀 테스트 `source/omittedrefs_test.go`(type 레벨, 심볼 레벨, `--pattern .` — 메서드 ID와 초기화 루트 재방문 포함)는
+      `5065cfa`에서 실패하고, 변이 일곱(수확 패키지만으로 가르기, 간선 쪽을 늘 밖으로, 참조 쪽을 늘 밖으로, 초기화 루트에서
+      모듈 수 되돌리기 빠짐, 메서드 ID 파싱 제거, 모듈 쪽을 밖으로 세기, revisit 무시 — 마지막은 기존
+      `TestTestsCountsEachFileOnce`가 잡는다)이 모두 잡힌다.
+    - CHANGELOG의 "그 수는 지점·간선 종류마다 하나다"는 여러 이름 선언에서 틀렸다(`var c, d = fmt.Sprint(1), 2`는 main 6,
+      `5065cfa` 4). 이름마다 출발 정점이 다른 간선을 긋는 것이라 판정은 두고, 단위를 "출발 정점·간선 종류·지점마다"로
+      고쳐 CHANGELOG·README·README.ko에 적었다.
+    - 사소한 것: CHANGELOG의 `d.Sort()` 예(`10:2`·`10:4`는 어느 파일에도 없었다)를 `export/export.go`의 `18:2`·`18:4`로
+      고쳤다. 객체로 거르는 잘못된 수정(`map[types.Object]bool`)이 `5065cfa`의 두 테스트를 통과했다 —
+      `TestSelectorIsOneReferenceSite`에 같은 객체를 선택자 밖에서 다시 쓰는 키(`lib.Doc{Name: "k"}`)를 더해 그 변이가 이제
+      실패한다. 수가 바뀌면 문자열 정렬 때문에 limitation 줄 순서가 바뀔 수 있다(리뷰 f08: `30 references …`는
+      `3 imports …` 뒤, `15 references …`는 앞) — CHANGELOG에 적고 "수 줄만 바뀐다" 문구를 고쳤다.
+    - 검증(이 트리): `go vet`·gofmt 통과, `Scripts/coverage.sh` 92.9%(기준 90%, 패키지 여섯 모두 ok — 부하 평균이 25~30이라
+      `GOFLAGS=-timeout=90m`), `Scripts/verify-cli-contract.sh` OK, 자기 분석 dead 12건(main 바이너리와 목록·루트 3이 같고
+      수 줄만 9202 → 5722)·rules `--strict` 0·cycles package/type/symbol `--strict` 0, conformance drift current(isthmus
+      `c76e105`). 코퍼스: main 대비 심볼 문서 대조를 이 트리로 다시 돌려 같은 결과다(이 저장소 사라진 위치 5203개·9202 →
+      5722, `--tests` 9900개·24772 → 15726, 실제 모듈 7개는 위 `5065cfa` 시점 수와 같다). `5065cfa` 대비 문서는 수 문장 밖이
+      같다(이 저장소 type·symbol·`--pattern ./cli`, 실제 모듈 7개 type·symbol). Windows·macOS 테스트는 CI에서만 돈다.
 
 ## 검증 방법
 
