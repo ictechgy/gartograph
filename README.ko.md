@@ -669,7 +669,8 @@ SHA-256(hex)으로 적습니다 — 같은 타입은 같은 항목, 다른 타�
 도달 가능 코드를 오판하지 않습니다.
 
 문서 버전은 `2`입니다. 간선은 그 관계가 성립하는 모든 사용 지점을
-`positions`에 담습니다(`import`는 import 선언, `call`은 호출 식).
+`positions`에 담습니다(`import`는 import 선언, `call`은 호출 식). 선택자(`x.Name`, 한정 이름
+`pkg.Type`)는 그 시작 위치 한 지점입니다.
 `contains`·`implements`·모듈 간선처럼 단일 지점이 없는 관계는 생략합니다.
 `dead --algo rta`는 수확한 CHA 간선 대신 SSA 기반 RTA를 씁니다 —
 더 좁지만 소스가 필요하고 과소 근사이므로 그 사실이 `limitations`에 실립니다.

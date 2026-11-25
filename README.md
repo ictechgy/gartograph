@@ -809,7 +809,8 @@ documents grade evidence from it; older saved documents lack the marker and are
 not graded.
 
 Edges carry `positions` — every source site where the relation holds
-(import decls for `import`, call expressions for `call`, and so on).
+(import decls for `import`, call expressions for `call`, and so on). A
+selector (`x.Name`, a qualified `pkg.Type`) is one site, at its start.
 Relations without a single site (`contains`, `implements`, module edges)
 omit it. `dead --algo rta` swaps the harvested CHA edges for SSA-based
 rapid type analysis — narrower, source-only, and it under-approximates:

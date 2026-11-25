@@ -1151,13 +1151,20 @@ func (h *harvester) fieldRef(v *types.Var) (string, bool) {
 }
 
 // inspect는 노드 아래의 호출·참조를 from 정점의 간선으로 기록한다.
+// 선택자 x.Sel은 참조 지점 하나다 — selectorEdge가 선택자 위치로 이미 기록했으므로 ast.Inspect가
+// Sel 식별자로 내려가도 identEdge를 다시 부르지 않는다(selectorIdents). 다시 부르면 같은 객체를
+// 같은 지점에서 두 번 기록해 간선 위치가 둘(선택자 시작·Sel)이 되고, 모듈 밖 참조 수가 한 번 더
+// 늘었다 — fmt.Println("x")가 3, 같은 호출을 점 import로 쓴 Println("x")가 2였다. X 쪽 식별자
+// (pkgVar.Field의 pkgVar)는 다른 참조라 그대로 기록한다.
 func (h *harvester) inspect(p *packages.Package, node ast.Node, from string) {
+	selected := selectorIdents{}
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.CallExpr:
 			h.callEdge(p, x, from)
 		case *ast.SelectorExpr:
 			h.selectorEdge(p, x, from)
+			selected.mark(x)
 		case *ast.CompositeLit:
 			h.compositeLitFields(p, x, from)
 		case *ast.BinaryExpr:
@@ -1166,11 +1173,24 @@ func (h *harvester) inspect(p *packages.Package, node ast.Node, from string) {
 				h.structCompareFields(p, x.Y, from)
 			}
 		case *ast.Ident:
-			h.identEdge(p, x, from)
+			if !selected.has(x) {
+				h.identEdge(p, x, from)
+			}
 		}
 		return true
 	})
 }
+
+// selectorIdents는 순회 중 만난 선택자의 Sel 식별자 집합이다. ast.Inspect는 선택자를 자식(X, Sel)보다
+// 먼저 방문하므로, 선택자에서 표시해 두면 곧이어 오는 Sel 방문을 가릴 수 있다. 선택자는 중첩되므로
+// (a.b.c는 바깥 c, 안쪽 b) 마지막 하나가 아니라 집합으로 기억한다.
+type selectorIdents map[*ast.Ident]bool
+
+// mark는 선택자의 Sel 식별자를 이미 기록한 참조로 표시한다.
+func (s selectorIdents) mark(sel *ast.SelectorExpr) { s[sel.Sel] = true }
+
+// has는 식별자가 이미 선택자 지점으로 기록된 Sel인지 본다.
+func (s selectorIdents) has(id *ast.Ident) bool { return s[id] }
 
 // compositeLitFields는 위치 인자 struct 리터럴(T{a, b})이 모든 필드를
 // 쓰는 사실을 references 간선으로 긋는다. 위치 리터럴은 필드명을 적지
@@ -1409,13 +1429,18 @@ func sameShape(a, b *types.Signature) bool {
 // sigTypeEdges는 선언의 타입 표현식 안 타입 참조를 signature 간선으로 긋는다.
 // 같은 참조는 inspect가 references로도 남긴다 — 종류가 다른 두 사실이고,
 // 중복 제거는 간선 키의 kind가 갈라 주므로 둘 다 살아남는다.
+// 한정 이름 pkg.T는 선택자 위치 한 지점이다 — inspect처럼 Sel 식별자를 다시 기록하지 않는다.
 func (h *harvester) sigTypeEdges(p *packages.Package, expr ast.Expr, from string) {
+	selected := selectorIdents{}
 	ast.Inspect(expr, func(n ast.Node) bool {
 		switch t := n.(type) {
 		case *ast.Ident:
-			h.sigRef(p.TypesInfo.Uses[t], from, position(p, t.Pos()))
+			if !selected.has(t) {
+				h.sigRef(p.TypesInfo.Uses[t], from, position(p, t.Pos()))
+			}
 		case *ast.SelectorExpr:
 			h.sigRef(p.TypesInfo.Uses[t.Sel], from, position(p, t.Pos()))
+			selected.mark(t)
 		}
 		return true
 	})
