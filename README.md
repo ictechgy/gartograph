@@ -673,7 +673,13 @@ timeout, `ulimit`, or a container.
   unknown names) are counted in `limitations`.
 - `limitations` is counted per run (omitted external imports/references,
   `reflect` use, unresolved `//go:linkname`, packages without type info) — absent
-  means nothing to report, not a boilerplate warning.
+  means nothing to report, not a boilerplate warning. Omitted references count
+  once per source vertex, edge kind, and site: a call is both a `call` and a
+  `references` fact, and `var a, b = …` attributes its whole initializer to
+  each name, so it counts once per name. References to module symbols that
+  have no vertex in the document (functions, methods, variables, constants,
+  and fields at type level; packages outside `--pattern` or matched by
+  `exclude`) are counted apart from references to symbols outside the module.
 - Pattern errors are counted, not dropped. A typo'd `--pattern`
   (`./interal/...`), a missing directory, an import path no module provides,
   a `--dir` outside any module, a missing `replace` target, or an unreadable
